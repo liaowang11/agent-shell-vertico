@@ -11,6 +11,7 @@
 (defvar agent-shell-test-last-buffer nil)
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
+(defvar agent-shell-show-config-icons nil)
 
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
@@ -66,6 +67,10 @@
   "Record a start action with ARGS."
   (setq agent-shell-test-last-command 'agent-shell-start
         agent-shell-test-last-args args))
+
+(defun agent-shell--config-icon (&rest _args)
+  "Return a stub icon string."
+  "[#]")
 
 (defun agent-shell-new-shell ()
   "Record a new shell action."
