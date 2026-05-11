@@ -72,6 +72,13 @@
   "Return a stub icon string."
   "[#]")
 
+(defun agent-shell-restart (&rest args)
+  "Record a restart action with ARGS."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-restart
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args args))
+
 (defun agent-shell-new-shell ()
   "Record a new shell action."
   (interactive)

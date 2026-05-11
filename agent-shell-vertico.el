@@ -240,32 +240,24 @@
   (call-interactively #'agent-shell-new-shell))
 
 (defun agent-shell-vertico-kill-session (buffer)
-  "Kill the process for BUFFER."
+  "Kill the process and buffer for BUFFER."
   (interactive (list (read-buffer "Agent shell: ")))
   (setq buffer (agent-shell-vertico--ensure-shell-buffer
                 (agent-shell-vertico--session-buffer buffer)))
-  (when (yes-or-no-p (format "Kill agent-shell process in %s? " (buffer-name buffer)))
+  (when (yes-or-no-p (format "Kill agent-shell session %s? " (buffer-name buffer)))
     (with-current-buffer buffer
       (when-let ((proc (map-nested-elt agent-shell--state '(:client :process))))
         (when (process-live-p proc)
-          (comint-send-eof))))))
+          (comint-send-eof))))
+    (kill-buffer buffer)))
 
 (defun agent-shell-vertico-restart-session (buffer)
-  "Restart BUFFER, reusing its config when available."
+  "Restart BUFFER."
   (interactive (list (read-buffer "Agent shell: ")))
   (setq buffer (agent-shell-vertico--ensure-shell-buffer
                 (agent-shell-vertico--session-buffer buffer)))
-  (let ((config (agent-shell-vertico--buffer-config buffer))
-        (buffer-name (buffer-name buffer)))
-    (when (yes-or-no-p (format "Restart agent-shell %s? " buffer-name))
-      (with-current-buffer buffer
-        (when-let ((proc (map-nested-elt agent-shell--state '(:client :process))))
-          (when (process-live-p proc)
-            (kill-process proc))))
-      (kill-buffer buffer)
-      (if config
-          (agent-shell-start :config config)
-        (call-interactively #'agent-shell-new-shell)))))
+  (with-current-buffer buffer
+    (call-interactively #'agent-shell-restart)))
 
 (defun agent-shell-vertico-open-transcript (buffer)
   "Open transcript for BUFFER."

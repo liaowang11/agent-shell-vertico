@@ -126,25 +126,14 @@ Each element in BINDINGS is of the form:
         (agent-shell-vertico-kill-session (buffer-name alpha))
         (should (eq called nil))))))
 
-(ert-deftest agent-shell-vertico-restart-session-reuses-matching-config ()
+(ert-deftest agent-shell-vertico-restart-session-dispatches-in-target-buffer ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
-              '((:client . ((:process . fake-proc)))))) 
-    (let ((agent-shell-agent-configs '((( :buffer-name . "Alpha")
-                                        (:command . "alpha"))))
-          killed)
-      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                ((symbol-function 'process-live-p) (lambda (_process) t))
-                ((symbol-function 'kill-process)
-                 (lambda (process)
-                   (setq killed process))))
-        (agent-shell-vertico-restart-session (buffer-name alpha))
-        (should (eq killed 'fake-proc))
-        (should (equal agent-shell-test-last-command 'agent-shell-start))
-        (should (equal agent-shell-test-last-args
-                       '(:config ((:buffer-name . "Alpha")
-                                  (:command . "alpha")))))
-        (should-not (buffer-live-p alpha))))))
+              '((:client . ((:process . fake-proc))))))
+    (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+      (agent-shell-vertico-restart-session (buffer-name alpha))
+      (should (eq agent-shell-test-last-command 'agent-shell-restart))
+      (should (eq agent-shell-test-last-buffer alpha)))))
 
 (ert-deftest agent-shell-vertico-new-shell-dispatches-to-agent-shell-new-shell ()
   (agent-shell-vertico-new-shell)

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "describe": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/describe/SKILL.md",
+      "computedHash": "a43b151388c72232f3f7b4ea790b4322409fc1efac1178f9e7c0183c3714d4a7"
+    },
+    "dired": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/dired/SKILL.md",
+      "computedHash": "84948dc11068699ab5cf5c1e2541044def9df179c06872e0fe3f1124d010c8f8"
+    },
+    "emacsclient": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/emacsclient/SKILL.md",
+      "computedHash": "3fdbe03dad76f4146438ef0edb6d3b769f52afa4430a734e61299c4de9f0e387"
+    },
+    "file-links": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/file-links/SKILL.md",
+      "computedHash": "d214aa5044d8dd9189dcb5d99adb415835adcfb1d3be85bbf7ad4344d8108938"
+    },
+    "gnuplot": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/gnuplot/SKILL.md",
+      "computedHash": "2706d5905266c1eafbf3bcffb393b8ba18d892d66478b04fd7b95f73308ba36d"
+    },
+    "highlight": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/highlight/SKILL.md",
+      "computedHash": "21552f0d5e6cc8162bb11c20e0ce5fad45fda89876f95d7a709304c98d549678"
+    },
+    "open": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/open/SKILL.md",
+      "computedHash": "40da60edc7d5379dc570c269120aec67cd41baa66d32fefd510939b957b339f8"
+    },
+    "select": {
+      "source": "xenodium/emacs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/select/SKILL.md",
+      "computedHash": "d8dcd461f1efb4e5fb116fa398a7853f644dde4c6baac9317bd395e49b29adb0"
+    }
+  }
+}
