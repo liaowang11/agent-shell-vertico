@@ -8,6 +8,8 @@
 (defface marginalia-documentation '((t :inherit font-lock-doc-face)) "Stub.")
 (defface marginalia-file-name '((t :inherit font-lock-string-face)) "Stub.")
 
+(defvar marginalia-annotators nil "Stub.")
+
 (defmacro marginalia--fields (&rest fields)
   "Stub for marginalia--fields. Concatenates field values with spaces."
   `(string-join (list ,@(mapcar (lambda (f) (car f)) fields)) " "))

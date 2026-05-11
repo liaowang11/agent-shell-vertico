@@ -28,6 +28,7 @@
 (defvar agent-shell-agent-configs nil)
 (defvar agent-shell-show-config-icons)
 (defvar embark-keymap-alist nil)
+(defvar marginalia-annotators nil)
 
 (defgroup agent-shell-vertico nil
   "Vertico helpers for `agent-shell'."
@@ -137,13 +138,33 @@
     ""))
 
 (defun agent-shell-vertico--affixate (candidates)
-  "Add icon prefix and annotation suffix to CANDIDATES."
+  "Add annotation suffix to CANDIDATES."
   (mapcar (lambda (cand)
             (let ((buf (get-buffer cand)))
               (list cand
-                    (if buf (agent-shell-vertico--icon-prefix buf) "")
+                    ""
                     (or (and buf (agent-shell-vertico--suffix buf)) ""))))
           candidates))
+
+(defun agent-shell-vertico--annotate (cand)
+  "Marginalia annotator for CAND in category `agent-shell-session'."
+  (when-let ((buf (get-buffer cand)))
+    (marginalia--fields
+     ((agent-shell-vertico--status buf) :truncate 10 :face 'marginalia-type)
+     ((agent-shell-vertico--model-name buf) :truncate 20 :face 'marginalia-value)
+     ((agent-shell-vertico--mode-name buf) :truncate 15 :face 'marginalia-mode)
+     ((agent-shell-vertico--title buf) :truncate 30 :face 'marginalia-documentation)
+     ((agent-shell-vertico--path buf) :truncate -0.5 :face 'marginalia-file-name))))
+
+(with-eval-after-load 'nerd-icons-completion
+  (cl-defmethod nerd-icons-completion-get-icon (cand (_cat (eql agent-shell-session)))
+    "Return the icon for CAND of category `agent-shell-session'."
+    (if-let* ((buf (get-buffer cand)))
+        (agent-shell-vertico--icon-prefix buf)
+      "")))
+
+(add-to-list 'marginalia-annotators
+             '(agent-shell-session agent-shell-vertico--annotate none))
 
 (defun agent-shell-vertico--completion-table (scope)
   "Return a completion table for SCOPE."
