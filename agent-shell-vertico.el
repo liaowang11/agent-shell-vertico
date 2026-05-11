@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0") (marginalia "1.0"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -19,10 +19,14 @@
 (require 'agent-shell)
 (require 'cl-lib)
 (require 'map)
+(require 'marginalia)
 (require 'seq)
 (require 'subr-x)
 
+(declare-function agent-shell--config-icon "agent-shell")
+
 (defvar agent-shell-agent-configs nil)
+(defvar agent-shell-show-config-icons)
 (defvar embark-keymap-alist nil)
 
 (defgroup agent-shell-vertico nil
@@ -113,47 +117,33 @@
   (with-current-buffer buffer
     (abbreviate-file-name default-directory)))
 
-(defun agent-shell-vertico--candidate-annotation (buffer widths)
-  "Return annotation text for BUFFER using WIDTHS."
-  (format (concat "  %-" (number-to-string (alist-get 'status widths)) "s"
-                  "  %-" (number-to-string (alist-get 'model widths)) "s"
-                  "  %-" (number-to-string (alist-get 'mode widths)) "s"
-                  "  %s  %s")
-          (agent-shell-vertico--status buffer)
-          (agent-shell-vertico--model-name buffer)
-          (agent-shell-vertico--mode-name buffer)
-          (agent-shell-vertico--title buffer)
-          (agent-shell-vertico--path buffer)))
+(defun agent-shell-vertico--suffix (buffer)
+  "Return annotation suffix for BUFFER."
+  (when (buffer-live-p buffer)
+    (marginalia--fields
+     ((agent-shell-vertico--status buffer) :truncate 10 :face 'marginalia-type)
+     ((agent-shell-vertico--model-name buffer) :truncate 20 :face 'marginalia-value)
+     ((agent-shell-vertico--mode-name buffer) :truncate 15 :face 'marginalia-mode)
+     ((agent-shell-vertico--title buffer) :truncate 30 :face 'marginalia-documentation)
+     ((agent-shell-vertico--path buffer) :truncate -0.5 :face 'marginalia-file-name))))
 
-(defun agent-shell-vertico--annotation-widths (buffers)
-  "Compute annotation widths for BUFFERS."
-  (list
-   (cons 'status (max 8 (apply #'max 0 (mapcar (lambda (buffer)
-                                                 (string-width
-                                                  (agent-shell-vertico--status buffer)))
-                                               buffers))))
-   (cons 'model (max 5 (apply #'max 0 (mapcar (lambda (buffer)
-                                                (string-width
-                                                 (agent-shell-vertico--model-name buffer)))
-                                              buffers))))
-   (cons 'mode (max 4 (apply #'max 0 (mapcar (lambda (buffer)
-                                               (string-width
-                                                (agent-shell-vertico--mode-name buffer)))
-                                             buffers))))))
+(defun agent-shell-vertico--icon-prefix (buffer)
+  "Return icon image string for BUFFER, or empty string."
+  (if-let* ((agent-shell-show-config-icons)
+            (state (agent-shell-vertico--state buffer))
+            (config (map-elt state :agent-config))
+            (icon-str (agent-shell--config-icon :config config)))
+      (concat icon-str " ")
+    ""))
 
-(defun agent-shell-vertico--affixation-function (buffers)
-  "Build an affixation function for BUFFERS."
-  (let ((widths (agent-shell-vertico--annotation-widths buffers)))
-    (lambda (candidates)
-      (mapcar
-       (lambda (candidate)
-         (let ((buffer (get-buffer candidate)))
-           (list candidate
-                 ""
-                 (if (buffer-live-p buffer)
-                     (agent-shell-vertico--candidate-annotation buffer widths)
-                   ""))))
-       candidates))))
+(defun agent-shell-vertico--affixate (candidates)
+  "Add icon prefix and annotation suffix to CANDIDATES."
+  (mapcar (lambda (cand)
+            (let ((buf (get-buffer cand)))
+              (list cand
+                    (if buf (agent-shell-vertico--icon-prefix buf) "")
+                    (or (and buf (agent-shell-vertico--suffix buf)) ""))))
+          candidates))
 
 (defun agent-shell-vertico--completion-table (scope)
   "Return a completion table for SCOPE."
@@ -163,9 +153,9 @@
       (if (eq action 'metadata)
           `(metadata
             (category . agent-shell-session)
+            (affixation-function . ,#'agent-shell-vertico--affixate)
             (display-sort-function . identity)
-            (cycle-sort-function . identity)
-            (affixation-function . ,(agent-shell-vertico--affixation-function buffers)))
+            (cycle-sort-function . identity))
         (complete-with-action action
                               (mapcar #'buffer-name buffers)
                               string pred)))))
