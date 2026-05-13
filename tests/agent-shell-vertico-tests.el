@@ -139,6 +139,54 @@ Each element in BINDINGS is of the form:
   (agent-shell-vertico-new-shell)
   (should (eq agent-shell-test-last-command 'agent-shell-new-shell)))
 
+(ert-deftest agent-shell-vertico-sort-by-recency-most-recent-first ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (with-current-buffer alpha
+      (setq-local buffer-display-time (encode-time 0 0 10 1 1 2026)))
+    (with-current-buffer beta
+      (setq-local buffer-display-time (encode-time 0 0 12 1 1 2026)))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sort-by 'recency))
+      (let* ((table (agent-shell-vertico--completion-table 'all))
+             (metadata (funcall table "" nil 'metadata))
+             (sort-fn (cdr (assq 'display-sort-function (cdr metadata)))))
+        (should (equal (funcall sort-fn
+                                '("Alpha Agent @ alpha" "Beta Agent @ beta"))
+                       '("Beta Agent @ beta" "Alpha Agent @ alpha")))))))
+
+(ert-deftest agent-shell-vertico-sort-by-creation-alphabetical ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b")))))
+       (alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let ((agent-shell-test-buffers (list beta alpha))
+          (agent-shell-vertico-sort-by 'creation))
+      (let* ((table (agent-shell-vertico--completion-table 'all))
+             (metadata (funcall table "" nil 'metadata))
+             (sort-fn (cdr (assq 'display-sort-function (cdr metadata)))))
+        (should (equal (funcall sort-fn
+                                '("Beta Agent @ beta" "Alpha Agent @ alpha"))
+                       '("Alpha Agent @ alpha" "Beta Agent @ beta")))))))
+
+(ert-deftest agent-shell-vertico-sort-by-status-ready-before-starting ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((starting "Starting Agent @ start" "/tmp/start/" nil)
+       (ready "Ready Agent @ ready" "/tmp/ready/"
+              '((:session . ((:id . "r"))))))
+    (let ((agent-shell-test-buffers (list starting ready))
+          (agent-shell-vertico-sort-by 'status))
+      (let* ((table (agent-shell-vertico--completion-table 'all))
+             (metadata (funcall table "" nil 'metadata))
+             (sort-fn (cdr (assq 'display-sort-function (cdr metadata)))))
+        (should (equal (funcall sort-fn
+                                '("Starting Agent @ start" "Ready Agent @ ready"))
+                       '("Ready Agent @ ready" "Starting Agent @ start")))))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

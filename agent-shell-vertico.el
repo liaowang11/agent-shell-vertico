@@ -34,6 +34,17 @@
   "Vertico helpers for `agent-shell'."
   :group 'agent-shell)
 
+(defcustom agent-shell-vertico-sort-by 'recency
+  "Sort criterion for session candidates.
+Must be one of `recency', `creation', or `status'.
+
+- `recency' sorts most recently displayed sessions first.
+- `creation' sorts sessions alphabetically by buffer name.
+- `status' sorts sessions with Ready status first, then Working,
+  Starting, and other states."
+  :type '(choice (const recency) (const creation) (const status))
+  :group 'agent-shell-vertico)
+
 (defvar agent-shell-vertico-history nil
   "Minibuffer history for `agent-shell-vertico' commands.")
 
@@ -166,6 +177,35 @@
 (add-to-list 'marginalia-annotators
              '(agent-shell-session agent-shell-vertico--annotate none))
 
+(defun agent-shell-vertico--status-priority (status)
+  "Return numeric priority for STATUS.  Lower means higher priority."
+  (pcase status
+    ("Ready" 0)
+    ("Working" 1)
+    ("Starting" 2)
+    (_ 3)))
+
+(defun agent-shell-vertico--sort-candidates (candidates)
+  "Sort CANDIDATES according to `agent-shell-vertico-sort-by'."
+  (pcase agent-shell-vertico-sort-by
+    ('recency
+     (cl-sort (copy-sequence candidates) #'>
+              :key (lambda (name)
+                     (if-let ((buf (get-buffer name))
+                              (time (buffer-local-value 'buffer-display-time buf)))
+                         (float-time time)
+                       0.0))))
+    ('creation
+     (cl-sort (copy-sequence candidates) #'string<))
+    ('status
+     (cl-sort (copy-sequence candidates) #'<
+              :key (lambda (name)
+                     (if-let ((buf (get-buffer name)))
+                         (agent-shell-vertico--status-priority
+                          (agent-shell-vertico--status buf))
+                       3))))
+    (_ candidates)))
+
 (defun agent-shell-vertico--completion-table (scope)
   "Return a completion table for SCOPE."
   (lambda (string pred action)
@@ -175,8 +215,8 @@
           `(metadata
             (category . agent-shell-session)
             (affixation-function . ,#'agent-shell-vertico--affixate)
-            (display-sort-function . identity)
-            (cycle-sort-function . identity))
+            (display-sort-function . ,#'agent-shell-vertico--sort-candidates)
+            (cycle-sort-function . ,#'agent-shell-vertico--sort-candidates))
         (complete-with-action action
                               (mapcar #'buffer-name buffers)
                               string pred)))))
