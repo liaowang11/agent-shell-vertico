@@ -25,10 +25,10 @@
 
 (declare-function agent-shell--config-icon "agent-shell")
 
-(defvar agent-shell-agent-configs nil)
+(defvar agent-shell-agent-configs)
 (defvar agent-shell-show-config-icons)
-(defvar embark-keymap-alist nil)
-(defvar marginalia-annotators nil)
+(defvar embark-keymap-alist)
+(defvar marginalia-annotators)
 
 (defgroup agent-shell-vertico nil
   "Vertico helpers for `agent-shell'."

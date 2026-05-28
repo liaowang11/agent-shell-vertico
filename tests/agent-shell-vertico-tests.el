@@ -10,6 +10,11 @@
 
 (require 'agent-shell-vertico)
 
+;; Declare as a dynamic variable so `let' bindings below are dynamic and
+;; visible to functions under test. Mirrors how the real `embark-keymap-alist'
+;; is declared by embark.el.
+(defvar embark-keymap-alist)
+
 (defmacro agent-shell-vertico-tests--with-session-buffers (bindings &rest body)
   "Create session buffers from BINDINGS and evaluate BODY.
 
@@ -87,6 +92,14 @@ Each element in BINDINGS is of the form:
            (table (agent-shell-vertico--completion-table 'project))
            (candidates (all-completions "" table)))
       (should (equal candidates '("Beta Agent @ beta"))))))
+
+(ert-deftest agent-shell-vertico-loading-does-not-prebind-embark-keymap-alist ()
+  "Loading the package must not bind `embark-keymap-alist'.
+A top-level `defvar' with a value would pre-bind it to nil, which
+prevents embark's own `defcustom' from installing its default target
+type to keymap mappings when embark loads later."
+  (skip-unless (not (featurep 'embark)))
+  (should-not (boundp 'embark-keymap-alist)))
 
 (ert-deftest agent-shell-vertico-embark-setup-registers-manager-like-actions ()
   (let ((embark-keymap-alist nil))
