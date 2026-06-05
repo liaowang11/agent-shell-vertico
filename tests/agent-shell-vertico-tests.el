@@ -14,6 +14,7 @@
 ;; visible to functions under test. Mirrors how the real `embark-keymap-alist'
 ;; is declared by embark.el.
 (defvar embark-keymap-alist)
+(defvar embark-default-action-overrides)
 
 (defmacro agent-shell-vertico-tests--with-session-buffers (bindings &rest body)
   "Create session buffers from BINDINGS and evaluate BODY.
@@ -29,6 +30,8 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-command) nil)
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
+                    ((symbol-value 'agent-shell-test-displayed-buffer) nil)
+                    ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value 'agent-shell-agent-configs) nil))
            (let ,(mapcar
                   (lambda (binding)
@@ -102,7 +105,8 @@ type to keymap mappings when embark loads later."
   (should-not (boundp 'embark-keymap-alist)))
 
 (ert-deftest agent-shell-vertico-embark-setup-registers-manager-like-actions ()
-  (let ((embark-keymap-alist nil))
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil))
     (agent-shell-vertico-setup-embark)
     (should (equal (car embark-keymap-alist)
                    '(agent-shell-session
@@ -117,7 +121,9 @@ type to keymap mappings when embark loads later."
     (should (eq (lookup-key agent-shell-vertico-embark-map (kbd "t"))
                 #'agent-shell-vertico-view-traffic))
     (should (eq (lookup-key agent-shell-vertico-embark-map (kbd "T"))
-                #'agent-shell-vertico-open-transcript))))
+                #'agent-shell-vertico-open-transcript))
+    (should (eq (lookup-key agent-shell-vertico-embark-map (kbd "o"))
+                #'agent-shell-vertico-switch-other-window))))
 
 (ert-deftest agent-shell-vertico-open-transcript-dispatches-in-target-buffer ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -185,6 +191,48 @@ type to keymap mappings when embark loads later."
         (should (equal (funcall sort-fn
                                 '("Beta Agent @ beta" "Alpha Agent @ alpha"))
                        '("Alpha Agent @ alpha" "Beta Agent @ beta")))))))
+
+(ert-deftest agent-shell-vertico-maybe-resolve-viewport-returns-shell-when-nil ()
+  "When `agent-shell-prefer-viewport-interaction' is nil, return the shell buffer."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let ((agent-shell-prefer-viewport-interaction nil))
+      (should (eq (agent-shell-vertico--maybe-resolve-viewport alpha) alpha)))))
+
+(ert-deftest agent-shell-vertico-maybe-resolve-viewport-returns-viewport-when-t ()
+  "When `agent-shell-prefer-viewport-interaction' is t, return the viewport buffer."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (vp "Alpha Agent @ alpha [viewport]" "/tmp/alpha/" nil))
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-test-viewport-buffer vp))
+      (should (eq (agent-shell-vertico--maybe-resolve-viewport alpha) vp)))))
+
+(ert-deftest agent-shell-vertico-embark-setup-registers-default-action-override ()
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil))
+    (agent-shell-vertico-setup-embark)
+    (should (eq (cdr (assq 'agent-shell-session
+                           embark-default-action-overrides))
+                #'agent-shell-vertico--display-session))))
+
+(ert-deftest agent-shell-vertico-display-session-displays-shell-when-no-viewport-pref ()
+  "`--display-session' displays the shell buffer when viewport pref is nil."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let ((agent-shell-prefer-viewport-interaction nil))
+      (agent-shell-vertico--display-session (buffer-name alpha))
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
+(ert-deftest agent-shell-vertico-display-session-displays-viewport-when-pref-t ()
+  "`--display-session' displays the viewport buffer when viewport pref is t."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (vp "Alpha Agent @ alpha [viewport]" "/tmp/alpha/" nil))
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-test-viewport-buffer vp))
+      (agent-shell-vertico--display-session (buffer-name alpha))
+      (should (eq agent-shell-test-displayed-buffer vp)))))
 
 (ert-deftest agent-shell-vertico-sort-by-status-ready-before-starting ()
   (agent-shell-vertico-tests--with-session-buffers

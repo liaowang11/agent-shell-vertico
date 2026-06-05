@@ -24,9 +24,13 @@
 (require 'subr-x)
 
 (declare-function agent-shell--config-icon "agent-shell")
+(declare-function agent-shell--display-buffer "agent-shell")
+(declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 
 (defvar agent-shell-agent-configs)
+(defvar agent-shell-prefer-viewport-interaction)
 (defvar agent-shell-show-config-icons)
+(defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
 (defvar marginalia-annotators)
 
@@ -50,6 +54,7 @@ Must be one of `recency', `creation', or `status'.
 
 (defvar-keymap agent-shell-vertico-embark-map
   :doc "Embark actions for `agent-shell-vertico' sessions."
+  "o" #'agent-shell-vertico-switch-other-window
   "c" #'agent-shell-vertico-new-shell
   "k" #'agent-shell-vertico-kill-session
   "r" #'agent-shell-vertico-restart-session
@@ -226,6 +231,14 @@ Must be one of `recency', `creation', or `status'.
   (completing-read prompt (agent-shell-vertico--completion-table scope)
                    nil t nil 'agent-shell-vertico-history))
 
+(defun agent-shell-vertico--maybe-resolve-viewport (buffer)
+  "Return viewport buffer for BUFFER when viewport is preferred.
+When `agent-shell-prefer-viewport-interaction' is nil, return
+BUFFER unchanged."
+  (if agent-shell-prefer-viewport-interaction
+      (agent-shell-viewport--buffer :shell-buffer buffer)
+    buffer))
+
 (defun agent-shell-vertico--session-buffer (buffer)
   "Resolve BUFFER to a live `agent-shell' buffer."
   (or (get-buffer buffer)
@@ -249,30 +262,55 @@ Must be one of `recency', `creation', or `status'.
                   (string= buffer-name-prefix (map-elt config :buffer-name)))
                 agent-shell-agent-configs))))
 
+(defun agent-shell-vertico--display-session (buffer-name)
+  "Display agent shell session for BUFFER-NAME.
+Uses `agent-shell--display-buffer', resolving viewport when
+`agent-shell-prefer-viewport-interaction' is non-nil."
+  (agent-shell--display-buffer
+   (agent-shell-vertico--maybe-resolve-viewport
+    (agent-shell-vertico--ensure-shell-buffer
+     (agent-shell-vertico--session-buffer buffer-name)))))
+
+(defun agent-shell-vertico--display-session-other-window (buffer-name)
+  "Display agent shell session for BUFFER-NAME in another window.
+Respects `agent-shell-prefer-viewport-interaction'."
+  (switch-to-buffer-other-window
+   (agent-shell-vertico--maybe-resolve-viewport
+    (agent-shell-vertico--ensure-shell-buffer
+     (agent-shell-vertico--session-buffer buffer-name)))))
+
 ;;;###autoload
 (defun agent-shell-vertico-switch ()
   "Switch to an `agent-shell' buffer."
   (interactive)
-  (switch-to-buffer
+  (agent-shell-vertico--display-session
    (agent-shell-vertico--read-session "Agent shell: " 'all)))
+
+;;;###autoload
+(defun agent-shell-vertico-switch-other-window (buffer-name)
+  "Switch to agent shell session BUFFER-NAME in another window."
+  (interactive
+   (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (agent-shell-vertico--display-session-other-window buffer-name))
 
 ;;;###autoload
 (defun agent-shell-vertico-switch-project ()
   "Switch to an `agent-shell' buffer in the current project."
   (interactive)
-  (switch-to-buffer
+  (agent-shell-vertico--display-session
    (agent-shell-vertico--read-session "Project agent shell: " 'project)))
 
 ;;;###autoload
 (defun agent-shell-vertico-setup-embark ()
-  "Register `agent-shell-vertico' actions with Embark."
+  "Register `agent-shell-vertico' actions with Embark.
+Call this only after Embark is loaded."
   (interactive)
-  (unless (boundp 'embark-keymap-alist)
-    (setq embark-keymap-alist nil))
   (add-to-list 'embark-keymap-alist
                '(agent-shell-session
                  agent-shell-vertico-embark-map
-                 embark-buffer-map)))
+                 embark-buffer-map))
+  (add-to-list 'embark-default-action-overrides
+               '(agent-shell-session . agent-shell-vertico--display-session)))
 
 (defun agent-shell-vertico-new-shell ()
   "Start a new `agent-shell' session."
