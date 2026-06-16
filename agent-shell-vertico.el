@@ -18,10 +18,12 @@
 
 (require 'agent-shell)
 (require 'cl-lib)
+(require 'imenu)
 (require 'map)
 (require 'marginalia)
 (require 'seq)
 (require 'subr-x)
+(require 'text-property-search)
 
 (declare-function agent-shell--config-icon "agent-shell")
 (declare-function agent-shell--display-buffer "agent-shell")
@@ -30,6 +32,7 @@
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
 (defvar agent-shell-show-config-icons)
+(defvar consult-imenu-config)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
 (defvar marginalia-annotators)
@@ -47,6 +50,14 @@ Must be one of `recency', `creation', or `status'.
 - `status' sorts sessions with Ready status first, then Working,
   Starting, and other states."
   :type '(choice (const recency) (const creation) (const status))
+  :group 'agent-shell-vertico)
+
+(defcustom agent-shell-vertico-imenu-name-width 80
+  "Maximum width of an imenu item name before truncation.
+Longer names are truncated on a word boundary with a trailing
+ellipsis.  Keep this comfortably below your completion window's width
+so the ellipsis stays visible and item annotations are not crowded."
+  :type 'integer
   :group 'agent-shell-vertico)
 
 (defvar agent-shell-vertico-history nil
@@ -378,6 +389,229 @@ Call this only after Embark is loaded."
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-set-session-model)))
+
+;;; Imenu
+;;
+;; Both `agent-shell-mode' and `agent-shell-viewport-view-mode' render
+;; conversation items as fragments carrying an `agent-shell-ui-state'
+;; text property.  A single walk of those fragments therefore works in
+;; either mode.  Items are grouped as Request (the user's prompts, shell
+;; only — read from comint via shell-maker's own `imenu-generic-expression'),
+;; Internal (thinking, tool calls, plans, and the agent's intermediate
+;; narration — the work it does on the way to an answer), and Response
+;; (the final agent message of each interaction).
+;;
+;; Agents differ in how they stream prose: some emit a single message at
+;; the end, others narrate between tool calls as a series of message
+;; chunks.  Only the last message chunk of an interaction is its Response;
+;; earlier chunks are intermediate narration and join Internal.
+
+(defun agent-shell-vertico--imenu-message-p (qualified-id)
+  "Return non-nil when QUALIFIED-ID names an agent message chunk."
+  (string-suffix-p "-agent_message_chunk" qualified-id))
+
+(defun agent-shell-vertico--imenu-interaction (qualified-id)
+  "Return the interaction id encoded at the front of QUALIFIED-ID."
+  (car (split-string qualified-id "-")))
+
+(defun agent-shell-vertico--imenu-included-p (qualified-id navigatable)
+  "Return non-nil when a fragment should appear in the index.
+Agent message chunks are always included; any other fragment must be
+navigatable and not an infrastructure or error block."
+  (or (agent-shell-vertico--imenu-message-p qualified-id)
+      (and navigatable
+           (not (string-prefix-p "bootstrapping-" qualified-id))
+           (not (string-suffix-p "-unhandled-notification" qualified-id)))))
+
+(defun agent-shell-vertico--imenu-block-end (start qualified-id)
+  "Return the end of the `agent-shell-ui-state' block at START.
+The block is the contiguous run whose state shares QUALIFIED-ID.
+Streaming updates re-apply the property as fresh objects, so the run
+may be split into sub-runs with equal ids; this stitches them back."
+  (let ((pos start))
+    (catch 'done
+      (while t
+        (let ((next (next-single-property-change pos 'agent-shell-ui-state)))
+          (cond
+           ((null next) (throw 'done (point-max)))
+           ((equal qualified-id
+                   (map-elt (get-text-property next 'agent-shell-ui-state)
+                            :qualified-id))
+            (setq pos next))
+           (t (throw 'done next))))))))
+
+(defun agent-shell-vertico--imenu-section (start end section)
+  "Return trimmed text of the first SECTION region within \[START, END).
+SECTION is an `agent-shell-ui-section' value such as `label-left',
+`label-right', or `body'.  Return nil when absent or empty."
+  (let ((pos start) found)
+    (while (and (< pos end) (not found))
+      (if (eq (get-text-property pos 'agent-shell-ui-section) section)
+          (setq found pos)
+        (setq pos (or (next-single-property-change
+                       pos 'agent-shell-ui-section nil end)
+                      end))))
+    (when found
+      (let* ((section-end (or (text-property-not-all
+                               found end 'agent-shell-ui-section section)
+                              end))
+             (text (string-trim
+                    (buffer-substring-no-properties found section-end))))
+        (unless (string-empty-p text) text)))))
+
+(defun agent-shell-vertico--imenu-first-line (text)
+  "Return the first non-blank line of TEXT, trimmed, or nil."
+  (when-let* ((text)
+              (line (seq-find (lambda (l) (not (string-blank-p l)))
+                              (split-string text "\n"))))
+    (string-trim line)))
+
+(defun agent-shell-vertico--imenu-truncate (string)
+  "Truncate STRING to `agent-shell-vertico-imenu-name-width' columns.
+Break on a word boundary where possible, marking truncation with a
+trailing ellipsis; fall back to a hard cut for a single long word."
+  (let ((width agent-shell-vertico-imenu-name-width))
+    (if (<= (length string) width)
+        string
+      (let* ((cut (substring string 0 width))
+             (space (string-match "[ \t][^ \t]*\\'" cut)))
+        (concat (string-trim-right (if (and space (> space (/ width 2)))
+                                       (substring cut 0 space)
+                                     cut))
+                "…")))))
+
+(defun agent-shell-vertico--imenu-candidate (name status)
+  "Return NAME, truncated and stamped with its STATUS for annotation.
+The stamp is read back by `agent-shell-vertico--imenu-annotation'."
+  (let ((candidate (copy-sequence (agent-shell-vertico--imenu-truncate name))))
+    (when status
+      (put-text-property 0 (length candidate)
+                         'agent-shell-vertico--imenu status candidate))
+    candidate))
+
+(defun agent-shell-vertico--imenu-item (start)
+  "Return (CANDIDATE . START) for the fragment block at START.
+CANDIDATE is the item name — the tool title, else the first body line,
+else the left label — stamped with its status label for annotation."
+  (let* ((qualified-id (map-elt (get-text-property start 'agent-shell-ui-state)
+                                :qualified-id))
+         (end (agent-shell-vertico--imenu-block-end start qualified-id))
+         (label-left (agent-shell-vertico--imenu-section start end 'label-left))
+         (name (or (agent-shell-vertico--imenu-section start end 'label-right)
+                   (agent-shell-vertico--imenu-first-line
+                    (agent-shell-vertico--imenu-section start end 'body))
+                   label-left
+                   "Item")))
+    (cons (agent-shell-vertico--imenu-candidate name label-left) start)))
+
+(defun agent-shell-vertico--imenu-fragment-groups ()
+  "Return the Internal and Response imenu groups for the current buffer.
+Walk each `agent-shell-ui-state' block once, in buffer order, recording
+which message chunk is the last of its interaction.  Every indexed block
+joins Internal except those final message chunks, which form Response."
+  (let ((seen (make-hash-table :test #'equal))
+        (final-message (make-hash-table :test #'equal))
+        collected)
+    (save-excursion
+      (goto-char (point-min))
+      ;; `not-current' is nil so a block starting at `point-min' is not
+      ;; skipped; advancing to `prop-match-end' each iteration guarantees
+      ;; termination, and the per-id dedup keeps the earliest start.
+      (let (match)
+        (while (setq match (text-property-search-forward
+                            'agent-shell-ui-state nil
+                            (lambda (_ state) (map-elt state :qualified-id))))
+          (let* ((start (prop-match-beginning match))
+                 (state (get-text-property start 'agent-shell-ui-state))
+                 (qualified-id (map-elt state :qualified-id)))
+            (goto-char (prop-match-end match))
+            (when (and (not (gethash qualified-id seen))
+                       (agent-shell-vertico--imenu-included-p
+                        qualified-id (map-elt state :navigatable)))
+              (puthash qualified-id t seen)
+              (when (agent-shell-vertico--imenu-message-p qualified-id)
+                ;; Buffer order means the last chunk seen wins.
+                (puthash (agent-shell-vertico--imenu-interaction qualified-id)
+                         start final-message))
+              (push (cons qualified-id (agent-shell-vertico--imenu-item start))
+                    collected))))))
+    (let (internal response)
+      (dolist (block (nreverse collected))
+        (let ((qualified-id (car block))
+              (item (cdr block)))
+          (if (and (agent-shell-vertico--imenu-message-p qualified-id)
+                   (= (cdr item)
+                      (gethash (agent-shell-vertico--imenu-interaction qualified-id)
+                               final-message)))
+              (push item response)
+            (push item internal))))
+      (append
+       (when internal (list (cons "Internal" (nreverse internal))))
+       (when response (list (cons "Response" (nreverse response))))))))
+
+(defun agent-shell-vertico--imenu-requests ()
+  "Return the Request imenu group for an `agent-shell' buffer, if any.
+Reuses shell-maker's own `imenu-generic-expression', which indexes the
+comint prompt lines.  The viewport has no such expression, so requests
+are naturally absent there."
+  (when (and (derived-mode-p 'agent-shell-mode)
+             imenu-generic-expression)
+    (when-let* ((items (imenu--generic-function imenu-generic-expression)))
+      (list (cons "Request" items)))))
+
+(defun agent-shell-vertico--imenu-index ()
+  "Build a nested imenu index of `agent-shell' session items.
+Grouped as Request (shell only), Internal (thinking, tool calls, and
+plans), and Response (the agent's messages).  Suitable as an
+`imenu-create-index-function' in both `agent-shell-mode' and
+`agent-shell-viewport-view-mode' buffers."
+  (append
+   (agent-shell-vertico--imenu-requests)
+   (agent-shell-vertico--imenu-fragment-groups)))
+
+(defun agent-shell-vertico--imenu-annotation (candidate)
+  "Marginalia annotator for an `imenu' CANDIDATE created by this package.
+Shows the item's status label (e.g. a tool's completion state).  Returns
+nil for imenu candidates from other modes, so the annotator can be
+registered against the shared `imenu' category without affecting
+unrelated buffers."
+  (when-let* ((pos (text-property-not-all 0 (length candidate)
+                                          'agent-shell-vertico--imenu nil
+                                          candidate))
+              (status (get-text-property pos 'agent-shell-vertico--imenu
+                                         candidate)))
+    (marginalia--fields
+     (status :truncate 30 :face 'marginalia-type))))
+
+(defun agent-shell-vertico--imenu-setup ()
+  "Install the agent-shell imenu index in the current buffer."
+  (setq-local imenu-create-index-function #'agent-shell-vertico--imenu-index)
+  (setq-local imenu-auto-rescan t)
+  ;; This package truncates names itself, on a word boundary and with an
+  ;; ellipsis, via `agent-shell-vertico-imenu-name-width'.  Disable imenu's
+  ;; own hard cut (`imenu-max-item-length', applied by `consult-imenu') so it
+  ;; cannot re-truncate names without an ellipsis.
+  (setq-local imenu-max-item-length nil))
+
+;;;###autoload
+(defun agent-shell-vertico-setup-imenu ()
+  "Enable agent-shell session imenu in shell and viewport buffers.
+Installs an `imenu-create-index-function' via `agent-shell-mode' and
+`agent-shell-viewport-view-mode' hooks, registers a Marginalia
+annotator, and configures `consult-imenu' narrowing groups.  Takes
+effect for buffers created afterwards."
+  (interactive)
+  (add-hook 'agent-shell-mode-hook #'agent-shell-vertico--imenu-setup)
+  (add-hook 'agent-shell-viewport-view-mode-hook
+            #'agent-shell-vertico--imenu-setup)
+  (add-to-list 'marginalia-annotators
+               '(imenu agent-shell-vertico--imenu-annotation builtin none))
+  (with-eval-after-load 'consult-imenu
+    (dolist (mode '(agent-shell-mode agent-shell-viewport-view-mode))
+      (add-to-list 'consult-imenu-config
+                   `(,mode :types ((?r "Request" font-lock-keyword-face)
+                                   (?i "Internal" font-lock-function-name-face)
+                                   (?p "Response" font-lock-string-face)))))))
 
 (provide 'agent-shell-vertico)
 

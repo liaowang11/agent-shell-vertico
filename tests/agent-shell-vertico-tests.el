@@ -15,6 +15,39 @@
 ;; is declared by embark.el.
 (defvar embark-keymap-alist)
 (defvar embark-default-action-overrides)
+(defvar agent-shell-viewport-view-mode-hook)
+
+(cl-defun agent-shell-vertico-tests--insert-block
+    (&key qid label-left label-right body (navigatable t))
+  "Insert a fragment block mimicking `agent-shell-ui--insert-fragment'.
+QID is the qualified id; LABEL-LEFT, LABEL-RIGHT, and BODY are the
+section texts; NAVIGATABLE sets the `:navigatable' state flag.  Return
+the block start position."
+  (let ((start (point)))
+    (when (and (or label-left label-right) body)
+      (let ((i (point)))
+        (insert "▶ ")
+        (put-text-property i (point) 'agent-shell-ui-section 'indicator)))
+    (when label-left
+      (let ((i (point)))
+        (insert label-left)
+        (put-text-property i (point) 'agent-shell-ui-section 'label-left)))
+    (when label-right
+      (when label-left (insert " "))
+      (let ((i (point)))
+        (insert label-right)
+        (put-text-property i (point) 'agent-shell-ui-section 'label-right)))
+    (when body
+      (when (or label-left label-right) (insert "\n\n"))
+      (let ((i (point)))
+        (insert body)
+        (put-text-property i (point) 'agent-shell-ui-section 'body)))
+    (put-text-property start (point) 'agent-shell-ui-state
+                       (list (cons :qualified-id qid)
+                             (cons :collapsed nil)
+                             (cons :navigatable navigatable)))
+    (insert "\n\n")
+    start))
 
 (defmacro agent-shell-vertico-tests--with-session-buffers (bindings &rest body)
   "Create session buffers from BINDINGS and evaluate BODY.
@@ -247,6 +280,136 @@ type to keymap mappings when embark loads later."
         (should (equal (funcall sort-fn
                                 '("Starting Agent @ start" "Ready Agent @ ready"))
                        '("Ready Agent @ ready" "Starting Agent @ start")))))))
+
+(ert-deftest agent-shell-vertico-imenu-classifies-fragments ()
+  ;; Agent messages are always included; so are navigatable non-infra blocks.
+  (should (agent-shell-vertico--imenu-included-p "1-3-agent_message_chunk" nil))
+  (should (agent-shell-vertico--imenu-included-p "1-call_abc" t))
+  (should (agent-shell-vertico--imenu-included-p "1-2-agent_thought_chunk" t))
+  ;; Excluded: non-navigatable non-message, infrastructure, and noise.
+  (should-not (agent-shell-vertico--imenu-included-p "1-call_abc" nil))
+  (should-not (agent-shell-vertico--imenu-included-p "bootstrapping-starting" t))
+  (should-not (agent-shell-vertico--imenu-included-p "1-unhandled-notification" t))
+  ;; Message detection and interaction id.
+  (should (agent-shell-vertico--imenu-message-p "1-3-agent_message_chunk"))
+  (should-not (agent-shell-vertico--imenu-message-p "1-call_abc"))
+  (should (equal (agent-shell-vertico--imenu-interaction
+                  "12-3-agent_message_chunk")
+                 "12")))
+
+(ert-deftest agent-shell-vertico-imenu-only-final-message-is-response ()
+  (with-temp-buffer
+    ;; Interaction 1 narrates, runs a tool, then answers; interaction 2 answers.
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-1-agent_message_chunk" :body "Let me start" :navigatable nil)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-call_a" :label-left "completed read" :label-right "Read foo"
+     :body "x" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-3-agent_message_chunk" :body "Final answer one" :navigatable nil)
+    (agent-shell-vertico-tests--insert-block
+     :qid "2-5-agent_message_chunk" :body "Final answer two" :navigatable nil)
+    (let* ((index (agent-shell-vertico--imenu-index))
+           (internal (mapcar #'car (cdr (assoc "Internal" index))))
+           (response (mapcar #'car (cdr (assoc "Response" index)))))
+      ;; Intermediate narration and the tool are Internal; the last message
+      ;; chunk of each interaction is the Response.
+      (should (equal internal '("Let me start" "Read foo")))
+      (should (equal response '("Final answer one" "Final answer two"))))))
+
+(ert-deftest agent-shell-vertico-imenu-index-groups-internal-and-response ()
+  (with-temp-buffer
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-call_abc" :label-left "completed read"
+     :label-right "Read README.org" :body "file contents" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-2-agent_thought_chunk" :label-left "Thinking"
+     :body "Let me look at the config\nand more" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-plan" :label-left "Plan"
+     :body "1. step one\n2. step two" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-3-agent_message_chunk" :body "Here is the final answer"
+     :navigatable nil)
+    ;; Excluded noise: bootstrapping infra (navigatable) and an error
+    ;; (not navigatable).
+    (agent-shell-vertico-tests--insert-block
+     :qid "bootstrapping-starting" :label-left "Starting agent"
+     :body "Creating client" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-Error" :body "boom" :navigatable nil)
+    (let* ((index (agent-shell-vertico--imenu-index))
+           (internal (cdr (assoc "Internal" index)))
+           (response (cdr (assoc "Response" index))))
+      (should (equal (mapcar #'car internal)
+                     '("Read README.org"
+                       "Let me look at the config"
+                       "1. step one")))
+      (should (equal (mapcar #'car response)
+                     '("Here is the final answer")))
+      (should (integerp (cdr (car internal))))
+      ;; No requests outside `agent-shell-mode'.
+      (should-not (assoc "Request" index)))))
+
+(ert-deftest agent-shell-vertico-imenu-index-empty-without-items ()
+  (with-temp-buffer
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-permission-x" :label-left "Allow?" :body "..." :navigatable nil)
+    (should-not (agent-shell-vertico--imenu-index))))
+
+(ert-deftest agent-shell-vertico-imenu-requests-grouped-in-shell-mode ()
+  (with-temp-buffer
+    (agent-shell-mode)
+    (setq-local imenu-generic-expression '((nil "^> \\(.*\\)$" 1)))
+    (insert "> first request\nresponse text\n> second request\nmore\n")
+    (let* ((index (agent-shell-vertico--imenu-index))
+           (requests (mapcar #'car (cdr (assoc "Request" index)))))
+      (should (= 2 (length requests)))
+      (should (member "first request" requests))
+      (should (member "second request" requests)))))
+
+(ert-deftest agent-shell-vertico-imenu-annotation-only-for-our-candidates ()
+  (should-not (agent-shell-vertico--imenu-annotation "plain imenu item"))
+  (with-temp-buffer
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-call_abc" :label-left "completed read"
+     :label-right "Read README.org" :body "x\ny\nz" :navigatable t)
+    (let* ((index (agent-shell-vertico--imenu-index))
+           (candidate (car (car (cdr (assoc "Internal" index)))))
+           (annotation (agent-shell-vertico--imenu-annotation candidate)))
+      (should (stringp annotation))
+      (should (string-match-p "completed read" annotation)))))
+
+(ert-deftest agent-shell-vertico-imenu-setup-installs-index-function ()
+  (with-temp-buffer
+    (agent-shell-vertico--imenu-setup)
+    (should (eq imenu-create-index-function
+                #'agent-shell-vertico--imenu-index))
+    (should imenu-auto-rescan)
+    ;; imenu's own hard truncation is disabled so our ellipsized truncation
+    ;; is authoritative.
+    (should (null imenu-max-item-length))))
+
+(ert-deftest agent-shell-vertico-setup-imenu-adds-mode-hooks ()
+  (let ((agent-shell-mode-hook nil)
+        (agent-shell-viewport-view-mode-hook nil))
+    (agent-shell-vertico-setup-imenu)
+    (should (memq #'agent-shell-vertico--imenu-setup agent-shell-mode-hook))
+    (should (memq #'agent-shell-vertico--imenu-setup
+                  agent-shell-viewport-view-mode-hook))))
+
+(ert-deftest agent-shell-vertico-imenu-truncate-breaks-on-word-boundary ()
+  (should (equal (agent-shell-vertico--imenu-truncate "short title") "short title"))
+  (let* ((agent-shell-vertico-imenu-name-width 50)
+         (long (mapconcat #'identity (make-list 30 "wordy") " "))
+         (out (agent-shell-vertico--imenu-truncate long)))
+    (should (string-suffix-p "…" out))
+    (should (<= (length out) (1+ agent-shell-vertico-imenu-name-width)))
+    (let ((head (substring out 0 (1- (length out)))))
+      ;; The kept text is a whole-word prefix: it is followed by a space in
+      ;; the original (we cut at a word boundary) and has no trailing space.
+      (should (string-prefix-p (concat head " ") long))
+      (should-not (string-suffix-p " " head)))))
 
 (provide 'agent-shell-vertico-tests)
 
