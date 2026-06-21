@@ -28,6 +28,8 @@
 (declare-function agent-shell--config-icon "agent-shell")
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
+(declare-function agent-shell-attention--clear-buffer "agent-shell-attention")
+(declare-function agent-shell-attention--permission-pending-p "agent-shell-attention")
 
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -273,22 +275,36 @@ BUFFER unchanged."
                   (string= buffer-name-prefix (map-elt config :buffer-name)))
                 agent-shell-agent-configs))))
 
+(defun agent-shell-vertico--clear-attention (shell-buffer)
+  "Clear `agent-shell-attention' pending state for SHELL-BUFFER.
+Does nothing unless `agent-shell-attention' is loaded.  Mirrors that
+package's own jump: a buffer awaiting a permission decision keeps its
+pending mark.  The pending mark is keyed on the shell buffer, so this
+clears it whether the shell or its viewport is the buffer displayed."
+  (when (and (buffer-live-p shell-buffer)
+             (fboundp 'agent-shell-attention--clear-buffer)
+             (fboundp 'agent-shell-attention--permission-pending-p)
+             (not (agent-shell-attention--permission-pending-p shell-buffer)))
+    (agent-shell-attention--clear-buffer shell-buffer)))
+
 (defun agent-shell-vertico--display-session (buffer-name)
   "Display agent shell session for BUFFER-NAME.
 Uses `agent-shell--display-buffer', resolving viewport when
 `agent-shell-prefer-viewport-interaction' is non-nil."
-  (agent-shell--display-buffer
-   (agent-shell-vertico--maybe-resolve-viewport
-    (agent-shell-vertico--ensure-shell-buffer
-     (agent-shell-vertico--session-buffer buffer-name)))))
+  (let ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
+                       (agent-shell-vertico--session-buffer buffer-name))))
+    (agent-shell-vertico--clear-attention shell-buffer)
+    (agent-shell--display-buffer
+     (agent-shell-vertico--maybe-resolve-viewport shell-buffer))))
 
 (defun agent-shell-vertico--display-session-other-window (buffer-name)
   "Display agent shell session for BUFFER-NAME in another window.
 Respects `agent-shell-prefer-viewport-interaction'."
-  (switch-to-buffer-other-window
-   (agent-shell-vertico--maybe-resolve-viewport
-    (agent-shell-vertico--ensure-shell-buffer
-     (agent-shell-vertico--session-buffer buffer-name)))))
+  (let ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
+                       (agent-shell-vertico--session-buffer buffer-name))))
+    (agent-shell-vertico--clear-attention shell-buffer)
+    (switch-to-buffer-other-window
+     (agent-shell-vertico--maybe-resolve-viewport shell-buffer))))
 
 ;;;###autoload
 (defun agent-shell-vertico-switch ()

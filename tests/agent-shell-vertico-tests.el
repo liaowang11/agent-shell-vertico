@@ -267,6 +267,63 @@ type to keymap mappings when embark loads later."
       (agent-shell-vertico--display-session (buffer-name alpha))
       (should (eq agent-shell-test-displayed-buffer vp)))))
 
+(ert-deftest agent-shell-vertico-display-session-clears-attention-shell-buffer ()
+  "Jumping clears `agent-shell-attention' state for the shell buffer.
+Even when the viewport buffer is what gets displayed, the pending mark
+keyed on the shell buffer must be cleared."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (vp "Alpha Agent @ alpha [viewport]" "/tmp/alpha/" nil))
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-test-viewport-buffer vp)
+          cleared)
+      (cl-letf (((symbol-function 'agent-shell-attention--clear-buffer)
+                 (lambda (buffer) (setq cleared buffer)))
+                ((symbol-function 'agent-shell-attention--permission-pending-p)
+                 (lambda (_buffer) nil)))
+        (agent-shell-vertico--display-session (buffer-name alpha))
+        (should (eq agent-shell-test-displayed-buffer vp))
+        (should (eq cleared alpha))))))
+
+(ert-deftest agent-shell-vertico-display-session-keeps-pending-on-permission ()
+  "A session awaiting a permission decision keeps its attention mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let ((agent-shell-prefer-viewport-interaction nil)
+          cleared)
+      (cl-letf (((symbol-function 'agent-shell-attention--clear-buffer)
+                 (lambda (buffer) (setq cleared buffer)))
+                ((symbol-function 'agent-shell-attention--permission-pending-p)
+                 (lambda (_buffer) t)))
+        (agent-shell-vertico--display-session (buffer-name alpha))
+        (should (eq agent-shell-test-displayed-buffer alpha))
+        (should (null cleared))))))
+
+(ert-deftest agent-shell-vertico-display-session-other-window-clears-attention ()
+  "The other-window jump also clears `agent-shell-attention' state."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (vp "Alpha Agent @ alpha [viewport]" "/tmp/alpha/" nil))
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-test-viewport-buffer vp)
+          cleared)
+      (cl-letf (((symbol-function 'switch-to-buffer-other-window) #'ignore)
+                ((symbol-function 'agent-shell-attention--clear-buffer)
+                 (lambda (buffer) (setq cleared buffer)))
+                ((symbol-function 'agent-shell-attention--permission-pending-p)
+                 (lambda (_buffer) nil)))
+        (agent-shell-vertico--display-session-other-window (buffer-name alpha))
+        (should (eq cleared alpha))))))
+
+(ert-deftest agent-shell-vertico-display-session-without-attention-is-noop ()
+  "Jumping still displays when `agent-shell-attention' is not loaded."
+  (skip-unless (not (fboundp 'agent-shell-attention--clear-buffer)))
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let ((agent-shell-prefer-viewport-interaction nil))
+      (agent-shell-vertico--display-session (buffer-name alpha))
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
 (ert-deftest agent-shell-vertico-sort-by-status-ready-before-starting ()
   (agent-shell-vertico-tests--with-session-buffers
       ((starting "Starting Agent @ start" "/tmp/start/" nil)
