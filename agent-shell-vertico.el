@@ -74,7 +74,6 @@ so the ellipsis stays visible and item annotations are not crowded."
   "i" #'agent-shell-vertico-interrupt-session
   "m" #'agent-shell-vertico-set-session-mode
   "M" #'agent-shell-vertico-set-session-model
-  "l" #'agent-shell-vertico-toggle-logging
   "t" #'agent-shell-vertico-view-traffic
   "T" #'agent-shell-vertico-open-transcript)
 
@@ -377,13 +376,6 @@ Call this only after Embark is loaded."
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-view-traffic)))
-
-(defun agent-shell-vertico-toggle-logging (buffer)
-  "Toggle logging for BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
-  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
-                        (agent-shell-vertico--session-buffer buffer))
-    (call-interactively #'agent-shell-toggle-logging)))
 
 (defun agent-shell-vertico-interrupt-session (buffer)
   "Interrupt BUFFER."

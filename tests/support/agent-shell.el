@@ -40,12 +40,6 @@
   (setq agent-shell-test-last-command 'agent-shell-view-traffic
         agent-shell-test-last-buffer (current-buffer)))
 
-(defun agent-shell-toggle-logging ()
-  "Record a toggle logging action."
-  (interactive)
-  (setq agent-shell-test-last-command 'agent-shell-toggle-logging
-        agent-shell-test-last-buffer (current-buffer)))
-
 (defun agent-shell-interrupt ()
   "Record an interrupt action."
   (interactive)
