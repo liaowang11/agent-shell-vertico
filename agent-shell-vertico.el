@@ -30,6 +30,8 @@
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-attention--clear-buffer "agent-shell-attention")
 (declare-function agent-shell-attention--permission-pending-p "agent-shell-attention")
+(declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
+(declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -37,6 +39,7 @@
 (defvar consult-imenu-config)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
+(defvar embark-target-finders)
 (defvar marginalia-annotators)
 
 (defgroup agent-shell-vertico nil
@@ -326,6 +329,55 @@ Respects `agent-shell-prefer-viewport-interaction'."
   (agent-shell-vertico--display-session
    (agent-shell-vertico--read-session "Project agent shell: " 'project)))
 
+;;; Markdown links
+;;
+;; `agent-shell' renders `[title](url)' Markdown links, stamping each link's
+;; target on the `agent-shell-markdown-url' text property (the `(url)' markup
+;; is gone from the buffer).  These give Embark an in-buffer target on those
+;; links and actions that reuse agent-shell's own opener, which handles local
+;; files, `#Lnnn' line jumps, a binary "open externally" prompt, and a
+;; `browse-url' fallback for everything else.
+
+(defun agent-shell-vertico--markdown-link-target ()
+  "Return the Embark target for the rendered Markdown link at point.
+The target is `(agent-shell-url URL BEG . END)' spanning the link's
+`agent-shell-markdown-url' property, or nil when point is not on a
+rendered link.  Suitable for `embark-target-finders'."
+  (when-let* ((url (agent-shell-markdown-link-url-at-point)))
+    `(agent-shell-url
+      ,url
+      ,(or (previous-single-property-change
+            (min (1+ (point)) (point-max)) 'agent-shell-markdown-url)
+           (point-min))
+      . ,(or (next-single-property-change (point) 'agent-shell-markdown-url)
+             (point-max)))))
+
+(defun agent-shell-vertico-open-markdown-link (url)
+  "Open the rendered agent-shell Markdown link URL.
+Uses agent-shell's opener: local files (jumping to any `#Lnnn' line)
+open in Emacs, binaries prompt to open externally, and anything else
+goes to `browse-url'."
+  (interactive "sLink: ")
+  (agent-shell-markdown--open-link url))
+
+(defun agent-shell-vertico-open-markdown-link-other-window (url)
+  "Open the rendered agent-shell Markdown link URL, files in another window.
+Like `agent-shell-vertico-open-markdown-link', but file links open in
+another window so the agent buffer stays put."
+  (interactive "sLink: ")
+  (cl-letf (((symbol-function 'find-file) #'find-file-other-window))
+    (agent-shell-markdown--open-link url)))
+
+(defun agent-shell-vertico-copy-markdown-link (url)
+  "Copy the rendered agent-shell Markdown link URL to the kill ring."
+  (interactive "sLink: ")
+  (kill-new url))
+
+(defvar-keymap agent-shell-vertico-markdown-link-map
+  :doc "Embark actions on agent-shell rendered Markdown links."
+  "o" #'agent-shell-vertico-open-markdown-link-other-window
+  "w" #'agent-shell-vertico-copy-markdown-link)
+
 ;;;###autoload
 (defun agent-shell-vertico-setup-embark ()
   "Register `agent-shell-vertico' actions with Embark.
@@ -336,7 +388,14 @@ Call this only after Embark is loaded."
                  agent-shell-vertico-embark-map
                  embark-buffer-map))
   (add-to-list 'embark-default-action-overrides
-               '(agent-shell-session . agent-shell-vertico--display-session)))
+               '(agent-shell-session . agent-shell-vertico--display-session))
+  ;; In-buffer rendered Markdown links.
+  (add-to-list 'embark-keymap-alist
+               '(agent-shell-url agent-shell-vertico-markdown-link-map))
+  (add-to-list 'embark-default-action-overrides
+               '(agent-shell-url . agent-shell-vertico-open-markdown-link))
+  (add-to-list 'embark-target-finders
+               #'agent-shell-vertico--markdown-link-target))
 
 (defun agent-shell-vertico-new-shell ()
   "Start a new `agent-shell' session."

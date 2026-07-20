@@ -15,6 +15,7 @@
 ;; is declared by embark.el.
 (defvar embark-keymap-alist)
 (defvar embark-default-action-overrides)
+(defvar embark-target-finders)
 (defvar agent-shell-viewport-view-mode-hook)
 
 (cl-defun agent-shell-vertico-tests--insert-block
@@ -139,9 +140,10 @@ type to keymap mappings when embark loads later."
 
 (ert-deftest agent-shell-vertico-embark-setup-registers-manager-like-actions ()
   (let ((embark-keymap-alist nil)
-        (embark-default-action-overrides nil))
+        (embark-default-action-overrides nil)
+        (embark-target-finders nil))
     (agent-shell-vertico-setup-embark)
-    (should (equal (car embark-keymap-alist)
+    (should (equal (assq 'agent-shell-session embark-keymap-alist)
                    '(agent-shell-session
                      agent-shell-vertico-embark-map
                      embark-buffer-map)))
@@ -243,7 +245,8 @@ type to keymap mappings when embark loads later."
 
 (ert-deftest agent-shell-vertico-embark-setup-registers-default-action-override ()
   (let ((embark-keymap-alist nil)
-        (embark-default-action-overrides nil))
+        (embark-default-action-overrides nil)
+        (embark-target-finders nil))
     (agent-shell-vertico-setup-embark)
     (should (eq (cdr (assq 'agent-shell-session
                            embark-default-action-overrides))
@@ -467,6 +470,76 @@ keyed on the shell buffer must be cleared."
       ;; the original (we cut at a word boundary) and has no trailing space.
       (should (string-prefix-p (concat head " ") long))
       (should-not (string-suffix-p " " head)))))
+
+;;; Markdown links
+
+(ert-deftest agent-shell-vertico-markdown-link-target-returns-url-and-bounds ()
+  (with-temp-buffer
+    (insert "see ")
+    (let ((beg (point)) end)
+      (insert "the config")
+      (setq end (point))
+      (put-text-property beg end 'agent-shell-markdown-url "file:foo.el#L10")
+      (insert " now")
+      (goto-char (1+ beg))
+      (should (equal (agent-shell-vertico--markdown-link-target)
+                     `(agent-shell-url "file:foo.el#L10" ,beg . ,end))))))
+
+(ert-deftest agent-shell-vertico-markdown-link-target-nil-off-link ()
+  (with-temp-buffer
+    (insert "plain text")
+    (goto-char (point-min))
+    (should-not (agent-shell-vertico--markdown-link-target))))
+
+(ert-deftest agent-shell-vertico-open-markdown-link-dispatches-to-opener ()
+  (let ((agent-shell-test-opened-link nil)
+        used)
+    (cl-letf (((symbol-function 'find-file)
+               (lambda (&rest _) (setq used 'same)))
+              ((symbol-function 'find-file-other-window)
+               (lambda (&rest _) (setq used 'other))))
+      (agent-shell-vertico-open-markdown-link "file:foo.el#L10")
+      (should (equal agent-shell-test-opened-link "file:foo.el#L10"))
+      (should (eq used 'same)))))
+
+(ert-deftest agent-shell-vertico-open-markdown-link-other-window-uses-other-window ()
+  (let ((agent-shell-test-opened-link nil)
+        used)
+    (cl-letf (((symbol-function 'find-file)
+               (lambda (&rest _) (setq used 'same)))
+              ((symbol-function 'find-file-other-window)
+               (lambda (&rest _) (setq used 'other))))
+      (agent-shell-vertico-open-markdown-link-other-window "file:foo.el#L10")
+      (should (equal agent-shell-test-opened-link "file:foo.el#L10"))
+      (should (eq used 'other)))))
+
+(ert-deftest agent-shell-vertico-copy-markdown-link-kills-url ()
+  (let ((kill-ring nil))
+    (agent-shell-vertico-copy-markdown-link "file:foo.el#L10")
+    (should (equal (current-kill 0) "file:foo.el#L10"))))
+
+(ert-deftest agent-shell-vertico-embark-setup-registers-markdown-link-support ()
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil)
+        (embark-target-finders nil))
+    (agent-shell-vertico-setup-embark)
+    (should (equal (assq 'agent-shell-url embark-keymap-alist)
+                   '(agent-shell-url agent-shell-vertico-markdown-link-map)))
+    (should (eq (cdr (assq 'agent-shell-url embark-default-action-overrides))
+                #'agent-shell-vertico-open-markdown-link))
+    (should (memq #'agent-shell-vertico--markdown-link-target
+                  embark-target-finders))
+    (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "o"))
+                #'agent-shell-vertico-open-markdown-link-other-window))
+    (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "w"))
+                #'agent-shell-vertico-copy-markdown-link))))
+
+(ert-deftest agent-shell-vertico-loading-does-not-prebind-embark-target-finders ()
+  "Loading the package must not bind `embark-target-finders'.
+Same constraint as `embark-keymap-alist': a top-level `defvar' with a
+value would pre-bind it, clobbering embark's own default finder list."
+  (skip-unless (not (featurep 'embark)))
+  (should-not (boundp 'embark-target-finders)))
 
 (provide 'agent-shell-vertico-tests)
 

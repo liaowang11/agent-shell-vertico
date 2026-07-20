@@ -94,6 +94,20 @@
   "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER."
   (or agent-shell-test-viewport-buffer shell-buffer))
 
+(defvar agent-shell-test-opened-link nil
+  "Stub: last URL passed to `agent-shell-markdown--open-link'.")
+
+(defun agent-shell-markdown-link-url-at-point (&optional pos)
+  "Stub: return the `agent-shell-markdown-url' text property at POS."
+  (get-text-property (or pos (point)) 'agent-shell-markdown-url))
+
+(defun agent-shell-markdown--open-link (url)
+  "Stub: record URL and route it through `find-file'.
+The real opener sends local file links through `find-file'; mirroring
+that lets tests observe which `find-file' variant an action rebinds."
+  (setq agent-shell-test-opened-link url)
+  (find-file url))
+
 (provide 'agent-shell)
 
 ;;; agent-shell.el ends here

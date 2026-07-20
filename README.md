@@ -38,9 +38,18 @@ session actions follow `agent-shell-manager` closely:
 - `r` restart the selected shell
 - `t` view traffic
 - `T` open transcript
-- `l` toggle logging
 - `i` interrupt session
 - `m` set session mode
 - `M` set session model
 
 Normal `embark-buffer-map` actions stay available too.
+
+`agent-shell-vertico-setup-embark` also teaches Embark about the
+rendered Markdown links agent-shell prints in a session buffer. With
+point on a link, `embark-act` (or `embark-dwim`) offers:
+
+- `RET` open the link — a file link opens in Emacs, jumping to any
+  `#Lnnn` line; a binary prompts to open externally; anything else goes
+  to `browse-url`
+- `o` open a file link in another window, leaving the agent buffer put
+- `w` copy the link URL to the kill ring
