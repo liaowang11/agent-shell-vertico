@@ -19,11 +19,13 @@
 (defvar agent-shell-viewport-view-mode-hook)
 
 (cl-defun agent-shell-vertico-tests--insert-block
-    (&key qid label-left label-right body (navigatable t))
+    (&key qid kind group-id label-left label-right body (navigatable t))
   "Insert a fragment block mimicking `agent-shell-ui--insert-fragment'.
 QID is the qualified id; LABEL-LEFT, LABEL-RIGHT, and BODY are the
-section texts; NAVIGATABLE sets the `:navigatable' state flag.  Return
-the block start position."
+section texts; NAVIGATABLE sets the `:navigatable' state flag.  KIND is
+the fragment `:kind' (`group' for an activity-group header); GROUP-ID is
+the qualified id of the header this block nests under.  Return the block
+start position."
   (let ((start (point)))
     (when (and (or label-left label-right) body)
       (let ((i (point)))
@@ -45,6 +47,8 @@ the block start position."
         (put-text-property i (point) 'agent-shell-ui-section 'body)))
     (put-text-property start (point) 'agent-shell-ui-state
                        (list (cons :qualified-id qid)
+                             (cons :kind kind)
+                             (cons :group-id group-id)
                              (cons :collapsed nil)
                              (cons :navigatable navigatable)))
     (insert "\n\n")
@@ -410,6 +414,51 @@ keyed on the shell buffer must be cleared."
       (should (integerp (cdr (car internal))))
       ;; No requests outside `agent-shell-mode'.
       (should-not (assoc "Request" index)))))
+
+(ert-deftest agent-shell-vertico-imenu-nests-group-members-under-header ()
+  (with-temp-buffer
+    ;; An activity-group header, its two tool-call members, then an
+    ;; ungrouped plan and the interaction's final message.
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-activity-0" :kind 'group :label-left "✓ Tool calls 2/2")
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-call_a" :group-id "1-activity-0" :label-left "completed read"
+     :label-right "Read README.org" :body "contents" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-call_b" :group-id "1-activity-0" :label-left "completed edit"
+     :label-right "Edit init.el" :body "diff" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-plan" :label-left "Plan" :body "1. step one" :navigatable t)
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-3-agent_message_chunk" :body "Final answer" :navigatable nil)
+    (let* ((index (agent-shell-vertico--imenu-index))
+           (internal (cdr (assoc "Internal" index)))
+           (response (mapcar #'car (cdr (assoc "Response" index))))
+           (group (assoc "✓ Tool calls 2/2" internal)))
+      ;; The header is a submenu; its members nest beneath it in call order.
+      (should group)
+      (should (equal (mapcar #'car (cdr group))
+                     '("Read README.org" "Edit init.el")))
+      ;; Members carry real buffer positions and their status annotation.
+      (should (integerp (cdr (cadr group))))
+      (should (string-match-p
+               "completed read"
+               (agent-shell-vertico--imenu-annotation (car (cadr group)))))
+      ;; The header and the ungrouped plan are the only top-level Internal
+      ;; entries — members do not also appear flat.
+      (should (equal (mapcar #'car internal)
+                     '("✓ Tool calls 2/2" "1. step one")))
+      (should (equal response '("Final answer"))))))
+
+(ert-deftest agent-shell-vertico-imenu-drops-empty-group-header ()
+  (with-temp-buffer
+    ;; A header whose only would-be member is excluded noise contributes
+    ;; no submenu.
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-activity-0" :kind 'group :label-left "Activity")
+    (agent-shell-vertico-tests--insert-block
+     :qid "1-Error" :group-id "1-activity-0" :body "boom" :navigatable nil)
+    (should-not (agent-shell-vertico--imenu-index))))
 
 (ert-deftest agent-shell-vertico-imenu-index-empty-without-items ()
   (with-temp-buffer

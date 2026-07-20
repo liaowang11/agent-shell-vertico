@@ -472,6 +472,12 @@ Call this only after Embark is loaded."
 ;; the end, others narrate between tool calls as a series of message
 ;; chunks.  Only the last message chunk of an interaction is its Response;
 ;; earlier chunks are intermediate narration and join Internal.
+;;
+;; A run of consecutive tool calls and thoughts renders under one
+;; collapsible activity-group header (e.g. "✓ Tool calls 2/2").  That
+;; header is its own fragment (`:kind' `group'); its members carry the
+;; header's qualified-id in `:group-id'.  Internal mirrors this: each
+;; header is a nested submenu whose members nest beneath it.
 
 (defun agent-shell-vertico--imenu-message-p (qualified-id)
   "Return non-nil when QUALIFIED-ID names an agent message chunk."
@@ -571,11 +577,24 @@ else the left label — stamped with its status label for annotation."
                    "Item")))
     (cons (agent-shell-vertico--imenu-candidate name label-left) start)))
 
+(defun agent-shell-vertico--imenu-group-title (start)
+  "Return the truncated activity-group header label at START.
+The header carries its summary (e.g. \"✓ Tool calls 2/2\") in its
+`label-left' section and has no body of its own."
+  (let* ((qualified-id (map-elt (get-text-property start 'agent-shell-ui-state)
+                                :qualified-id))
+         (end (agent-shell-vertico--imenu-block-end start qualified-id)))
+    (agent-shell-vertico--imenu-truncate
+     (or (agent-shell-vertico--imenu-section start end 'label-left) "Activity"))))
+
 (defun agent-shell-vertico--imenu-fragment-groups ()
   "Return the Internal and Response imenu groups for the current buffer.
 Walk each `agent-shell-ui-state' block once, in buffer order, recording
-which message chunk is the last of its interaction.  Every indexed block
-joins Internal except those final message chunks, which form Response."
+which message chunk is the last of its interaction.  Activity-group
+headers (`:kind' `group') become nested Internal submenus titled by their
+summary label; the tool calls and thoughts they contain (`:group-id')
+nest beneath them.  Every other indexed block joins Internal flat, except
+final message chunks, which form Response."
   (let ((seen (make-hash-table :test #'equal))
         (final-message (make-hash-table :test #'equal))
         collected)
@@ -590,28 +609,51 @@ joins Internal except those final message chunks, which form Response."
                             (lambda (_ state) (map-elt state :qualified-id))))
           (let* ((start (prop-match-beginning match))
                  (state (get-text-property start 'agent-shell-ui-state))
-                 (qualified-id (map-elt state :qualified-id)))
+                 (qualified-id (map-elt state :qualified-id))
+                 (kind (map-elt state :kind)))
             (goto-char (prop-match-end match))
             (when (and (not (gethash qualified-id seen))
-                       (agent-shell-vertico--imenu-included-p
-                        qualified-id (map-elt state :navigatable)))
+                       (or (eq kind 'group)
+                           (agent-shell-vertico--imenu-included-p
+                            qualified-id (map-elt state :navigatable))))
               (puthash qualified-id t seen)
-              (when (agent-shell-vertico--imenu-message-p qualified-id)
+              (when (and (not (eq kind 'group))
+                         (agent-shell-vertico--imenu-message-p qualified-id))
                 ;; Buffer order means the last chunk seen wins.
                 (puthash (agent-shell-vertico--imenu-interaction qualified-id)
                          start final-message))
-              (push (cons qualified-id (agent-shell-vertico--imenu-item start))
+              (push (list qualified-id kind (map-elt state :group-id)
+                          (if (eq kind 'group)
+                              (agent-shell-vertico--imenu-group-title start)
+                            (agent-shell-vertico--imenu-item start)))
                     collected))))))
-    (let (internal response)
+    (let ((submenus (make-hash-table :test #'equal))
+          internal response)
       (dolist (block (nreverse collected))
-        (let ((qualified-id (car block))
-              (item (cdr block)))
-          (if (and (agent-shell-vertico--imenu-message-p qualified-id)
-                   (= (cdr item)
-                      (gethash (agent-shell-vertico--imenu-interaction qualified-id)
-                               final-message)))
-              (push item response)
-            (push item internal))))
+        (seq-let (qualified-id kind group-id item) block
+          (cond
+           ;; Group header: a submenu whose members are appended below.
+           ((eq kind 'group)
+            (let ((submenu (cons item nil)))
+              (puthash qualified-id submenu submenus)
+              (push submenu internal)))
+           ;; A group member nests under its header's submenu.
+           ((and group-id (gethash group-id submenus))
+            (push item (cdr (gethash group-id submenus))))
+           ;; The final message chunk of its interaction is the Response.
+           ((and (agent-shell-vertico--imenu-message-p qualified-id)
+                 (= (cdr item)
+                    (gethash (agent-shell-vertico--imenu-interaction qualified-id)
+                             final-message)))
+            (push item response))
+           (t (push item internal)))))
+      ;; Members were pushed in reverse; restore call order.  A leaf's cdr is
+      ;; its buffer position (an integer), a submenu's cdr its member list, so
+      ;; an empty submenu (cdr nil) is a header that gained no member; drop it.
+      (dolist (entry internal)
+        (when (listp (cdr entry))
+          (setcdr entry (nreverse (cdr entry)))))
+      (setq internal (seq-remove (lambda (entry) (null (cdr entry))) internal))
       (append
        (when internal (list (cons "Internal" (nreverse internal))))
        (when response (list (cons "Response" (nreverse response))))))))
