@@ -9,6 +9,7 @@
 (add-to-list 'load-path default-directory)
 
 (require 'agent-shell-vertico)
+(require 'agent-shell-vertico-transcript)
 
 ;; Declare as a dynamic variable so `let' bindings below are dynamic and
 ;; visible to functions under test. Mirrors how the real `embark-keymap-alist'
@@ -589,6 +590,54 @@ Same constraint as `embark-keymap-alist': a top-level `defvar' with a
 value would pre-bind it, clobbering embark's own default finder list."
   (skip-unless (not (featurep 'embark)))
   (should-not (boundp 'embark-target-finders)))
+
+;;; Transcripts
+
+(ert-deftest agent-shell-vertico-transcript-directory-uses-agent-shell-resolver ()
+  (let* ((project-root (make-temp-file "agent-shell-vertico-project-" t))
+         (expected (expand-file-name "custom/transcripts" project-root))
+         (agent-shell-dot-subdir-function
+          (lambda (subdir)
+            (should (equal subdir "transcripts"))
+            (should (equal default-directory
+                           (file-name-as-directory project-root)))
+            expected)))
+    (unwind-protect
+        (progn
+          (should
+           (equal
+            (agent-shell-vertico-transcript--directory project-root)
+            expected))
+          (should-not (file-exists-p expected)))
+      (delete-directory project-root t))))
+
+(ert-deftest agent-shell-vertico-transcript-project-roots-prefer-projectile ()
+  (let ((projectile-mode t)
+        (projectile-current-project-on-switch 'remove))
+    (cl-letf (((symbol-function 'projectile-project-root)
+               (lambda (&optional _dir) "/work/current/"))
+              ((symbol-function 'projectile-relevant-known-projects)
+               (lambda ()
+                 (should (eq projectile-current-project-on-switch 'keep))
+                 '("/work/beta/" "/work/current/" "/work/beta/")))
+              ((symbol-function 'project-known-project-roots)
+               (lambda () (ert-fail "project.el fallback was used"))))
+      (should
+       (equal (agent-shell-vertico-transcript--project-roots)
+              '("/work/current/" "/work/beta/"))))))
+
+(ert-deftest agent-shell-vertico-transcript-project-roots-fall-back-to-project-el ()
+  (let ((projectile-mode nil))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&optional _maybe-prompt _dir)
+                 'project))
+              ((symbol-function 'project-root)
+               (lambda (_project) "/work/current/"))
+              ((symbol-function 'project-known-project-roots)
+               (lambda () '("/work/alpha/" "/work/current/"))))
+      (should
+       (equal (agent-shell-vertico-transcript--project-roots)
+              '("/work/current/" "/work/alpha/"))))))
 
 (provide 'agent-shell-vertico-tests)
 

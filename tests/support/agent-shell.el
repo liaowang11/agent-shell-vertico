@@ -11,6 +11,7 @@
 (defvar agent-shell-test-last-buffer nil)
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
+(defvar agent-shell-dot-subdir-function nil)
 (defvar agent-shell-show-config-icons nil)
 (defvar agent-shell-prefer-viewport-interaction nil)
 
