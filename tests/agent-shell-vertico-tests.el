@@ -639,6 +639,113 @@ value would pre-bind it, clobbering embark's own default finder list."
        (equal (agent-shell-vertico-transcript--project-roots)
               '("/work/current/" "/work/alpha/"))))))
 
+(ert-deftest agent-shell-vertico-transcript-parse-current-markdown-format ()
+  (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "# Agent Shell Transcript\n\n"
+                    "**Agent:** Codex\n"
+                    "**Started:** 2026-07-30 10:20:30\n"
+                    "**Working Directory:** /work/project\n"
+                    "**Session ID:** provider/session:not-a-uuid\n"
+                    "**Model:** gpt-5.6\n\n"
+                    "---\n\n"
+                    "## User (2026-07-30 10:20:31)\n\n"
+                    "Find the viewport history implementation\n\n"
+                    "## Agent (2026-07-30 10:21:00)\n\n"
+                    "It is here.\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--parse-file
+                  file "/work/project/")))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-agent record)
+              "Codex"))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-session-id record)
+              "provider/session:not-a-uuid"))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-working-directory record)
+              "/work/project/"))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-preview record)
+              "Find the viewport history implementation"))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-records-filter-shared-directory ()
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (other-root (make-temp-file "agent-shell-vertico-other-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "matching.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** matching\n\n---\n\n"
+                    "## User\n\nMatching transcript\n"))
+          (with-temp-file (expand-file-name "other.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name other-root))
+                    "**Session ID:** other\n\n---\n\n"
+                    "## User\n\nOther transcript\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should (= (length records) 1))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-session-id
+               (car records))
+              "matching"))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-activate-switches-to-live-session ()
+  (let ((buffer (generate-new-buffer " *agent-shell-vertico-live*"))
+        displayed)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq-local
+             agent-shell--state
+             '((:session . ((:id . "live-session"))))))
+          (cl-letf (((symbol-function 'agent-shell-buffers)
+                     (lambda () (list buffer)))
+                    ((symbol-function 'agent-shell-vertico--display-session)
+                     (lambda (buffer-name)
+                       (setq displayed buffer-name))))
+            (agent-shell-vertico-transcript--activate
+             (agent-shell-vertico-transcript-record-create
+              :file "/tmp/transcript.md"
+              :session-id "live-session"
+              :working-directory "/work/project/")))
+          (should (equal displayed (buffer-name buffer))))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-transcript-activate-resumes-in-recorded-directory ()
+  (let* ((file "/tmp/transcript.md")
+         (record
+          (agent-shell-vertico-transcript-record-create
+           :file file
+           :session-id "past-session"
+           :working-directory "/work/project/"))
+         called-directory
+         called-transcript-function)
+    (cl-letf (((symbol-function 'agent-shell-resume-session)
+               (lambda (session-id)
+                 (setq called-directory default-directory
+                       called-transcript-function
+                       agent-shell-transcript-file-path-function)
+                 (should (equal session-id "past-session")))))
+      (agent-shell-vertico-transcript--activate record)
+      (should (equal called-directory "/work/project/"))
+      (should (equal (funcall called-transcript-function) file)))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

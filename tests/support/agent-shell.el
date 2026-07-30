@@ -14,6 +14,7 @@
 (defvar agent-shell-dot-subdir-function nil)
 (defvar agent-shell-show-config-icons nil)
 (defvar agent-shell-prefer-viewport-interaction nil)
+(defvar agent-shell-transcript-file-path-function nil)
 
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
@@ -63,6 +64,11 @@
   "Record a start action with ARGS."
   (setq agent-shell-test-last-command 'agent-shell-start
         agent-shell-test-last-args args))
+
+(defun agent-shell-resume-session (session-id)
+  "Record a resume action for SESSION-ID."
+  (setq agent-shell-test-last-command 'agent-shell-resume-session
+        agent-shell-test-last-args (list session-id)))
 
 (defun agent-shell--config-icon (&rest _args)
   "Return a stub icon string."
