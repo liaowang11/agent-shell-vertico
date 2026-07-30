@@ -10,6 +10,7 @@
 
 (require 'agent-shell-vertico)
 (require 'agent-shell-vertico-transcript)
+(require 'agent-shell-vertico-consult)
 
 ;; Declare as a dynamic variable so `let' bindings below are dynamic and
 ;; visible to functions under test. Mirrors how the real `embark-keymap-alist'
@@ -745,6 +746,111 @@ value would pre-bind it, clobbering embark's own default finder list."
       (agent-shell-vertico-transcript--activate record)
       (should (equal called-directory "/work/project/"))
       (should (equal (funcall called-transcript-function) file)))))
+
+(ert-deftest agent-shell-vertico-transcript-search-aggregates-by-transcript ()
+  (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
+         (directory (expand-file-name ".agent-shell/transcripts" root))
+         (agent-shell-dot-subdir-function
+          (lambda (subdir)
+            (expand-file-name
+             (file-name-concat ".agent-shell" subdir)
+             default-directory))))
+    (unwind-protect
+        (progn
+          (make-directory directory t)
+          (with-temp-file (expand-file-name "first.md" directory)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** first\n\n---\n\n"
+                    "## User\n\nviewport history\n\n"
+                    "## Agent\n\nviewport history works\n"))
+          (with-temp-file (expand-file-name "second.md" directory)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** second\n\n---\n\n"
+                    "## User\n\nanother viewport history question\n"))
+          (let* ((records
+                  (agent-shell-vertico-transcript--search
+                   (list root) "viewport history"))
+                 (first
+                  (seq-find
+                   (lambda (record)
+                     (equal
+                      (agent-shell-vertico-transcript-record-session-id
+                       record)
+                      "first"))
+                   records)))
+            (should (= (length records) 2))
+            (should (= 2
+                       (agent-shell-vertico-transcript-record-match-count
+                        first)))
+            (should (= 8
+                       (agent-shell-vertico-transcript-record-match-line
+                        first)))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-match-text first)
+              "viewport history"))))
+      (delete-directory root t))))
+
+(ert-deftest agent-shell-vertico-transcript-search-filters-shared-directory ()
+  (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
+         (other-root (make-temp-file "agent-shell-vertico-search-other-" t))
+         (directory (make-temp-file "agent-shell-vertico-search-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "matching.md" directory)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** matching\n\n---\n\n"
+                    "## User\n\nshared query\n"))
+          (with-temp-file (expand-file-name "other.md" directory)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name other-root))
+                    "**Session ID:** other\n\n---\n\n"
+                    "## User\n\nshared query\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--search
+                  (list root) "shared query")))
+            (should (= (length records) 1))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-session-id
+               (car records))
+              "matching"))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory directory t))))
+
+(ert-deftest agent-shell-vertico-consult-candidate-carries-preview-location ()
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :project-name "agent-shell"
+           :started "2026-07-30 10:20:30"
+           :match-count 3
+           :match-line 42
+           :match-text "matching transcript line"))
+         (candidate
+          (agent-shell-vertico-consult--candidate record)))
+    (should (string-match-p "\\[agent-shell\\]" candidate))
+    (should (string-match-p "\\[3\\]" candidate))
+    (should (string-match-p "matching transcript line" candidate))
+    (should
+     (eq
+      (get-text-property
+       0 'agent-shell-vertico-transcript-record candidate)
+      record))
+    (should
+     (equal
+      (get-text-property
+       0 'agent-shell-vertico-transcript-file candidate)
+      "/tmp/transcript.md"))
+    (should
+     (= (get-text-property
+         0 'agent-shell-vertico-transcript-line candidate)
+        42))))
 
 (provide 'agent-shell-vertico-tests)
 

@@ -19,6 +19,8 @@
 (require 'agent-shell)
 (require 'agent-shell-vertico)
 (require 'cl-lib)
+(require 'json)
+(require 'map)
 (require 'project)
 (require 'seq)
 (require 'subr-x)
@@ -201,6 +203,160 @@ directory header."
             (agent-shell-vertico-transcript-record-modified-time right)
             (agent-shell-vertico-transcript-record-modified-time left)))
          records)))))
+
+(defun agent-shell-vertico-transcript--search-directories (project-roots)
+  "Return existing transcript directories for PROJECT-ROOTS."
+  (delete-dups
+   (seq-filter
+    #'file-directory-p
+    (mapcar
+     #'agent-shell-vertico-transcript--directory
+     project-roots))))
+
+(defun agent-shell-vertico-transcript--rg-matches
+    (directories query)
+  "Return an alist of transcript matches for QUERY in DIRECTORIES.
+
+Each value is a plist containing `:count', `:line', and `:text'."
+  (unless (executable-find "rg")
+    (user-error "The rg executable is required for transcript search"))
+  (when (and directories (not (string-empty-p query)))
+    (with-temp-buffer
+      (let* ((arguments
+              (append
+               '("--json" "--smart-case" "--hidden" "--no-ignore"
+                 "--glob" "*.md" "--")
+               (list query)
+               directories))
+             (status
+              (apply #'process-file "rg" nil t nil arguments)))
+        (cond
+         ((= status 1) nil)
+         ((not (zerop status))
+          (user-error "rg transcript search failed: %s"
+                      (string-trim (buffer-string))))
+         (t
+          (goto-char (point-min))
+          (let ((matches (make-hash-table :test #'equal)))
+            (while (not (eobp))
+              (let ((line
+                     (buffer-substring-no-properties
+                      (line-beginning-position)
+                      (line-end-position))))
+                (unless (string-empty-p line)
+                  (let ((event
+                         (json-parse-string
+                          line :object-type 'alist
+                          :array-type 'list
+                          :null-object nil
+                          :false-object nil)))
+                    (when (equal (map-elt event 'type) "match")
+                      (let* ((file
+                              (map-nested-elt
+                               event '(data path text)))
+                             (line-number
+                              (map-nested-elt
+                               event '(data line_number)))
+                             (text
+                              (string-trim-right
+                               (map-nested-elt
+                                event '(data lines text))))
+                             (match (gethash file matches)))
+                        (if match
+                            (plist-put
+                             match :count
+                             (1+ (plist-get match :count)))
+                          (puthash
+                           file
+                           (list :count 1
+                                 :line line-number
+                                 :text text)
+                           matches)))))))
+              (forward-line 1))
+            (let (result)
+              (maphash
+               (lambda (file match)
+                 (push (cons file match) result))
+               matches)
+              (nreverse result)))))))))
+
+(defun agent-shell-vertico-transcript--root-for-record
+    (record project-roots)
+  "Return the project root for RECORD among PROJECT-ROOTS."
+  (or
+   (when-let* ((working-directory
+                (agent-shell-vertico-transcript-record-working-directory
+                 record)))
+     (seq-find
+      (lambda (root)
+        (agent-shell-vertico-transcript--same-directory-p
+         working-directory root))
+      project-roots))
+   (seq-find
+    (lambda (root)
+      (file-in-directory-p
+       (agent-shell-vertico-transcript-record-file record)
+       (agent-shell-vertico-transcript--directory root)))
+    project-roots)))
+
+(defun agent-shell-vertico-transcript--record-for-match
+    (file match project-roots)
+  "Return a record for FILE and MATCH within PROJECT-ROOTS."
+  (let* ((fallback-root
+          (or (car project-roots)
+              (file-name-directory file)))
+         (record
+          (agent-shell-vertico-transcript--parse-file
+           file fallback-root))
+         (project-root
+          (agent-shell-vertico-transcript--root-for-record
+           record project-roots)))
+    (when (and project-root
+               (agent-shell-vertico-transcript--record-in-project-p
+                record project-root
+                (agent-shell-vertico-transcript--directory
+                 project-root)))
+      (setf
+       (agent-shell-vertico-transcript-record-project-root record)
+       project-root
+       (agent-shell-vertico-transcript-record-project-name record)
+       (file-name-nondirectory
+        (directory-file-name project-root))
+       (agent-shell-vertico-transcript-record-match-count record)
+       (plist-get match :count)
+       (agent-shell-vertico-transcript-record-match-line record)
+       (plist-get match :line)
+       (agent-shell-vertico-transcript-record-match-text record)
+       (plist-get match :text))
+      record)))
+
+(defun agent-shell-vertico-transcript--search (project-roots query)
+  "Search PROJECT-ROOTS for transcripts matching QUERY.
+
+Return one record per matching transcript, ordered by modification
+time with the newest first."
+  (let* ((project-roots
+          (mapcar
+           #'agent-shell-vertico-transcript--normalize-directory
+           project-roots))
+         (directories
+          (agent-shell-vertico-transcript--search-directories
+           project-roots))
+         (matches
+          (agent-shell-vertico-transcript--rg-matches
+           directories query))
+         records)
+    (dolist (entry matches)
+      (when-let* ((record
+                   (agent-shell-vertico-transcript--record-for-match
+                    (car entry) (cdr entry) project-roots)))
+        (push record records)))
+    (seq-sort
+     (lambda (left right)
+       (time-less-p
+        (agent-shell-vertico-transcript-record-modified-time right)
+        (agent-shell-vertico-transcript-record-modified-time left)))
+     records)))
 
 (defun agent-shell-vertico-transcript--live-buffer (session-id)
   "Return the live `agent-shell' buffer for SESSION-ID, or nil."
