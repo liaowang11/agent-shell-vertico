@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0") (agent-shell-vertico "0.1.0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0") (marginalia "1.0"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -27,6 +27,8 @@
 
 (defvar agent-shell-dot-subdir-function)
 (defvar agent-shell-transcript-file-path-function)
+(defvar embark-default-action-overrides)
+(defvar embark-keymap-alist)
 (defvar projectile-current-project-on-switch)
 (defvar projectile-mode)
 
@@ -138,7 +140,9 @@ creating the directory."
             (agent-shell-vertico-transcript--header-value
              "Working Directory"))
            (session-id
-            (agent-shell-vertico-transcript--header-value "Session ID"))
+            (or
+             (agent-shell-vertico-transcript--header-value "Session ID")
+             (agent-shell-vertico-transcript--header-value "Session")))
            (model (agent-shell-vertico-transcript--header-value "Model"))
            (preview (agent-shell-vertico-transcript--first-user-message))
            (attributes (file-attributes file))
@@ -381,7 +385,6 @@ time with the newest first."
   "Switch to, resume, or open transcript RECORD."
   (let* ((session-id
           (agent-shell-vertico-transcript-record-session-id record))
-         (file (agent-shell-vertico-transcript-record-file record))
          (live-buffer
           (agent-shell-vertico-transcript--live-buffer session-id)))
     (cond
@@ -389,16 +392,9 @@ time with the newest first."
       (agent-shell-vertico--display-session
        (buffer-name live-buffer)))
      (session-id
-      (let ((default-directory
-             (or
-              (agent-shell-vertico-transcript-record-working-directory
-               record)
-              default-directory))
-            (agent-shell-transcript-file-path-function
-             (lambda () file)))
-        (agent-shell-resume-session session-id)))
+      (agent-shell-vertico-transcript--resume-record record))
      (t
-      (find-file file)))))
+      (agent-shell-vertico-transcript--open-record record)))))
 
 (defun agent-shell-vertico-transcript--record-status (record)
   "Return a short availability label for RECORD."
@@ -448,7 +444,8 @@ time with the newest first."
             record)))
       :truncate 18 :face 'marginalia-date))))
 
-(defun agent-shell-vertico-transcript--read-record (prompt records)
+(defun agent-shell-vertico-transcript--completing-read-record
+    (prompt records)
   "Read one transcript from RECORDS with PROMPT."
   (unless records
     (user-error "No matching agent-shell transcripts"))
@@ -472,6 +469,17 @@ time with the newest first."
     (or
      (agent-shell-vertico-transcript--record-from-candidate selection)
      (user-error "Transcript no longer exists"))))
+
+(defvar agent-shell-vertico-transcript-read-record-function
+  #'agent-shell-vertico-transcript--completing-read-record
+  "Function used to read one transcript candidate.
+It receives a prompt and a list of transcript records.")
+
+(defun agent-shell-vertico-transcript--read-record (prompt records)
+  "Read one transcript from RECORDS with PROMPT."
+  (funcall
+   agent-shell-vertico-transcript-read-record-function
+   prompt records))
 
 (defun agent-shell-vertico-transcript--project-candidate (root)
   "Return a completion candidate carrying project ROOT."
@@ -501,6 +509,571 @@ time with the newest first."
   (or
    (agent-shell-vertico-transcript--current-project-root)
    (user-error "Not in a project")))
+
+(defvar-local agent-shell-vertico-transcript--record nil
+  "Transcript record associated with the current transcript buffer.")
+
+(defvar-local agent-shell-vertico-transcript--last-navigation nil
+  "Last speaker heading reached by transcript navigation.")
+
+(defvar-keymap agent-shell-vertico-transcript-mode-map
+  :doc "Keymap for `agent-shell-vertico-transcript-mode'."
+  "r" #'agent-shell-vertico-transcript-resume-current
+  "R" #'agent-shell-vertico-transcript-force-resume-current
+  "c" #'agent-shell-vertico-transcript-clean-view
+  "b" #'agent-shell-vertico-transcript-browse-from-current
+  "i" #'agent-shell-vertico-transcript-set-session-id
+  "n" #'agent-shell-vertico-transcript-next-user
+  "p" #'agent-shell-vertico-transcript-previous-user
+  "N" #'agent-shell-vertico-transcript-next-agent
+  "P" #'agent-shell-vertico-transcript-previous-agent)
+
+(defvar-keymap agent-shell-vertico-transcript-embark-map
+  :doc "Embark actions for `agent-shell' transcripts."
+  "o" #'agent-shell-vertico-transcript-embark-open
+  "O" #'agent-shell-vertico-transcript-embark-open-other-window
+  "r" #'agent-shell-vertico-transcript-embark-resume
+  "R" #'agent-shell-vertico-transcript-embark-force-resume
+  "c" #'agent-shell-vertico-transcript-embark-clean-view
+  "i" #'agent-shell-vertico-transcript-embark-copy-session-id
+  "I" #'agent-shell-vertico-transcript-embark-set-session-id
+  "w" #'agent-shell-vertico-transcript-embark-copy-working-directory
+  "f" #'agent-shell-vertico-transcript-embark-copy-file)
+
+(defun agent-shell-vertico-transcript--header-line ()
+  "Return a header line for the current transcript buffer."
+  (when agent-shell-vertico-transcript--record
+    (let ((record agent-shell-vertico-transcript--record))
+      (format
+       " %s · %s · %s    [r] Resume  [R] Force  [c] Clean  [b] Browse"
+       (or
+        (agent-shell-vertico-transcript-record-agent record)
+        "Unknown agent")
+       (or
+        (agent-shell-vertico-transcript-record-project-name record)
+        "Unscoped")
+       (agent-shell-vertico-transcript--record-status record)))))
+
+(define-minor-mode agent-shell-vertico-transcript-mode
+  "Read and act on an `agent-shell' transcript."
+  :lighter " Transcript"
+  :keymap agent-shell-vertico-transcript-mode-map
+  (if agent-shell-vertico-transcript-mode
+      (progn
+        (setq-local header-line-format
+                    '(:eval
+                      (agent-shell-vertico-transcript--header-line)))
+        (read-only-mode 1))
+    (setq-local header-line-format nil)
+    (read-only-mode -1)))
+
+(defun agent-shell-vertico-transcript--resume-record (record)
+  "Resume transcript RECORD without checking for a live buffer."
+  (let ((session-id
+         (agent-shell-vertico-transcript-record-session-id record))
+        (file
+         (agent-shell-vertico-transcript-record-file record)))
+    (unless session-id
+      (user-error "This transcript has no session ID"))
+    (let ((default-directory
+           (or
+            (agent-shell-vertico-transcript-record-working-directory
+             record)
+            default-directory))
+          (agent-shell-transcript-file-path-function
+           (lambda () file)))
+      (agent-shell-resume-session session-id))))
+
+(defun agent-shell-vertico-transcript--open-record
+    (record &optional other-window)
+  "Open transcript RECORD, optionally in OTHER-WINDOW."
+  (let* ((file
+          (agent-shell-vertico-transcript-record-file record))
+         (buffer
+          (if other-window
+              (find-file-other-window file)
+            (find-file file))))
+    (with-current-buffer buffer
+      (setq-local agent-shell-vertico-transcript--record record)
+      (agent-shell-vertico-transcript-mode 1)
+      (when-let* ((line
+                   (agent-shell-vertico-transcript-record-match-line
+                    record)))
+        (goto-char (point-min))
+        (forward-line (1- line))))
+    buffer))
+
+(defun agent-shell-vertico-transcript--current-record ()
+  "Return the transcript record associated with the current buffer."
+  (or
+   agent-shell-vertico-transcript--record
+   (when-let* ((file (buffer-file-name)))
+     (let* ((fallback-root
+             (or
+              (agent-shell-vertico-transcript--current-project-root)
+              default-directory))
+            (record
+             (agent-shell-vertico-transcript--parse-file
+              file fallback-root))
+            (working-directory
+             (agent-shell-vertico-transcript-record-working-directory
+              record)))
+       (when working-directory
+         (setf
+          (agent-shell-vertico-transcript-record-project-root record)
+          working-directory
+          (agent-shell-vertico-transcript-record-project-name record)
+          (file-name-nondirectory
+           (directory-file-name working-directory))))
+       record))
+   (user-error "Current buffer is not an agent-shell transcript")))
+
+(defun agent-shell-vertico-transcript--move-to-speaker
+    (speaker direction)
+  "Move to the next or previous SPEAKER heading in DIRECTION."
+  (let ((regexp
+         (format "^## %s\\(?:[ \t(].*\\)?$"
+                 (regexp-quote speaker)))
+        found)
+    (when (and (> direction 0)
+               (looking-at-p regexp)
+               (or
+                (not (= (point) (point-min)))
+                (equal
+                 agent-shell-vertico-transcript--last-navigation
+                 (cons speaker (point)))))
+      (forward-line 1))
+    (setq found
+          (if (> direction 0)
+              (re-search-forward regexp nil t)
+            (re-search-backward regexp nil t)))
+    (if found
+        (progn
+          (goto-char (match-beginning 0))
+          (setq
+           agent-shell-vertico-transcript--last-navigation
+           (cons speaker (point))))
+      (user-error "No %s %s message"
+                  (if (> direction 0) "next" "previous")
+                  (downcase speaker)))))
+
+(defun agent-shell-vertico-transcript-next-user ()
+  "Move to the next user message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker "User" 1))
+
+(defun agent-shell-vertico-transcript-previous-user ()
+  "Move to the previous user message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker "User" -1))
+
+(defun agent-shell-vertico-transcript-next-agent ()
+  "Move to the next agent message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker "Agent" 1))
+
+(defun agent-shell-vertico-transcript-previous-agent ()
+  "Move to the previous agent message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker "Agent" -1))
+
+(defun agent-shell-vertico-transcript--clean-text (text)
+  "Return user and agent sections extracted from transcript TEXT."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (let (sections)
+      (while
+          (re-search-forward
+           "^## \\(?:User\\|Agent\\)\\(?:[ \t(].*\\)?$"
+           nil t)
+        (let* ((start (match-beginning 0))
+               (end
+                (save-excursion
+                  (goto-char (match-end 0))
+                  (if
+                      (re-search-forward
+                       "^\\(?:## \\|### Tool Call\\)"
+                       nil t)
+                      (match-beginning 0)
+                    (point-max)))))
+          (push
+           (string-trim-right
+            (buffer-substring-no-properties start end))
+           sections)
+          (goto-char end)))
+      (concat
+       (mapconcat #'identity (nreverse sections) "\n\n")
+       "\n"))))
+
+(defun agent-shell-vertico-transcript-clean-view ()
+  "Display a clean view containing only user and agent messages."
+  (interactive)
+  (let* ((source (current-buffer))
+         (name
+          (format "*Agent transcript: %s*"
+                  (file-name-base
+                   (or (buffer-file-name source)
+                       (buffer-name source)))))
+         (buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert
+         (with-current-buffer source
+           (agent-shell-vertico-transcript--clean-text
+            (buffer-substring-no-properties
+             (point-min) (point-max)))))
+        (goto-char (point-min))
+        (special-mode)))
+    (pop-to-buffer buffer)))
+
+(defun agent-shell-vertico-transcript-resume-current ()
+  "Smart-resume the current transcript or switch to its live session."
+  (interactive)
+  (agent-shell-vertico-transcript--activate
+   (agent-shell-vertico-transcript--current-record)))
+
+(defun agent-shell-vertico-transcript-force-resume-current ()
+  "Resume the current transcript in a new shell buffer."
+  (interactive)
+  (agent-shell-vertico-transcript--resume-record
+   (agent-shell-vertico-transcript--current-record)))
+
+(defun agent-shell-vertico-transcript--set-session-id-in-text
+    (text session-id)
+  "Return TEXT with its transcript header set to SESSION-ID."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (if
+        (re-search-forward
+         "^\\*\\*Session\\(?: ID\\)?:\\*\\*[ \t]+.*$"
+         nil t)
+        (replace-match
+         (format "**Session ID:** %s" session-id)
+         t t)
+      (goto-char (point-min))
+      (if (re-search-forward "^---[ \t]*$" nil t)
+          (progn
+            (beginning-of-line)
+            (insert (format "**Session ID:** %s\n" session-id)))
+        (goto-char (point-max))
+        (unless (bolp)
+          (insert "\n"))
+        (insert (format "**Session ID:** %s\n" session-id))))
+    (buffer-string)))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-set-session-id (session-id)
+  "Set the current transcript's session header to SESSION-ID."
+  (interactive
+   (let* ((record
+           (agent-shell-vertico-transcript--current-record))
+          (current
+           (agent-shell-vertico-transcript-record-session-id record)))
+     (list
+      (read-string
+       (if current
+           (format "Session ID (currently %s): " current)
+         "Session ID: ")
+       nil nil current))))
+  (setq session-id (string-trim session-id))
+  (when (string-empty-p session-id)
+    (user-error "Session ID cannot be empty"))
+  (let* ((record
+          (agent-shell-vertico-transcript--current-record))
+         (file
+          (agent-shell-vertico-transcript-record-file record))
+         (buffer
+          (or (find-buffer-visiting file)
+              (find-file-noselect file))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)
+            (point (point))
+            (text
+             (buffer-substring-no-properties
+              (point-min) (point-max))))
+        (erase-buffer)
+        (insert
+         (agent-shell-vertico-transcript--set-session-id-in-text
+          text
+          session-id))
+        (goto-char (min point (point-max)))
+        (save-buffer))
+      (when agent-shell-vertico-transcript--record
+        (setf
+         (agent-shell-vertico-transcript-record-session-id
+          agent-shell-vertico-transcript--record)
+         session-id)))
+    (setf
+     (agent-shell-vertico-transcript-record-session-id record)
+     session-id)
+    (message "Set transcript session ID to %s" session-id)))
+
+(defun agent-shell-vertico-transcript-browse-from-current ()
+  "Browse transcripts belonging to the current transcript's project."
+  (interactive)
+  (let ((project-root
+         (agent-shell-vertico-transcript-record-project-root
+          (agent-shell-vertico-transcript--current-record))))
+    (unless project-root
+      (user-error "Transcript has no project directory"))
+    (quit-window)
+    (agent-shell-vertico-transcript--browse-project-root
+     project-root)))
+
+(defun agent-shell-vertico-transcript--embark-record (candidate)
+  "Return the transcript record carried by Embark CANDIDATE."
+  (or
+   (get-text-property
+    0 'agent-shell-vertico-transcript-record candidate)
+   (user-error "Candidate has no transcript record")))
+
+(defun agent-shell-vertico-transcript-embark-open (candidate)
+  "Open transcript CANDIDATE."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--embark-record candidate)))
+
+(defun agent-shell-vertico-transcript-embark-open-other-window
+    (candidate)
+  "Open transcript CANDIDATE in another window."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--embark-record candidate) t))
+
+(defun agent-shell-vertico-transcript-embark-resume (candidate)
+  "Smart-resume transcript CANDIDATE."
+  (agent-shell-vertico-transcript--activate
+   (agent-shell-vertico-transcript--embark-record candidate)))
+
+(defun agent-shell-vertico-transcript-embark-force-resume (candidate)
+  "Force-resume transcript CANDIDATE."
+  (agent-shell-vertico-transcript--resume-record
+   (agent-shell-vertico-transcript--embark-record candidate)))
+
+(defun agent-shell-vertico-transcript-embark-set-session-id (candidate)
+  "Set the session ID for transcript CANDIDATE."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--embark-record candidate))
+  (call-interactively #'agent-shell-vertico-transcript-set-session-id))
+
+(defun agent-shell-vertico-transcript-embark-clean-view (candidate)
+  "Open transcript CANDIDATE and display its clean view."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--embark-record candidate))
+  (agent-shell-vertico-transcript-clean-view))
+
+(defun agent-shell-vertico-transcript-embark-copy-session-id
+    (candidate)
+  "Copy transcript CANDIDATE's session ID."
+  (let ((session-id
+         (agent-shell-vertico-transcript-record-session-id
+          (agent-shell-vertico-transcript--embark-record candidate))))
+    (unless session-id
+      (user-error "Transcript has no session ID"))
+    (kill-new session-id)
+    (message "Copied session ID: %s" session-id)))
+
+(defun agent-shell-vertico-transcript-embark-copy-working-directory
+    (candidate)
+  "Copy transcript CANDIDATE's working directory."
+  (let ((directory
+         (agent-shell-vertico-transcript-record-working-directory
+          (agent-shell-vertico-transcript--embark-record candidate))))
+    (unless directory
+      (user-error "Transcript has no working directory"))
+    (kill-new directory)
+    (message "Copied working directory: %s" directory)))
+
+(defun agent-shell-vertico-transcript-embark-copy-file (candidate)
+  "Copy transcript CANDIDATE's file name."
+  (let ((file
+         (agent-shell-vertico-transcript-record-file
+          (agent-shell-vertico-transcript--embark-record candidate))))
+    (kill-new file)
+    (message "Copied transcript file: %s" file)))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-setup-embark ()
+  "Register transcript candidates and actions with Embark."
+  (interactive)
+  (add-to-list
+   'embark-keymap-alist
+   '(agent-shell-transcript
+     agent-shell-vertico-transcript-embark-map))
+  (add-to-list
+   'embark-default-action-overrides
+   '(agent-shell-transcript
+     . agent-shell-vertico-transcript-embark-resume)))
+
+(defun agent-shell-vertico-transcript--all-records (&optional project-roots)
+  "Return deduplicated records for PROJECT-ROOTS.
+When PROJECT-ROOTS is nil, use all known local projects."
+  (let ((seen (make-hash-table :test #'equal))
+        records)
+    (dolist
+        (root
+         (or project-roots
+             (agent-shell-vertico-transcript--project-roots)))
+      (dolist
+          (record
+           (agent-shell-vertico-transcript--records-for-project root))
+        (let ((file
+               (agent-shell-vertico-transcript-record-file record)))
+          (unless (gethash file seen)
+            (puthash file t seen)
+            (push record records)))))
+    (seq-sort
+     (lambda (left right)
+       (time-less-p
+        (agent-shell-vertico-transcript-record-modified-time right)
+        (agent-shell-vertico-transcript-record-modified-time left)))
+     records)))
+
+(defun agent-shell-vertico-transcript--stats-for-records (records)
+  "Return availability statistics for transcript RECORDS."
+  (let ((live 0)
+        (resumable 0)
+        (transcript-only 0)
+        (bytes 0))
+    (dolist (record records)
+      (let ((session-id
+             (agent-shell-vertico-transcript-record-session-id record))
+            (file
+             (agent-shell-vertico-transcript-record-file record)))
+        (cond
+         ((agent-shell-vertico-transcript--live-buffer session-id)
+          (cl-incf live))
+         (session-id
+          (cl-incf resumable))
+         (t
+          (cl-incf transcript-only)))
+        (when-let* ((attributes
+                     (and file
+                          (file-exists-p file)
+                          (file-attributes file))))
+          (cl-incf bytes (file-attribute-size attributes)))))
+    (list :total (length records)
+          :live live
+          :resumable resumable
+          :transcript-only transcript-only
+          :bytes bytes)))
+
+(defun agent-shell-vertico-transcript--diagnostic-issues (records)
+  "Return metadata issue descriptions for transcript RECORDS."
+  (let ((missing-session-id 0)
+        (missing-working-directory 0)
+        (invalid-working-directory 0)
+        (session-counts (make-hash-table :test #'equal))
+        issues)
+    (dolist (record records)
+      (if-let* ((session-id
+                 (agent-shell-vertico-transcript-record-session-id
+                  record)))
+          (puthash
+           session-id
+           (1+ (gethash session-id session-counts 0))
+           session-counts)
+        (cl-incf missing-session-id))
+      (if-let* ((directory
+                 (agent-shell-vertico-transcript-record-working-directory
+                  record)))
+          (unless (file-directory-p directory)
+            (cl-incf invalid-working-directory))
+        (cl-incf missing-working-directory)))
+    (when (> missing-session-id 0)
+      (push
+       (format "%d transcript%s missing a session ID"
+               missing-session-id
+               (if (= missing-session-id 1) " is" "s are"))
+       issues))
+    (when (> missing-working-directory 0)
+      (push
+       (format "%d transcript%s missing a working directory"
+               missing-working-directory
+               (if (= missing-working-directory 1) " is" "s are"))
+       issues))
+    (when (> invalid-working-directory 0)
+      (push
+       (format "%d working director%s no longer exist%s"
+               invalid-working-directory
+               (if (= invalid-working-directory 1) "y" "ies")
+               (if (= invalid-working-directory 1) "s" ""))
+       issues))
+    (maphash
+     (lambda (session-id count)
+       (when (> count 1)
+         (push
+          (format "Session ID %s is duplicate across %d transcripts"
+                  session-id count)
+          issues)))
+     session-counts)
+    (nreverse issues)))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-stats ()
+  "Display statistics for known `agent-shell' transcripts."
+  (interactive)
+  (let* ((project-roots
+          (agent-shell-vertico-transcript--project-roots))
+         (records
+          (agent-shell-vertico-transcript--all-records project-roots))
+         (stats
+          (agent-shell-vertico-transcript--stats-for-records records))
+         (buffer
+          (get-buffer-create "*Agent transcript statistics*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert
+         (format
+          (concat
+           "Agent transcript statistics\n\n"
+           "Projects:        %d\n"
+           "Transcripts:     %d\n"
+           "Live:            %d\n"
+           "Resumable:       %d\n"
+           "Transcript only: %d\n"
+           "Disk usage:      %s\n")
+          (length project-roots)
+          (plist-get stats :total)
+          (plist-get stats :live)
+          (plist-get stats :resumable)
+          (plist-get stats :transcript-only)
+          (file-size-human-readable (plist-get stats :bytes))))
+        (goto-char (point-min))
+        (special-mode)))
+    (pop-to-buffer buffer)))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-doctor ()
+  "Check transcript discovery tools and metadata for common problems."
+  (interactive)
+  (let* ((project-roots
+          (agent-shell-vertico-transcript--project-roots))
+         (records
+          (agent-shell-vertico-transcript--all-records project-roots))
+         (issues
+          (agent-shell-vertico-transcript--diagnostic-issues records))
+         (buffer
+          (get-buffer-create "*Agent transcript doctor*")))
+    (unless (executable-find "rg")
+      (push "rg is unavailable; full-text search will not work" issues))
+    (unless project-roots
+      (push "No local projects were discovered" issues))
+    (unless records
+      (push "No agent-shell transcripts were discovered" issues))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Agent transcript doctor\n\n")
+        (if issues
+            (dolist (issue (nreverse issues))
+              (insert (format "• %s\n" issue)))
+          (insert "No problems found.\n"))
+        (goto-char (point-min))
+        (special-mode)))
+    (pop-to-buffer buffer)))
 
 (defun agent-shell-vertico-transcript--browse-project-root
     (project-root &optional resumable-only)

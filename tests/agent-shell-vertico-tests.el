@@ -852,6 +852,173 @@ value would pre-bind it, clobbering embark's own default finder list."
          0 'agent-shell-vertico-transcript-line candidate)
         42))))
 
+(ert-deftest agent-shell-vertico-consult-registers-browse-reader ()
+  (should
+   (eq agent-shell-vertico-transcript-read-record-function
+       #'agent-shell-vertico-consult--read-record)))
+
+(ert-deftest agent-shell-vertico-consult-browse-reader-returns-record ()
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :preview "Question"
+           :started "2026-07-30"))
+         (agent-shell-vertico-transcript-read-record-function
+          #'agent-shell-vertico-consult--read-record))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest _options)
+                 (car candidates)))
+              ((symbol-function 'consult--temporary-files)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--jump-state)
+               (lambda () (lambda (&rest _arguments)))))
+      (should
+       (eq
+        (agent-shell-vertico-transcript--read-record
+         "Transcript: " (list record))
+        record)))))
+
+(ert-deftest agent-shell-vertico-transcript-parser-accepts-session-header ()
+  (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Working Directory:** /work/project\n"
+                    "**Session:** legacy-session\n\n---\n"))
+          (should
+           (equal
+            (agent-shell-vertico-transcript-record-session-id
+             (agent-shell-vertico-transcript--parse-file
+              file "/work/project/"))
+            "legacy-session")))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-navigation-by-speaker ()
+  (with-temp-buffer
+    (insert "## User (one)\n\nFirst\n\n"
+            "## Agent (one)\n\nReply\n\n"
+            "## User (two)\n\nSecond\n\n"
+            "## Agent (two)\n\nReply two\n")
+    (goto-char (point-min))
+    (agent-shell-vertico-transcript-next-user)
+    (should (looking-at-p "## User (one)"))
+    (agent-shell-vertico-transcript-next-user)
+    (should (looking-at-p "## User (two)"))
+    (agent-shell-vertico-transcript-previous-user)
+    (should (looking-at-p "## User (one)"))
+    (agent-shell-vertico-transcript-next-agent)
+    (should (looking-at-p "## Agent (one)"))
+    (agent-shell-vertico-transcript-next-agent)
+    (should (looking-at-p "## Agent (two)"))))
+
+(ert-deftest agent-shell-vertico-transcript-clean-text-removes-tool-sections ()
+  (let ((clean
+         (agent-shell-vertico-transcript--clean-text
+          (concat
+           "# Agent Shell Transcript\n\n---\n\n"
+           "## User (one)\n\nQuestion\n\n"
+           "## Agent (one)\n\nAnswer\n\n"
+           "### Tool Call: rg\n\nInternal output\n\n"
+           "## User (two)\n\nFollow-up\n\n"
+           "## Agent (two)\n\nFinal\n"))))
+    (should (string-match-p "Question" clean))
+    (should (string-match-p "Answer" clean))
+    (should (string-match-p "Follow-up" clean))
+    (should (string-match-p "Final" clean))
+    (should-not (string-match-p "Tool Call" clean))
+    (should-not (string-match-p "Internal output" clean))))
+
+(ert-deftest agent-shell-vertico-transcript-stats-count-record-kinds ()
+  (let* ((live
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/live.md" :session-id "live"))
+         (resumable
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/resumable.md" :session-id "past"))
+         (transcript-only
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/plain.md"))
+         (stats
+          (cl-letf
+              (((symbol-function
+                 'agent-shell-vertico-transcript--live-buffer)
+                (lambda (session-id)
+                  (and (equal session-id "live") 'buffer))))
+            (agent-shell-vertico-transcript--stats-for-records
+             (list live resumable transcript-only)))))
+    (should (= (plist-get stats :total) 3))
+    (should (= (plist-get stats :live) 1))
+    (should (= (plist-get stats :resumable) 1))
+    (should (= (plist-get stats :transcript-only) 1))))
+
+(ert-deftest agent-shell-vertico-transcript-embark-map-has-core-actions ()
+  (should
+   (eq
+    (lookup-key agent-shell-vertico-transcript-embark-map (kbd "o"))
+    #'agent-shell-vertico-transcript-embark-open))
+  (should
+   (eq
+    (lookup-key agent-shell-vertico-transcript-embark-map (kbd "r"))
+    #'agent-shell-vertico-transcript-embark-resume))
+  (should
+   (eq
+   (lookup-key agent-shell-vertico-transcript-embark-map (kbd "R"))
+    #'agent-shell-vertico-transcript-embark-force-resume)))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-updates-legacy-header ()
+  (should
+   (equal
+    (agent-shell-vertico-transcript--set-session-id-in-text
+     (concat
+      "**Working Directory:** /work/project\n"
+      "**Session:** old-id\n\n---\n")
+     "new-id")
+    (concat
+     "**Working Directory:** /work/project\n"
+     "**Session ID:** new-id\n\n---\n"))))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-inserts-header ()
+  (should
+   (equal
+    (agent-shell-vertico-transcript--set-session-id-in-text
+     "**Agent:** Codex\n\n---\n"
+     "new-id")
+    "**Agent:** Codex\n\n**Session ID:** new-id\n---\n")))
+
+(ert-deftest agent-shell-vertico-transcript-diagnostics-find-metadata-issues ()
+  (let ((records
+         (list
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/one.md"
+           :session-id "duplicate"
+           :working-directory "/missing/one/")
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/two.md"
+           :session-id "duplicate"
+           :working-directory "/missing/two/")
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/three.md"))))
+    (cl-letf (((symbol-function 'file-directory-p)
+               (lambda (_directory) nil)))
+      (let ((issues
+             (agent-shell-vertico-transcript--diagnostic-issues
+              records)))
+        (should
+         (seq-some
+          (lambda (issue)
+            (string-match-p "1 transcript.*session ID" issue))
+          issues))
+        (should
+         (seq-some
+          (lambda (issue)
+            (string-match-p "duplicate.*2 transcripts" issue))
+          issues))
+        (should
+         (seq-some
+          (lambda (issue)
+            (string-match-p "2 working director" issue))
+          issues))))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

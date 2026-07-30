@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell-vertico "0.1.0") (consult "2.0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0") (consult "2.0") (marginalia "1.0"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -83,12 +83,19 @@
 (defun agent-shell-vertico-consult--position (candidate &optional opener)
   "Return a Consult marker for CANDIDATE, opening with OPENER."
   (when candidate
-    (when-let* ((file
+    (when-let* ((record
                  (get-text-property
-                  0 'agent-shell-vertico-transcript-file candidate))
+                  0 'agent-shell-vertico-transcript-record candidate))
+                (file
+                 (or
+                  (get-text-property
+                   0 'agent-shell-vertico-transcript-file candidate)
+                  (agent-shell-vertico-transcript-record-file record)))
                 (line
-                 (get-text-property
-                  0 'agent-shell-vertico-transcript-line candidate))
+                 (or
+                  (get-text-property
+                   0 'agent-shell-vertico-transcript-line candidate)
+                  1))
                 (buffer
                  (funcall
                   (or opener #'consult--file-action)
@@ -109,7 +116,33 @@
        jump action
        (agent-shell-vertico-consult--position
         candidate
-        (and (not (eq action 'return)) open))))))
+       (and (not (eq action 'return)) open))))))
+
+(defun agent-shell-vertico-consult--read-record (prompt records)
+  "Read one transcript from RECORDS with PROMPT and live preview."
+  (unless records
+    (user-error "No matching agent-shell transcripts"))
+  (let* ((candidates
+          (mapcar
+           #'agent-shell-vertico-transcript--record-candidate
+           records))
+         (selection
+          (consult--read
+           candidates
+           :prompt prompt
+           :lookup #'consult--lookup-member
+           :state (agent-shell-vertico-consult--state)
+           :require-match t
+           :category 'agent-shell-transcript
+           :annotate
+           #'agent-shell-vertico-transcript--record-annotation
+           :sort nil)))
+    (or
+     (agent-shell-vertico-transcript--record-from-candidate selection)
+     (user-error "Transcript no longer exists"))))
+
+(setq agent-shell-vertico-transcript-read-record-function
+      #'agent-shell-vertico-consult--read-record)
 
 (defun agent-shell-vertico-consult--search (project-roots)
   "Search transcripts belonging to PROJECT-ROOTS and activate one."
