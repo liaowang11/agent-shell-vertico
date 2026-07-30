@@ -32,7 +32,9 @@
 (declare-function agent-shell-attention--permission-pending-p "agent-shell-attention")
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
+(declare-function comint-send-eof "comint" ())
 
+(defvar agent-shell--state)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
 (defvar agent-shell-show-config-icons)

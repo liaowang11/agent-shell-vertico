@@ -8,6 +8,17 @@
 (add-to-list 'load-path (expand-file-name "tests/support" default-directory))
 (add-to-list 'load-path default-directory)
 
+(defun agent-shell-vertico-tests--ensure-agent-shell-stub ()
+  "Reject a test environment using the real agent-shell package."
+  (unless (bound-and-true-p agent-shell-test-stub-p)
+    (user-error
+     "Tests require isolated Emacs with tests/support/agent-shell.el")))
+
+(when (featurep 'agent-shell)
+  (agent-shell-vertico-tests--ensure-agent-shell-stub))
+(require 'agent-shell)
+(agent-shell-vertico-tests--ensure-agent-shell-stub)
+
 (require 'agent-shell-vertico)
 (require 'agent-shell-vertico-transcript)
 (require 'agent-shell-vertico-consult)
@@ -72,7 +83,8 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-args) nil)
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
-                    ((symbol-value 'agent-shell-agent-configs) nil))
+                    ((symbol-value 'agent-shell-agent-configs) nil)
+                    ((symbol-value 'agent-shell-mode-hook) nil))
            (let ,(mapcar
                   (lambda (binding)
                     (pcase-let ((`(,symbol ,name ,directory ,state) binding))
@@ -87,6 +99,24 @@ Each element in BINDINGS is of the form:
                   bindings)
              ,@body))
        (mapc #'kill-buffer created))))
+
+(ert-deftest agent-shell-vertico-tests-use-agent-shell-stub ()
+  (should (bound-and-true-p agent-shell-test-stub-p)))
+
+(ert-deftest agent-shell-vertico-tests-reject-real-agent-shell ()
+  (cl-letf (((symbol-value 'agent-shell-test-stub-p) nil))
+    (should-error
+     (agent-shell-vertico-tests--ensure-agent-shell-stub)
+     :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-tests-session-fixture-suppresses-mode-hook ()
+  (let ((agent-shell-mode-hook
+         (list (lambda () (ert-fail "agent-shell-mode-hook ran")))))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((session "Agent @ project" "/work/project/" nil))
+      (should
+       (eq (buffer-local-value 'major-mode session)
+           'agent-shell-mode)))))
 
 (ert-deftest agent-shell-vertico-completion-table-adds-agent-shell-metadata ()
   (let ((metadata (funcall (agent-shell-vertico--completion-table 'all)
@@ -613,8 +643,9 @@ value would pre-bind it, clobbering embark's own default finder list."
       (delete-directory project-root t))))
 
 (ert-deftest agent-shell-vertico-transcript-project-roots-prefer-projectile ()
-  (let ((projectile-mode t)
-        (projectile-current-project-on-switch 'remove))
+  (cl-progv
+      '(projectile-mode projectile-current-project-on-switch)
+      '(t remove)
     (cl-letf (((symbol-function 'projectile-project-root)
                (lambda (&optional _dir) "/work/current/"))
               ((symbol-function 'projectile-relevant-known-projects)
@@ -639,6 +670,35 @@ value would pre-bind it, clobbering embark's own default finder list."
       (should
        (equal (agent-shell-vertico-transcript--project-roots)
               '("/work/current/" "/work/alpha/"))))))
+
+(ert-deftest agent-shell-vertico-transcript-read-project-resolves-selection ()
+  (cl-letf (((symbol-function
+              'agent-shell-vertico-transcript--project-roots)
+             (lambda () '("/work/project/")))
+            ((symbol-function 'completing-read)
+             (lambda (_prompt candidates &rest _args)
+               (substring-no-properties
+                (car (all-completions "" candidates))))))
+    (should
+     (equal
+      (agent-shell-vertico-transcript--read-project)
+      "/work/project/"))))
+
+(ert-deftest agent-shell-vertico-transcript-read-record-resolves-selection ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/work/project/transcript.md"
+          :started "2026-07-31 10:00:00"
+          :preview "Fix completion selection")))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _args)
+                 (substring-no-properties
+                  (car (all-completions "" candidates))))))
+      (should
+       (eq
+        (agent-shell-vertico-transcript--completing-read-record
+         "Transcript: " (list record))
+        record)))))
 
 (ert-deftest agent-shell-vertico-transcript-parse-current-markdown-format ()
   (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))

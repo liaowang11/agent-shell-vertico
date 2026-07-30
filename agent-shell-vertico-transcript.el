@@ -467,7 +467,8 @@ time with the newest first."
                (complete-with-action action candidates string pred)))
            nil t)))
     (or
-     (agent-shell-vertico-transcript--record-from-candidate selection)
+     (when-let* ((candidate (assoc-string selection candidates)))
+       (agent-shell-vertico-transcript--record-from-candidate candidate))
      (user-error "Transcript no longer exists"))))
 
 (defvar agent-shell-vertico-transcript-read-record-function
@@ -500,8 +501,9 @@ It receives a prompt and a list of transcript records.")
          (selection
           (completing-read "Project: " candidates nil t)))
     (or
-     (get-text-property
-      0 'agent-shell-vertico-project-root selection)
+     (when-let* ((candidate (assoc-string selection candidates)))
+       (get-text-property
+        0 'agent-shell-vertico-project-root candidate))
      (user-error "No known projects"))))
 
 (defun agent-shell-vertico-transcript--current-project-or-error ()

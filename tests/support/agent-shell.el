@@ -5,6 +5,9 @@
 (require 'cl-lib)
 (require 'map)
 
+(defconst agent-shell-test-stub-p t
+  "Non-nil when the agent-shell test stub is loaded.")
+
 (defvar agent-shell-test-buffers nil)
 (defvar agent-shell-test-project-buffers nil)
 (defvar agent-shell-test-last-command nil)
