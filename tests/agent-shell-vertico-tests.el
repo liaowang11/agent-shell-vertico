@@ -766,6 +766,31 @@ value would pre-bind it, clobbering embark's own default finder list."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-records-find-nested-files ()
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-nested-" t))
+         (session-dir
+          (expand-file-name "2026/07/31/session/" transcript-dir))
+         (file (expand-file-name "transcript.md" session-dir))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (make-directory session-dir t)
+          (with-temp-file file
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** nested\n\n---\n\n"
+                    "## User\n\nNested transcript\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should (= (length records) 1))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-file (car records))
+              file))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-activate-switches-to-live-session ()
   (let ((buffer (generate-new-buffer " *agent-shell-vertico-live*"))
         displayed)

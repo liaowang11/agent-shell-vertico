@@ -194,7 +194,7 @@ directory header."
               (lambda (file)
                 (agent-shell-vertico-transcript--parse-file
                  file project-root))
-              (directory-files directory t "\\.md\\'" t))))
+              (directory-files-recursively directory "\\.md\\'"))))
         (setq records
               (seq-filter
                (lambda (record)
