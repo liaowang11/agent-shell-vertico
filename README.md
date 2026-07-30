@@ -1,9 +1,14 @@
 # agent-shell-vertico
 
-`agent-shell-vertico` adds a Vertico-friendly switcher for `agent-shell`
-buffers and an Embark action map for controlling the selected session.
+`agent-shell-vertico` adds Vertico-friendly live-session switching and
+project-aware transcript recall to `agent-shell`.
 
-## Commands
+Transcript recall reads the Markdown files already managed by `agent-shell`.
+It does not build or maintain an index. Project discovery comes from
+Projectile when it is active, with `project.el` as the fallback, and transcript
+locations are resolved through `agent-shell-dot-subdir-function`.
+
+## Live session commands
 
 - `M-x agent-shell-vertico-switch`
   Switch across all live `agent-shell` buffers returned by
@@ -17,6 +22,49 @@ buffers and an Embark action map for controlling the selected session.
 Candidates keep the recent ordering from `agent-shell-buffers` and show
 consult-style annotations for status, model, mode, title, and path.
 
+## Transcript recall
+
+Browsing is project-first. The `-project` variants operate on the current
+project without asking for one.
+
+- `M-x agent-shell-vertico-transcript-browse`
+  Browse every transcript in a selected known project.
+- `M-x agent-shell-vertico-transcript-browse-project`
+  Browse transcripts in the current project.
+- `M-x agent-shell-vertico-transcript-resume`
+  Browse only resumable transcripts in a selected project.
+- `M-x agent-shell-vertico-transcript-resume-project`
+  Browse only resumable transcripts in the current project.
+- `M-x agent-shell-vertico-transcript-search`
+  Search transcript contents across known projects with `rg` and Consult.
+- `M-x agent-shell-vertico-transcript-search-project`
+  Search transcript contents in the current project.
+- `M-x agent-shell-vertico-transcript-stats`
+  Summarize live, resumable, and transcript-only records and disk usage.
+- `M-x agent-shell-vertico-transcript-doctor`
+  Report missing tools, undiscovered projects, and transcript metadata issues.
+
+Selecting a transcript switches to its live shell when possible, otherwise it
+resumes the recorded session. A transcript without a session ID opens in a
+read-only reader. The reader provides:
+
+- `r` smart resume or switch to the live session
+- `R` force a new resumed shell
+- `c` show only user and agent messages
+- `b` browse other transcripts from the same project
+- `n`/`p` move between user messages
+- `N`/`P` move between agent messages
+- `i` manually set or repair the session ID header
+
+Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
+Session IDs are treated as opaque strings, so providers are not restricted to
+UUIDs.
+
+Content search invokes `rg` directly with `--json`, aggregates all matches per
+transcript, and previews the first match through Consult. Loading
+`agent-shell-vertico-consult` also gives ordinary transcript browsing live
+preview. No persistent cache or index is written.
+
 ## Setup
 
 ```elisp
@@ -28,6 +76,18 @@ consult-style annotations for status, model, mode, title, and path.
   :config
   (with-eval-after-load 'embark
     (agent-shell-vertico-setup-embark)))
+
+(use-package agent-shell-vertico-transcript
+  :after agent-shell-vertico
+  :bind (("C-c a r" . agent-shell-vertico-transcript-browse-project)
+         ("C-c a R" . agent-shell-vertico-transcript-resume-project)))
+
+(use-package agent-shell-vertico-consult
+  :after (agent-shell-vertico-transcript consult)
+  :bind (("C-c a s" . agent-shell-vertico-transcript-search-project))
+  :config
+  (with-eval-after-load 'embark
+    (agent-shell-vertico-transcript-setup-embark)))
 ```
 
 With Embark enabled on an `agent-shell-vertico` candidate, the extra
@@ -53,3 +113,18 @@ point on a link, `embark-act` (or `embark-dwim`) offers:
   to `browse-url`
 - `o` open a file link in another window, leaving the agent buffer put
 - `w` copy the link URL to the kill ring
+
+Transcript candidates have a separate Embark map:
+
+- `o`/`O` open in the current/other window
+- `r` smart resume
+- `R` force a new resumed shell
+- `c` open the clean reader
+- `i` copy the session ID
+- `I` set or repair the session ID
+- `w` copy the recorded working directory
+- `f` copy the transcript file name
+
+`rg` is required only for full-text search. Consult is required by
+`agent-shell-vertico-consult`; browsing, resuming, reader mode, statistics, and
+diagnostics work without it.

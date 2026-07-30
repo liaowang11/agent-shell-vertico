@@ -4,7 +4,9 @@ EMACS ?= emacs
 
 compile:
 	$(EMACS) -Q --batch -L . -L tests/support \
-		-f batch-byte-compile agent-shell-vertico.el
+		-f batch-byte-compile agent-shell-vertico.el \
+		agent-shell-vertico-transcript.el \
+		agent-shell-vertico-consult.el
 
 test:
 	$(EMACS) -Q --batch -L . -L tests/support -L tests \
