@@ -29,6 +29,25 @@ emacs -Q --batch -L . -L tests/support -L tests \
 The selector is a regexp, so you can match a group (e.g. `"sort-by"`). Override
 the Emacs binary with `EMACS=/path/to/emacs make test`. CI runs on Emacs 30.1.
 
+### Test isolation
+
+Never load or run `tests/agent-shell-vertico-tests.el` in the user's primary
+GUI Emacs server. That server may already have the real `agent-shell` package,
+advice, and mode hooks loaded; running the suite there can invoke real package
+behavior and stall the GUI.
+
+Run tests only in an isolated Emacs process:
+
+- Use `make check` for the complete compile and test verification.
+- Use the `emacs -Q --batch` command above for a focused ERT selector.
+- Do not use `emacsclient` connected to the primary GUI server for tests. This
+  repository-specific rule is an explicit exception to general instructions
+  that prefer `emacsclient` for Emacs operations.
+
+The test file checks `agent-shell-test-stub-p` and fails immediately if the
+real package is already loaded. Session-buffer fixtures also suppress
+`agent-shell-mode-hook`. Do not weaken or bypass either safety measure.
+
 ## Architecture
 
 **External dependency, stubbed in tests.** The real `agent-shell`,
