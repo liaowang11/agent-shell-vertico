@@ -630,7 +630,10 @@ final message chunks, which form Response."
     (let ((submenus (make-hash-table :test #'equal))
           internal response)
       (dolist (block (nreverse collected))
-        (seq-let (qualified-id kind group-id item) block
+        (let ((qualified-id (nth 0 block))
+              (kind (nth 1 block))
+              (group-id (nth 2 block))
+              (item (nth 3 block)))
           (cond
            ;; Group header: a submenu whose members are appended below.
            ((eq kind 'group)
