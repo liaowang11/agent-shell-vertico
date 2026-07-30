@@ -28,13 +28,13 @@ Browsing is project-first. The `-project` variants operate on the current
 project without asking for one.
 
 - `M-x agent-shell-vertico-transcript-browse`
-  Browse every transcript in a selected known project.
+  Select and open a transcript in a selected known project.
 - `M-x agent-shell-vertico-transcript-browse-project`
-  Browse transcripts in the current project.
+  Select and open a transcript in the current project.
 - `M-x agent-shell-vertico-transcript-resume`
-  Browse only resumable transcripts in a selected project.
+  Select and resume a session in a selected project.
 - `M-x agent-shell-vertico-transcript-resume-project`
-  Browse only resumable transcripts in the current project.
+  Select and resume a session in the current project.
 - `M-x agent-shell-vertico-transcript-search`
   Search transcript contents across known projects with `rg` and Consult.
 - `M-x agent-shell-vertico-transcript-search-project`
@@ -44,9 +44,9 @@ project without asking for one.
 - `M-x agent-shell-vertico-transcript-doctor`
   Report missing tools, undiscovered projects, and transcript metadata issues.
 
-Selecting a transcript switches to its live shell when possible, otherwise it
-resumes the recorded session. A transcript without a session ID opens in a
-read-only reader. The reader provides:
+Browse and search selections open the transcript file. Resume commands switch
+to a matching live shell when possible, otherwise they resume the recorded
+session. The transcript reader provides:
 
 - `r` smart resume or switch to the live session
 - `R` force a new resumed shell
@@ -60,10 +60,11 @@ Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
 Session IDs are treated as opaque strings, so providers are not restricted to
 UUIDs.
 
-Content search invokes `rg` directly with `--json`, aggregates all matches per
-transcript, and previews the first match through Consult. Loading
-`agent-shell-vertico-consult` also gives ordinary transcript browsing live
-preview. No persistent cache or index is written.
+Content search runs `rg --json` asynchronously through Consult, aggregates
+matches per transcript as they arrive, and previews the first match. A changed
+query cancels the previous search process. Loading `agent-shell-vertico-consult`
+also gives ordinary transcript browsing live preview. No persistent cache or
+index is written.
 
 ## Setup
 
@@ -116,9 +117,10 @@ point on a link, `embark-act` (or `embark-dwim`) offers:
 
 Transcript candidates have a separate Embark map:
 
-- `o`/`O` open in the current/other window
+- `o`/`b` open in the current window; `O` opens in another window
 - `r` smart resume
 - `R` force a new resumed shell
+- `d` open the recorded working directory
 - `c` open the clean reader
 - `i` copy the session ID
 - `I` set or repair the session ID

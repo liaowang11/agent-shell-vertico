@@ -832,6 +832,51 @@ value would pre-bind it, clobbering embark's own default finder list."
       (should (equal called-directory "/work/project/"))
       (should (equal (funcall called-transcript-function) file)))))
 
+(ert-deftest agent-shell-vertico-transcript-browse-opens-record ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"))
+        opened
+        activated)
+    (cl-letf
+        (((symbol-function
+           'agent-shell-vertico-transcript--records-for-project)
+          (lambda (_root) (list record)))
+         ((symbol-function 'agent-shell-vertico-transcript--read-record)
+          (lambda (_prompt _records) record))
+         ((symbol-function 'agent-shell-vertico-transcript--open-record)
+          (lambda (selected &optional _other-window)
+            (setq opened selected)))
+         ((symbol-function 'agent-shell-vertico-transcript--activate)
+          (lambda (selected)
+            (setq activated selected))))
+      (agent-shell-vertico-transcript--browse-project-root "/work/project/")
+      (should (eq opened record))
+      (should-not activated))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-activates-record ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :session-id "session"))
+        opened
+        activated)
+    (cl-letf
+        (((symbol-function
+           'agent-shell-vertico-transcript--records-for-project)
+          (lambda (_root) (list record)))
+         ((symbol-function 'agent-shell-vertico-transcript--read-record)
+          (lambda (_prompt _records) record))
+         ((symbol-function 'agent-shell-vertico-transcript--open-record)
+          (lambda (selected &optional _other-window)
+            (setq opened selected)))
+         ((symbol-function 'agent-shell-vertico-transcript--activate)
+          (lambda (selected)
+            (setq activated selected))))
+      (agent-shell-vertico-transcript--resume-project-root "/work/project/")
+      (should (eq activated record))
+      (should-not opened))))
+
 (ert-deftest agent-shell-vertico-transcript-search-aggregates-by-transcript ()
   (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
          (directory (expand-file-name ".agent-shell/transcripts" root))
@@ -907,6 +952,106 @@ value would pre-bind it, clobbering embark's own default finder list."
       (delete-directory root t)
       (delete-directory other-root t)
       (delete-directory directory t))))
+
+(ert-deftest agent-shell-vertico-transcript-rg-command-builds-argument-list ()
+  (should
+   (equal
+    (agent-shell-vertico-transcript--rg-command
+     '("/tmp/one" "/tmp/two") "needle")
+    '("rg" "--json" "--smart-case" "--hidden" "--no-ignore"
+      "--glob" "*.md" "--" "needle" "/tmp/one" "/tmp/two")))
+  (should-not
+   (agent-shell-vertico-transcript--rg-command '("/tmp/one") "")))
+
+(ert-deftest agent-shell-vertico-consult-async-candidates-aggregate-matches ()
+  (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
+         (directory (make-temp-file "agent-shell-vertico-search-dir-" t))
+         (file (expand-file-name "transcript.md" directory))
+         (agent-shell-dot-subdir-function (lambda (_subdir) directory))
+         actions)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** session\n\n---\n\n"
+                    "## User\n\nneedle\n"))
+          (let* ((stage
+                  (agent-shell-vertico-consult--async-candidates
+                   (list root)))
+                 (handler
+                  (funcall
+                   stage
+                   (lambda (action)
+                     (push action actions))))
+                 (match
+                  (lambda (line)
+                    (json-encode
+                     `((type . "match")
+                       (data
+                        (path (text . ,file))
+                        (line_number . ,line)
+                        (lines (text . "needle\n"))))))))
+            (funcall handler "needle")
+            (funcall handler 'flush)
+            (setq actions nil)
+            (funcall handler
+                     (list (funcall match 7) (funcall match 9)))
+            (let* ((candidates (car actions))
+                   (record
+                    (get-text-property
+                     0 'agent-shell-vertico-transcript-record
+                     (car candidates))))
+              (should (= (length candidates) 1))
+              (should
+               (= (agent-shell-vertico-transcript-record-match-count
+                   record)
+                  2))
+              (should
+               (= (agent-shell-vertico-transcript-record-match-line
+                   record)
+                  7)))))
+      (delete-directory root t)
+      (delete-directory directory t))))
+
+(ert-deftest agent-shell-vertico-consult-search-uses-process-and-opens-record ()
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :match-line 12))
+         (candidate
+          (agent-shell-vertico-consult--candidate record))
+         process-called
+         opened)
+    (cl-letf
+        (((symbol-function
+           'agent-shell-vertico-transcript--search-directories)
+          (lambda (_roots) '("/tmp/transcripts")))
+         ((symbol-function 'consult--process-collection)
+          (lambda (builder &rest _properties)
+            (setq process-called
+                  (funcall builder "needle"))
+            'async-table))
+         ((symbol-function 'consult--dynamic-collection)
+          (lambda (&rest _arguments)
+            (ert-fail "Synchronous dynamic collection was used")))
+         ((symbol-function 'consult--read)
+          (lambda (table &rest _options)
+            (should (eq table 'async-table))
+            candidate))
+         ((symbol-function 'consult--temporary-files)
+          (lambda () (lambda (&rest _arguments))))
+         ((symbol-function 'consult--jump-state)
+          (lambda () (lambda (&rest _arguments))))
+         ((symbol-function 'agent-shell-vertico-transcript--open-record)
+          (lambda (selected &optional _other-window)
+            (setq opened selected)))
+         ((symbol-function 'agent-shell-vertico-transcript--activate)
+          (lambda (_selected)
+            (ert-fail "Search resumed a transcript"))))
+      (agent-shell-vertico-consult--search '("/work/project/"))
+      (should (equal (car process-called) "rg"))
+      (should (eq opened record)))))
 
 (ert-deftest agent-shell-vertico-consult-candidate-carries-preview-location ()
   (let* ((record
@@ -1043,12 +1188,43 @@ value would pre-bind it, clobbering embark's own default finder list."
     #'agent-shell-vertico-transcript-embark-open))
   (should
    (eq
+    (lookup-key agent-shell-vertico-transcript-embark-map (kbd "b"))
+    #'agent-shell-vertico-transcript-embark-open))
+  (should
+   (eq
     (lookup-key agent-shell-vertico-transcript-embark-map (kbd "r"))
     #'agent-shell-vertico-transcript-embark-resume))
   (should
    (eq
    (lookup-key agent-shell-vertico-transcript-embark-map (kbd "R"))
-    #'agent-shell-vertico-transcript-embark-force-resume)))
+    #'agent-shell-vertico-transcript-embark-force-resume))
+  (should
+   (eq
+    (lookup-key agent-shell-vertico-transcript-embark-map (kbd "d"))
+    #'agent-shell-vertico-transcript-embark-directory)))
+
+(ert-deftest agent-shell-vertico-transcript-embark-directory-opens-working-directory ()
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :working-directory "/work/project/"))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record))
+         opened)
+    (cl-letf (((symbol-function 'dired)
+               (lambda (directory)
+                 (setq opened directory))))
+      (agent-shell-vertico-transcript-embark-directory candidate)
+      (should (equal opened "/work/project/")))))
+
+(ert-deftest agent-shell-vertico-transcript-embark-default-opens-record ()
+  (let (embark-keymap-alist embark-default-action-overrides)
+    (agent-shell-vertico-transcript-setup-embark)
+    (should
+     (eq
+      (alist-get
+       'agent-shell-transcript embark-default-action-overrides)
+      #'agent-shell-vertico-transcript-embark-open))))
 
 (ert-deftest agent-shell-vertico-transcript-set-session-id-updates-legacy-header ()
   (should

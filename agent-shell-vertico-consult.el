@@ -19,12 +19,12 @@
 (require 'consult)
 (require 'subr-x)
 
-(declare-function consult--dynamic-collection "consult" (fun))
 (declare-function consult--file-action "consult" (file))
 (declare-function consult--jump-state "consult" ())
 (declare-function consult--lookup-member "consult" (&rest args))
 (declare-function consult--marker-from-line-column
                   "consult" (buffer line column))
+(declare-function consult--process-collection "consult" (builder &rest props))
 (declare-function consult--read "consult" (table &rest options))
 (declare-function consult--temporary-files "consult" ())
 
@@ -72,13 +72,65 @@
      candidate)
     candidate))
 
-(defun agent-shell-vertico-consult--collection (project-roots input)
-  "Return transcript candidates matching INPUT in PROJECT-ROOTS."
-  (when (and (stringp input) (not (string-empty-p input)))
-    (mapcar
-     #'agent-shell-vertico-consult--candidate
-     (agent-shell-vertico-transcript--search
-      project-roots input))))
+(defun agent-shell-vertico-consult--async-candidates (project-roots)
+  "Return an async stage aggregating rg output for PROJECT-ROOTS."
+  (lambda (sink)
+    (let ((records (make-hash-table :test #'equal))
+          (ignored (make-symbol "ignored")))
+      (lambda (action)
+        (cond
+         ((stringp action)
+          (clrhash records)
+          (funcall sink action))
+         ((eq action 'flush)
+          (clrhash records)
+          (funcall sink action))
+         ((consp action)
+          (dolist (line action)
+            (when-let* ((entry
+                         (agent-shell-vertico-transcript--rg-match-from-json
+                          line)))
+              (let* ((file (car entry))
+                     (match (cdr entry))
+                     (record (gethash file records)))
+                (cond
+                 ((eq record ignored))
+                 ((agent-shell-vertico-transcript-record-p record)
+                  (setf
+                   (agent-shell-vertico-transcript-record-match-count
+                    record)
+                   (1+
+                    (agent-shell-vertico-transcript-record-match-count
+                     record))))
+                 (t
+                  (setq record
+                        (agent-shell-vertico-transcript--record-for-match
+                         file match project-roots))
+                  (puthash file (or record ignored) records))))))
+          (let (found)
+            (maphash
+             (lambda (_file record)
+               (unless (eq record ignored)
+                 (push record found)))
+             records)
+            (setq found
+                  (seq-sort
+                   (lambda (left right)
+                     (time-less-p
+                      (agent-shell-vertico-transcript-record-modified-time
+                       right)
+                      (agent-shell-vertico-transcript-record-modified-time
+                       left)))
+                   found))
+            (funcall sink 'flush)
+            (when found
+              (funcall
+               sink
+               (mapcar
+                #'agent-shell-vertico-consult--candidate
+                found)))))
+         (t
+          (funcall sink action)))))))
 
 (defun agent-shell-vertico-consult--position (candidate &optional opener)
   "Return a Consult marker for CANDIDATE, opening with OPENER."
@@ -145,16 +197,26 @@
       #'agent-shell-vertico-consult--read-record)
 
 (defun agent-shell-vertico-consult--search (project-roots)
-  "Search transcripts belonging to PROJECT-ROOTS and activate one."
+  "Search transcripts belonging to PROJECT-ROOTS and open one."
   (unless project-roots
     (user-error "No projects available for transcript search"))
-  (let* ((collection
-          (apply-partially
-           #'agent-shell-vertico-consult--collection
+  (let* ((directories
+          (agent-shell-vertico-transcript--search-directories
            project-roots))
+         (builder
+          (lambda (input)
+            (agent-shell-vertico-transcript--rg-command
+             directories input)))
+         (collection
+          (consult--process-collection
+           builder
+           :min-input 1
+           :transform
+           (agent-shell-vertico-consult--async-candidates
+            project-roots)))
          (selection
           (consult--read
-           (consult--dynamic-collection collection)
+           collection
            :prompt "Transcript search: "
            :lookup #'consult--lookup-member
            :state (agent-shell-vertico-consult--state)
@@ -163,7 +225,7 @@
            :history '(:input agent-shell-vertico-consult-history)
            :sort nil)))
     (when selection
-      (agent-shell-vertico-transcript--activate
+      (agent-shell-vertico-transcript--open-record
        (get-text-property
         0 'agent-shell-vertico-transcript-record selection)))))
 

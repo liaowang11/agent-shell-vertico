@@ -33,6 +33,7 @@
 (defvar projectile-mode)
 
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
+(declare-function dired "dired" (dirname &optional switches))
 (declare-function projectile-project-root "projectile" (&optional dir))
 (declare-function projectile-relevant-known-projects "projectile" ())
 
@@ -217,23 +218,51 @@ directory header."
      #'agent-shell-vertico-transcript--directory
      project-roots))))
 
+(defun agent-shell-vertico-transcript--rg-command (directories query)
+  "Return an rg command searching DIRECTORIES for QUERY."
+  (when (and directories
+             (stringp query)
+             (not (string-empty-p query)))
+    (unless (executable-find "rg")
+      (user-error "The rg executable is required for transcript search"))
+    (append
+     '("rg" "--json" "--smart-case" "--hidden" "--no-ignore"
+       "--glob" "*.md" "--")
+     (list query)
+     directories)))
+
+(defun agent-shell-vertico-transcript--rg-match-from-json (line)
+  "Return a transcript match entry parsed from rg JSON LINE."
+  (unless (string-empty-p line)
+    (let ((event
+           (json-parse-string
+            line :object-type 'alist
+            :array-type 'list
+            :null-object nil
+            :false-object nil)))
+      (when (equal (map-elt event 'type) "match")
+        (cons
+         (map-nested-elt event '(data path text))
+         (list
+          :count 1
+          :line (map-nested-elt event '(data line_number))
+          :text
+          (string-trim-right
+           (map-nested-elt event '(data lines text)))))))))
+
 (defun agent-shell-vertico-transcript--rg-matches
     (directories query)
   "Return an alist of transcript matches for QUERY in DIRECTORIES.
 
 Each value is a plist containing `:count', `:line', and `:text'."
-  (unless (executable-find "rg")
-    (user-error "The rg executable is required for transcript search"))
-  (when (and directories (not (string-empty-p query)))
+  (when-let* ((command
+               (agent-shell-vertico-transcript--rg-command
+                directories query)))
     (with-temp-buffer
-      (let* ((arguments
-              (append
-               '("--json" "--smart-case" "--hidden" "--no-ignore"
-                 "--glob" "*.md" "--")
-               (list query)
-               directories))
-             (status
-              (apply #'process-file "rg" nil t nil arguments)))
+      (let ((status
+             (apply
+              #'process-file
+              (car command) nil t nil (cdr command))))
         (cond
          ((= status 1) nil)
          ((not (zerop status))
@@ -248,34 +277,16 @@ Each value is a plist containing `:count', `:line', and `:text'."
                       (line-beginning-position)
                       (line-end-position))))
                 (unless (string-empty-p line)
-                  (let ((event
-                         (json-parse-string
-                          line :object-type 'alist
-                          :array-type 'list
-                          :null-object nil
-                          :false-object nil)))
-                    (when (equal (map-elt event 'type) "match")
-                      (let* ((file
-                              (map-nested-elt
-                               event '(data path text)))
-                             (line-number
-                              (map-nested-elt
-                               event '(data line_number)))
-                             (text
-                              (string-trim-right
-                               (map-nested-elt
-                                event '(data lines text))))
-                             (match (gethash file matches)))
-                        (if match
-                            (plist-put
-                             match :count
-                             (1+ (plist-get match :count)))
-                          (puthash
-                           file
-                           (list :count 1
-                                 :line line-number
-                                 :text text)
-                           matches)))))))
+                  (when-let* ((entry
+                               (agent-shell-vertico-transcript--rg-match-from-json
+                                line)))
+                    (let* ((file (car entry))
+                           (match (gethash file matches)))
+                      (if match
+                          (plist-put
+                           match :count
+                           (1+ (plist-get match :count)))
+                        (puthash file (cdr entry) matches))))))
               (forward-line 1))
             (let (result)
               (maphash
@@ -533,9 +544,11 @@ It receives a prompt and a list of transcript records.")
 (defvar-keymap agent-shell-vertico-transcript-embark-map
   :doc "Embark actions for `agent-shell' transcripts."
   "o" #'agent-shell-vertico-transcript-embark-open
+  "b" #'agent-shell-vertico-transcript-embark-open
   "O" #'agent-shell-vertico-transcript-embark-open-other-window
   "r" #'agent-shell-vertico-transcript-embark-resume
   "R" #'agent-shell-vertico-transcript-embark-force-resume
+  "d" #'agent-shell-vertico-transcript-embark-directory
   "c" #'agent-shell-vertico-transcript-embark-clean-view
   "i" #'agent-shell-vertico-transcript-embark-copy-session-id
   "I" #'agent-shell-vertico-transcript-embark-set-session-id
@@ -853,6 +866,18 @@ It receives a prompt and a list of transcript records.")
   (agent-shell-vertico-transcript--resume-record
    (agent-shell-vertico-transcript--embark-record candidate)))
 
+(defun agent-shell-vertico-transcript-embark-directory (candidate)
+  "Open CANDIDATE's working directory in Dired."
+  (let* ((record
+          (agent-shell-vertico-transcript--embark-record candidate))
+         (directory
+          (or
+           (agent-shell-vertico-transcript-record-working-directory
+            record)
+           (file-name-directory
+            (agent-shell-vertico-transcript-record-file record)))))
+    (dired directory)))
+
 (defun agent-shell-vertico-transcript-embark-set-session-id (candidate)
   "Set the session ID for transcript CANDIDATE."
   (agent-shell-vertico-transcript--open-record
@@ -906,7 +931,7 @@ It receives a prompt and a list of transcript records.")
   (add-to-list
    'embark-default-action-overrides
    '(agent-shell-transcript
-     . agent-shell-vertico-transcript-embark-resume)))
+     . agent-shell-vertico-transcript-embark-open)))
 
 (defun agent-shell-vertico-transcript--all-records (&optional project-roots)
   "Return deduplicated records for PROJECT-ROOTS.
@@ -1077,9 +1102,9 @@ When PROJECT-ROOTS is nil, use all known local projects."
         (special-mode)))
     (pop-to-buffer buffer)))
 
-(defun agent-shell-vertico-transcript--browse-project-root
+(defun agent-shell-vertico-transcript--read-project-record
     (project-root &optional resumable-only)
-  "Browse transcripts for PROJECT-ROOT.
+  "Read one transcript record for PROJECT-ROOT.
 When RESUMABLE-ONLY is non-nil, omit records without session IDs."
   (let ((records
          (agent-shell-vertico-transcript--records-for-project
@@ -1089,10 +1114,19 @@ When RESUMABLE-ONLY is non-nil, omit records without session IDs."
             (seq-filter
              #'agent-shell-vertico-transcript-record-session-id
              records)))
-    (agent-shell-vertico-transcript--activate
-     (agent-shell-vertico-transcript--read-record
-      (if resumable-only "Resume session: " "Transcript: ")
-      records))))
+    (agent-shell-vertico-transcript--read-record
+     (if resumable-only "Resume session: " "Transcript: ")
+     records)))
+
+(defun agent-shell-vertico-transcript--browse-project-root (project-root)
+  "Select and open a transcript for PROJECT-ROOT."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--read-project-record project-root)))
+
+(defun agent-shell-vertico-transcript--resume-project-root (project-root)
+  "Select and resume a transcript session for PROJECT-ROOT."
+  (agent-shell-vertico-transcript--activate
+   (agent-shell-vertico-transcript--read-project-record project-root t)))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-browse ()
@@ -1112,15 +1146,15 @@ When RESUMABLE-ONLY is non-nil, omit records without session IDs."
 (defun agent-shell-vertico-transcript-resume ()
   "Select a known project, then resume one of its sessions."
   (interactive)
-  (agent-shell-vertico-transcript--browse-project-root
-   (agent-shell-vertico-transcript--read-project) t))
+  (agent-shell-vertico-transcript--resume-project-root
+   (agent-shell-vertico-transcript--read-project)))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-resume-project ()
   "Resume a transcript session belonging to the current project."
   (interactive)
-  (agent-shell-vertico-transcript--browse-project-root
-   (agent-shell-vertico-transcript--current-project-or-error) t))
+  (agent-shell-vertico-transcript--resume-project-root
+   (agent-shell-vertico-transcript--current-project-or-error)))
 
 (provide 'agent-shell-vertico-transcript)
 
