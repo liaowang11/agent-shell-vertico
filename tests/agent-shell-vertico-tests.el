@@ -1041,7 +1041,7 @@ value would pre-bind it, clobbering embark's own default finder list."
             candidate))
          ((symbol-function 'consult--temporary-files)
           (lambda () (lambda (&rest _arguments))))
-         ((symbol-function 'consult--jump-state)
+         ((symbol-function 'consult--jump-preview)
           (lambda () (lambda (&rest _arguments))))
          ((symbol-function 'agent-shell-vertico-transcript--open-record)
           (lambda (selected &optional _other-window)
@@ -1052,6 +1052,51 @@ value would pre-bind it, clobbering embark's own default finder list."
       (agent-shell-vertico-consult--search '("/work/project/"))
       (should (equal (car process-called) "rg"))
       (should (eq opened record)))))
+
+(ert-deftest agent-shell-vertico-consult-state-previews-without-visiting ()
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :match-line 7))
+         (candidate
+          (agent-shell-vertico-consult--candidate record))
+         (temporary-buffer (generate-new-buffer " *transcript preview*"))
+         actions
+         previewed
+         visited
+         jumped)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'consult--temporary-files)
+              (lambda ()
+                (lambda (&optional name)
+                  (when name (setq previewed name))
+                  temporary-buffer)))
+             ((symbol-function 'consult--jump-preview)
+              (lambda ()
+                (lambda (action _position) (push action actions))))
+             ((symbol-function 'consult--jump-state)
+              (lambda ()
+                (lambda (action position)
+                  (push action actions)
+                  (when (and position (eq action 'return))
+                    (setq jumped t)))))
+             ((symbol-function 'consult--file-action)
+              (lambda (file)
+                (setq visited file)
+                temporary-buffer))
+             ((symbol-function 'consult--marker-from-line-column)
+              (lambda (_buffer _line _column)
+                (with-current-buffer temporary-buffer (point-marker)))))
+          (let ((state (agent-shell-vertico-consult--state)))
+            (funcall state 'preview candidate)
+            (funcall state 'preview nil)
+            (funcall state 'return candidate))
+          (should (equal previewed "/tmp/transcript.md"))
+          (should-not visited)
+          (should-not jumped)
+          (should-not (memq 'return actions)))
+      (kill-buffer temporary-buffer))))
 
 (ert-deftest agent-shell-vertico-consult-candidate-carries-preview-location ()
   (let* ((record
@@ -1100,7 +1145,7 @@ value would pre-bind it, clobbering embark's own default finder list."
                  (car candidates)))
               ((symbol-function 'consult--temporary-files)
                (lambda () (lambda (&rest _arguments))))
-              ((symbol-function 'consult--jump-state)
+              ((symbol-function 'consult--jump-preview)
                (lambda () (lambda (&rest _arguments)))))
       (should
        (eq

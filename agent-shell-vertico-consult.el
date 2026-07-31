@@ -20,7 +20,7 @@
 (require 'subr-x)
 
 (declare-function consult--file-action "consult" (file))
-(declare-function consult--jump-state "consult" ())
+(declare-function consult--jump-preview "consult" ())
 (declare-function consult--lookup-member "consult" (&rest args))
 (declare-function consult--marker-from-line-column
                   "consult" (buffer line column))
@@ -158,17 +158,18 @@
       (cons marker nil))))
 
 (defun agent-shell-vertico-consult--state ()
-  "Return a Consult state function for transcript previews."
+  "Return a Consult state function for transcript previews.
+Previews are temporary.  Selecting a candidate performs no action, so
+the caller decides what to open once the minibuffer is gone."
   (let ((open (consult--temporary-files))
-        (jump (consult--jump-state)))
+        (preview (consult--jump-preview)))
     (lambda (action candidate)
-      (unless candidate
-        (funcall open))
-      (funcall
-       jump action
-       (agent-shell-vertico-consult--position
-        candidate
-       (and (not (eq action 'return)) open))))))
+      (when (eq action 'preview)
+        (funcall
+         preview action
+         (agent-shell-vertico-consult--position candidate open))
+        (unless candidate
+          (funcall open))))))
 
 (defun agent-shell-vertico-consult--read-record (prompt records)
   "Read one transcript from RECORDS with PROMPT and live preview."
