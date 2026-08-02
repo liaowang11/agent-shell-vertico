@@ -26,28 +26,33 @@ consult-style annotations for status, model, mode, title, and path.
 
 `agent-shell-vertico-sidebar` provides a compact side window for jumping
 between live sessions without opening a minibuffer.  It shows a flat list by
-default; `G` switches to project groups.  `TAB` folds or expands a project
-header, or toggles metadata for only the session at point; `RET`/mouse-1 opens
-the selected session or toggles a project header.  Groups are collapsed by
-default, and session metadata is hidden by default.  `S-TAB` toggles that
-default for all sessions, following Org's global-cycle convention.  Each title
-can wrap within the narrow sidebar, up to
+default; `G` switches to project groups.  In flat mode, the default `project`
+metadata entry is promoted to a compact context line below each title (for
+example, `⌂ agent-shell-vertico`); hover shows the full working directory.
+`TAB` folds or expands a project header, or toggles metadata for only the
+session at point.  `RET`/mouse-1 activates the selected row or metadata field;
+the model and mode values open their selectors, while a project value opens
+that directory in another window.  Groups are collapsed by default, and
+session metadata is hidden by default.  `S-TAB` toggles that default for all
+sessions, following Org's global-cycle convention.  Each title can wrap within
+the narrow sidebar, up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
 The layout measures the current sidebar body width and reflows titles when the
 window is resized.
 Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
 which expanded-session values are shown: `status`, `activity`, `project`,
 `model`, `mode`, and `last-user-message`.  Values are packed two per row; the
-default omits `last-user-message`.
+default omits `last-user-message`.  Removing `project` also removes the flat
+context line.
 The default `priority` sort puts sessions waiting for attention first, followed
 by working and ready sessions; in grouped mode, projects follow the
 highest-priority session they contain.  `s` switches between priority, activity,
 recency, status, and name sorting.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
-window is marked for attention.  `RET`/`o` jumps to the session at point and
-the other keys expose the same restart, kill, interrupt, model, mode, traffic,
-and transcript operations as the Vertico Embark map.
+window is marked for attention.  `o` always jumps to the session at point; the
+other keys expose the same restart, kill, interrupt, model, mode, traffic, and
+transcript operations as the Vertico Embark map.
 
 The compact activity value is the age of the last observed agent event, not
 the total session or turn duration; an actively streaming session therefore
@@ -84,8 +89,9 @@ The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
 (traffic/transcript), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
-rows, `RET`/`o` open, `O` opens in another window, `TAB` toggles the current
-row, and `S-TAB` toggles details for all sessions.  `gr` refreshes, `D`
+rows, `RET` activates the current row or metadata field, `o` opens the session,
+`O` opens it in another window, `TAB` toggles the current row, and `S-TAB`
+toggles details for all sessions.  `gr` refreshes, `D`
 kills, `R` restarts, and `I` interrupts the current session; `t` opens its
 transcript and `T` shows traffic.  `q` closes the sidebar, while `G`, `s`,
 `c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains

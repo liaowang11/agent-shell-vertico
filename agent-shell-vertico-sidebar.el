@@ -35,6 +35,7 @@
                   (map state &optional create ignore-parent))
 (declare-function evil-next-line "evil" ())
 (declare-function evil-previous-line "evil" ())
+(declare-function dired-other-window "dired" (dirname))
 
 (defgroup agent-shell-vertico-sidebar nil
   "Compact sidebar for `agent-shell' sessions."
@@ -99,9 +100,10 @@ the session at point; `S-TAB' toggles the default for all sessions."
   "Ordered extra information shown for expanded sessions.
 
 Each selected symbol contributes one value, and values are packed two per
-compact row.  Available symbols are `status', `activity', `project',
-`model', `mode', and `last-user-message'.  The latter shows the latest
-submitted prompt and is omitted by default."
+compact row.  In flat mode, `project' is also shown as the session's compact
+working-directory context line.  Available symbols are `status', `activity',
+`project', `model', `mode', and `last-user-message'.  The latter shows the
+latest submitted prompt and is omitted by default."
   :type '(repeat (choice (const :tag "Status" status)
                          (const :tag "Activity age" activity)
                          (const :tag "Project" project)
@@ -405,33 +407,73 @@ repeating those queries during one redisplay."
        ((< seconds 86400) (format "%dh" (floor (/ seconds 3600))))
        (t (format "%dd" (floor (/ seconds 86400))))))))
 
-(defun agent-shell-vertico-sidebar--extra-info-lines (buffer root width)
+(defun agent-shell-vertico-sidebar--field-help-echo (field)
+  "Return the activation hint for metadata FIELD."
+  (pcase field
+    ('project "RET/mouse-1: open project")
+    ('model "RET/mouse-1: set model")
+    ('mode "RET/mouse-1: set mode")
+    (_ "RET/mouse-1: open session")))
+
+(defun agent-shell-vertico-sidebar--field-text (field text &optional help-echo)
+  "Propertize metadata TEXT as FIELD with optional HELP-ECHO."
+  (when text
+    (let ((help-echo (or help-echo
+                         (agent-shell-vertico-sidebar--field-help-echo field))))
+      (propertize text
+                  'agent-shell-vertico-sidebar-field field
+                  'agent-shell-vertico-sidebar-field-help-echo help-echo
+                  'mouse-face 'highlight
+                  'help-echo help-echo))))
+
+(defun agent-shell-vertico-sidebar--extra-info-lines
+    (buffer root width &optional omit-project)
   "Return selected metadata lines for BUFFER at WIDTH under ROOT.
 
   Values follow `agent-shell-vertico-sidebar-extra-info' and are packed two
-  per row to keep the sidebar compact."
+  per row to keep the sidebar compact.  When OMIT-PROJECT is non-nil, the
+  project value is omitted because flat rows render it as a context line."
   (let* ((last-message
           (when (memq 'last-user-message
                       agent-shell-vertico-sidebar-extra-info)
             (agent-shell-vertico-sidebar--last-user-message buffer)))
-         (values `((status . ,(agent-shell-vertico-sidebar--status-name buffer))
-                   (activity . ,(agent-shell-vertico-sidebar--relative-time
-                                 (agent-shell-vertico-sidebar--activity-time
-                                  buffer)))
-                   (project . ,(agent-shell-vertico-sidebar--project-name root))
-                   (model . ,(or (agent-shell-vertico-sidebar--snapshot-field
-                                  buffer :model)
-                                 (agent-shell-vertico--model-name buffer)))
-                   (mode . ,(or (agent-shell-vertico-sidebar--snapshot-field
-                                 buffer :mode)
-                                (agent-shell-vertico--mode-name buffer)))
-                   (last-user-message
-                    . ,(when last-message
-                         (concat "↳ " last-message)))))
+         (values
+          (list
+           (cons 'status
+                 (agent-shell-vertico-sidebar--field-text
+                  'status
+                  (agent-shell-vertico-sidebar--status-name buffer)))
+           (cons 'activity
+                 (agent-shell-vertico-sidebar--field-text
+                  'activity
+                  (agent-shell-vertico-sidebar--relative-time
+                   (agent-shell-vertico-sidebar--activity-time buffer))))
+           (cons 'project
+                 (agent-shell-vertico-sidebar--field-text
+                  'project
+                  (agent-shell-vertico-sidebar--project-name root)))
+           (cons 'model
+                 (agent-shell-vertico-sidebar--field-text
+                  'model
+                  (or (agent-shell-vertico-sidebar--snapshot-field
+                       buffer :model)
+                      (agent-shell-vertico--model-name buffer))))
+           (cons 'mode
+                 (agent-shell-vertico-sidebar--field-text
+                  'mode
+                  (or (agent-shell-vertico-sidebar--snapshot-field
+                       buffer :mode)
+                      (agent-shell-vertico--mode-name buffer))))
+           (cons 'last-user-message
+                 (agent-shell-vertico-sidebar--field-text
+                  'last-user-message
+                  (when last-message
+                    (concat "↳ " last-message))))))
          fields)
     (dolist (field agent-shell-vertico-sidebar-extra-info)
-      (when-let ((value (alist-get field values)))
-        (push value fields)))
+      (unless (and omit-project (eq field 'project))
+        (when-let ((value (alist-get field values)))
+          (push value fields))))
     (setq fields (nreverse fields))
     (let (lines)
       (while fields
@@ -444,6 +486,17 @@ repeating those queries during one redisplay."
                       'agent-shell-vertico-sidebar-detail)
                 lines)))
       (nreverse lines))))
+
+(defun agent-shell-vertico-sidebar--flat-project-line (root width)
+  "Return the compact flat-row context line for project ROOT at WIDTH."
+  (when (memq 'project agent-shell-vertico-sidebar-extra-info)
+    (cons (agent-shell-vertico-sidebar--field-text
+           'project
+           (agent-shell-vertico-sidebar--fit
+            (concat "⌂ " (agent-shell-vertico-sidebar--project-name root))
+            width)
+           root)
+          'agent-shell-vertico-sidebar-detail)))
 
 (defun agent-shell-vertico-sidebar--session-details-expanded-p (buffer)
   "Return non-nil when BUFFER's detail lines should be shown.
@@ -601,6 +654,13 @@ default in `agent-shell-vertico-sidebar-show-details'."
   (get-text-property (line-beginning-position)
                      'agent-shell-vertico-sidebar-node-kind))
 
+(defun agent-shell-vertico-sidebar--field-at-point ()
+  "Return the metadata field at point, or nil."
+  (or (get-text-property (point) 'agent-shell-vertico-sidebar-field)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point))
+                              'agent-shell-vertico-sidebar-field))))
+
 (defun agent-shell-vertico-sidebar--point-node ()
   "Return the node at point as a kind/object cons."
   (cons (agent-shell-vertico-sidebar--node-kind-at-point)
@@ -633,15 +693,35 @@ default in `agent-shell-vertico-sidebar-show-details'."
           (agent-shell-vertico-sidebar--wrap-text
            (agent-shell-vertico-sidebar--title-display-text title)
            content-width))
+         (project-line
+          (when (not nested)
+            (agent-shell-vertico-sidebar--flat-project-line
+             root content-width)))
          (detail-lines
           (when details-visible
             (agent-shell-vertico-sidebar--extra-info-lines
-             buffer root content-width))))
+             buffer root content-width (not nested)))))
     (setq title-lines
           (cons (concat icon " " (car title-lines))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
+            (when project-line (list project-line))
             detail-lines)))
+
+(defun agent-shell-vertico-sidebar--restore-field-properties (start end)
+  "Restore field-specific hover properties between START and END."
+  (let ((position start))
+    (while (< position end)
+      (let ((next (or (next-single-property-change
+                      position 'agent-shell-vertico-sidebar-field nil end)
+                      end)))
+        (when-let ((help-echo
+                    (get-text-property
+                     position 'agent-shell-vertico-sidebar-field-help-echo)))
+          (add-text-properties position next
+                               (list 'mouse-face 'highlight
+                                     'help-echo help-echo)))
+        (setq position next)))))
 
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
   "Insert session LINES with KIND and NODE text properties.
@@ -667,7 +747,9 @@ header; flat rows keep their status icon at column zero."
      (list 'agent-shell-vertico-sidebar-node node
            'agent-shell-vertico-sidebar-node-kind kind
            'mouse-face 'highlight
-           'help-echo (buffer-name node)))))
+           'help-echo (buffer-name node)))
+    (agent-shell-vertico-sidebar--restore-field-properties
+     start (1- (point)))))
 
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
   "Insert project header ROOT and its BUFFERS at WIDTH."
@@ -1017,6 +1099,41 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
     (agent-shell-vertico--display-session-other-window (buffer-name buffer))
     (agent-shell-vertico-sidebar-refresh)))
 
+(defun agent-shell-vertico-sidebar-open-project ()
+  "Open the session project at point in another window."
+  (interactive)
+  (let* ((buffer (agent-shell-vertico-sidebar--session-at-point))
+         (root (agent-shell-vertico-sidebar--project-root buffer)))
+    (dired-other-window root)
+    (agent-shell-vertico-sidebar-refresh)))
+
+(defun agent-shell-vertico-sidebar--activate-at-point ()
+  "Activate the row or metadata field at point."
+  (pcase (agent-shell-vertico-sidebar--field-at-point)
+    ('model (agent-shell-vertico-sidebar-set-model))
+    ('mode (agent-shell-vertico-sidebar-set-mode))
+    ('project (agent-shell-vertico-sidebar-open-project))
+    (_ (agent-shell-vertico-sidebar-open))))
+
+(defun agent-shell-vertico-sidebar-activate (&optional event)
+  "Activate the row or metadata field at point.
+
+With a mouse EVENT, move to the clicked position before dispatching."
+  (interactive
+   (list (and (mouse-event-p last-input-event) last-input-event)))
+  (if event
+      (let* ((position (event-end event))
+             (window (posn-window position))
+             (point (posn-point position)))
+        (unless (and (window-live-p window)
+                     (integer-or-marker-p point))
+          (user-error "Cannot determine sidebar click position"))
+        (select-window window)
+        (with-current-buffer (window-buffer window)
+          (goto-char point)
+          (agent-shell-vertico-sidebar--activate-at-point)))
+    (agent-shell-vertico-sidebar--activate-at-point)))
+
 (defun agent-shell-vertico-sidebar--call-session-action (function)
   "Call session action FUNCTION for the session at point."
   (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
@@ -1206,8 +1323,8 @@ in that order."
 (defvar agent-shell-vertico-sidebar-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-open)
-    (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-open)
+    (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-activate)
+    (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
@@ -1226,7 +1343,7 @@ in that order."
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
-    (define-key map [mouse-1] #'agent-shell-vertico-sidebar-open)
+    (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "C-c") agent-shell-vertico-sidebar-action-map)
     map)
@@ -1241,11 +1358,11 @@ in that order."
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
     ("k" . evil-previous-line)
-    ("RET" . agent-shell-vertico-sidebar-open)
-    ("<return>" . agent-shell-vertico-sidebar-open)
+    ("RET" . agent-shell-vertico-sidebar-activate)
+    ("<return>" . agent-shell-vertico-sidebar-activate)
     ("TAB" . agent-shell-vertico-sidebar-toggle-at-point)
     ("<tab>" . agent-shell-vertico-sidebar-toggle-at-point)
-    ("<mouse-1>" . agent-shell-vertico-sidebar-open)
+    ("<mouse-1>" . agent-shell-vertico-sidebar-activate)
     ("o" . agent-shell-vertico-sidebar-open)
     ("O" . agent-shell-vertico-sidebar-open-other-window)
     ("S-TAB" . agent-shell-vertico-sidebar-toggle-details)

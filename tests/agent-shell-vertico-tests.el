@@ -238,10 +238,124 @@ Each element in BINDINGS is of the form:
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should (= (count-lines (point-min) (point-max)) 1))
+        (should (string-match-p "⌂ alpha" (buffer-string)))
+        (should (= (count-lines (point-min) (point-max)) 2))
         (should-not (eq (get-text-property
                          (point-min) 'agent-shell-vertico-sidebar-node-kind)
                         'project))))))
+
+(ert-deftest agent-shell-vertico-sidebar-flat-project-context-is-actionable ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "⌂ alpha")
+        (should (eq (get-text-property (1- (point))
+                                       'agent-shell-vertico-sidebar-field)
+                    'project))
+        (should (equal (get-text-property
+                        (1- (point)) 'help-echo)
+                       "/work/alpha/"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-extra-info-fields-are-identifiable ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))])
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan")
+                                         (:name . "Plan"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(mode status model)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (dolist (case '(("Plan" . mode)
+                       ("Ready" . status)
+                       ("GPT-5" . model)))
+          (goto-char (point-min))
+          (search-forward (car case))
+          (should (eq (get-text-property (1- (point))
+                                         'agent-shell-vertico-sidebar-field)
+                      (cdr case))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-activates-fields-at-point ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))])
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan")
+                                         (:name . "Plan"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(project mode model))
+          (opened-root nil))
+      (cl-letf (((symbol-function 'dired-other-window)
+                 (lambda (root) (setq opened-root root))))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (search-forward "Plan")
+          (agent-shell-vertico-sidebar-activate)
+          (should (eq agent-shell-test-last-command
+                      'agent-shell-set-session-mode))
+          (goto-char (point-min))
+          (search-forward "GPT-5")
+          (agent-shell-vertico-sidebar-activate)
+          (should (eq agent-shell-test-last-command
+                      'agent-shell-set-session-model))
+          (goto-char (point-min))
+          (search-forward "⌂ alpha")
+          (agent-shell-vertico-sidebar-activate)
+          (should (equal opened-root "/work/alpha/")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-activation-opens-title-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Review alpha")
+        (agent-shell-vertico-sidebar-activate)
+        (should (eq agent-shell-test-displayed-buffer alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mouse-activation-uses-event-position ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-extra-info '(project))
+          (called nil))
+      (save-window-excursion
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (search-forward "⌂ alpha")
+          (let ((clicked (1- (point)))
+                (sidebar (current-buffer)))
+            (set-window-buffer (selected-window) sidebar)
+            (cl-letf (((symbol-function 'event-end)
+                       (lambda (_event) (list (selected-window) clicked)))
+                      ((symbol-function 'agent-shell-vertico-sidebar-open-project)
+                       (lambda () (setq called t))))
+              (agent-shell-vertico-sidebar-activate 'fake-event)
+              (should called))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-default-extra-info ()
   (should (equal
@@ -412,7 +526,8 @@ Each element in BINDINGS is of the form:
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-group-by nil)
-          (agent-shell-vertico-sidebar-show-details nil))
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status project)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -421,8 +536,8 @@ Each element in BINDINGS is of the form:
         (call-interactively
          (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
         (should (= (how-many "Ready" (point-min) (point-max)) 1))
-        (should (string-match-p "Ready · alpha" (buffer-string)))
-        (should-not (string-match-p "Ready · beta" (buffer-string)))))))
+        (should (string-match-p "⌂ alpha" (buffer-string)))
+        (should-not (string-match-p "Ready.*beta" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-binds-both-tab-events ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB"))
@@ -455,6 +570,15 @@ Each element in BINDINGS is of the form:
   (should (eq (cdr (assoc "k"
                           agent-shell-vertico-sidebar--evil-bindings))
               #'evil-previous-line))
+  (should (eq (cdr (assoc "RET"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-activate))
+  (should (eq (cdr (assoc "<return>"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-activate))
+  (should (eq (cdr (assoc "<mouse-1>"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-activate))
   (should (eq (cdr (assoc "D"
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-kill))
@@ -760,10 +884,13 @@ Each element in BINDINGS is of the form:
 
 (ert-deftest agent-shell-vertico-sidebar-binds-both-return-events ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "RET"))
-              #'agent-shell-vertico-sidebar-open))
+              #'agent-shell-vertico-sidebar-activate))
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
                            (kbd "<return>"))
-              #'agent-shell-vertico-sidebar-open)))
+              #'agent-shell-vertico-sidebar-activate))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
+                           (kbd "<mouse-1>"))
+              #'agent-shell-vertico-sidebar-activate)))
 
 (ert-deftest agent-shell-vertico-sidebar-mouse-face-stops-between-rows ()
   (agent-shell-vertico-tests--with-session-buffers
