@@ -95,6 +95,7 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
                     ((symbol-value 'agent-shell-test-statuses) nil)
+                    ((symbol-value 'agent-shell-test-project-names) nil)
                     ((symbol-value 'agent-shell-test-buffer-query-count) 0)
                     ((symbol-value 'agent-shell-test-status-query-count) 0)
                     ((symbol-value 'agent-shell-test-subscriptions) nil)
@@ -130,6 +131,26 @@ Each element in BINDINGS is of the form:
       (should (equal (mapcar #'car groups)
                      '("/work/alpha/" "/work/beta/")))
       (should (equal (mapcar #'length (mapcar #'cdr groups)) '(2 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-uses-agent-shell-project-name ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-project-names (list (cons alpha "Alpha Workspace")))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-extra-info '(project)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "⌂ Alpha Workspace")
+        (should (equal (get-text-property (1- (point)) 'help-echo)
+                       "/work/alpha/"))
+        (let ((case-fold-search nil))
+          (should-not (string-match-p "⌂ alpha" (buffer-string))))
+        (setq agent-shell-vertico-sidebar-group-by 'project)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "Alpha Workspace" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-priority-puts-attention-first ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -586,6 +607,32 @@ Each element in BINDINGS is of the form:
               #'agent-shell-vertico-sidebar-kill))
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c o"))
               #'agent-shell-vertico-sidebar-open)))
+
+(ert-deftest agent-shell-vertico-sidebar-help-is-discoverable ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "?"))
+              #'agent-shell-vertico-sidebar-help))
+  (should (eq (cdr (assoc "?"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-help))
+  (should (string-match-p "TAB.*toggle"
+                          (agent-shell-vertico-sidebar--help-text)))
+  (should (string-match-p "RET.*activate"
+                          (agent-shell-vertico-sidebar--help-text))))
+
+(ert-deftest agent-shell-vertico-sidebar-help-opens-help-buffer ()
+  (let ((buffer-name agent-shell-vertico-sidebar--help-buffer))
+    (when-let ((buffer (get-buffer buffer-name)))
+      (kill-buffer buffer))
+    (unwind-protect
+        (progn
+          (let ((inhibit-message t))
+            (agent-shell-vertico-sidebar-help))
+          (should (get-buffer buffer-name))
+          (with-current-buffer buffer-name
+            (should (derived-mode-p 'help-mode))
+            (should (string-match-p "Agent Shell Sidebar" (buffer-string)))))
+      (when-let ((buffer (get-buffer buffer-name)))
+        (kill-buffer buffer)))))
 
 (ert-deftest agent-shell-vertico-sidebar-evil-bindings-keep-jk-navigation ()
   (should (eq (cdr (assoc "j"

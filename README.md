@@ -28,7 +28,9 @@ consult-style annotations for status, model, mode, title, and path.
 between live sessions without opening a minibuffer.  It shows a flat list by
 default; `G` switches to project groups.  In flat mode, the default `project`
 metadata entry is promoted to a compact context line below each title (for
-example, `⌂ agent-shell-vertico`); hover shows the full working directory.
+example, `⌂ agent-shell-vertico`); labels prefer agent-shell's configured
+project name and fall back to the directory basename.  Hover shows the full
+working directory.
 `TAB` folds or expands a project header, or toggles metadata for only the
 session at point.  `RET`/mouse-1 activates the selected row or metadata field;
 the model and mode values open their selectors, while a project value opens
@@ -97,7 +99,8 @@ The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
 `S-TAB` (all details),
 `G` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
-(traffic/transcript), and `q` (close the side window).
+(traffic/transcript), `?` (show the key reference), and `q` (close the side
+window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `RET` activates the current row or metadata field, `o` opens the session,
@@ -106,8 +109,8 @@ toggles details for all sessions.  `gr` refreshes, `D`
 kills, `R` restarts, and `I` interrupts the current session; `t` opens its
 transcript and `T` shows traffic.  `q` closes the sidebar, while `G`, `s`,
 `c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains
-Evil's visual-state key.  The local `C-c` prefix remains available as a
-fallback (for example, `C-c k` kills).
+Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
+prefix remains available as a fallback (for example, `C-c k` kills).
 
 ## Transcript recall
 

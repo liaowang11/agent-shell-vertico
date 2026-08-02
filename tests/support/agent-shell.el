@@ -15,6 +15,7 @@
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
 (defvar agent-shell-test-statuses nil)
+(defvar agent-shell-test-project-names nil)
 (defvar agent-shell-test-buffer-query-count 0)
 (defvar agent-shell-test-status-query-count 0)
 (defvar agent-shell-test-subscriptions nil)
@@ -37,6 +38,12 @@
 (defun agent-shell-cwd ()
   "Return the current buffer directory."
   default-directory)
+
+(defun agent-shell--project-name ()
+  "Return the configured project name for the current buffer."
+  (or (cdr (assq (current-buffer) agent-shell-test-project-names))
+      (file-name-nondirectory
+       (directory-file-name default-directory))))
 
 (cl-defun agent-shell-status (&key shell-buffer)
   "Return the stubbed status for SHELL-BUFFER."

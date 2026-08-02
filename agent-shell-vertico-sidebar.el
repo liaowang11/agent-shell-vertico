@@ -27,6 +27,7 @@
 
 (declare-function agent-shell-status "agent-shell" (&key shell-buffer))
 (declare-function agent-shell-cwd "agent-shell-project")
+(declare-function agent-shell--project-name "agent-shell" ())
 (declare-function agent-shell-subscribe-to "agent-shell"
                   (&key shell-buffer event on-event))
 (declare-function agent-shell-unsubscribe "agent-shell" (&key subscription))
@@ -185,10 +186,31 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
               (agent-shell-cwd)
             (error default-directory)))))))
 
-(defun agent-shell-vertico-sidebar--project-name (root)
-  "Return a compact display name for project ROOT."
+(defun agent-shell-vertico-sidebar--fallback-project-name (root)
+  "Return the directory basename for project ROOT."
   (let ((name (file-name-nondirectory (directory-file-name root))))
     (if (string-empty-p name) root name)))
+
+(defun agent-shell-vertico-sidebar--project-name-from-buffer (buffer root)
+  "Return agent-shell's project name for BUFFER, falling back to ROOT."
+  (or (when (and (buffer-live-p buffer)
+                 (fboundp 'agent-shell--project-name))
+        (with-current-buffer buffer
+          (condition-case nil
+              (let ((name (agent-shell--project-name)))
+                (and (stringp name)
+                     (let ((name (string-trim name)))
+                       (unless (string-empty-p name) name))))
+            (error nil))))
+      (agent-shell-vertico-sidebar--fallback-project-name root)))
+
+(defun agent-shell-vertico-sidebar--project-name (root &optional buffer)
+  "Return a compact display name for project ROOT and optional BUFFER."
+  (or (and buffer
+           (agent-shell-vertico-sidebar--snapshot-field buffer :project-name))
+      (and buffer
+           (agent-shell-vertico-sidebar--project-name-from-buffer buffer root))
+      (agent-shell-vertico-sidebar--fallback-project-name root)))
 
 (defun agent-shell-vertico-sidebar--project-expanded-p (root)
   "Return non-nil when project ROOT should show its sessions."
@@ -324,12 +346,15 @@ repeating those queries during one redisplay."
                         (when (eq status 'blocked)
                           (list :kind 'blocked :time activity-time))))
          (root (agent-shell-vertico-sidebar--project-root buffer))
+         (project-name
+          (agent-shell-vertico-sidebar--project-name-from-buffer buffer root))
          (recency-time (or (when-let ((time (buffer-local-value
                                              'buffer-display-time buffer)))
                              (float-time time))
                            0.0)))
     (list :buffer buffer
           :root root
+          :project-name project-name
           :title (agent-shell-vertico-sidebar--title buffer)
           :status status
           :status-name
@@ -452,7 +477,7 @@ repeating those queries during one redisplay."
            (cons 'project
                  (agent-shell-vertico-sidebar--field-text
                   'project
-                  (agent-shell-vertico-sidebar--project-name root)))
+                  (agent-shell-vertico-sidebar--project-name root buffer)))
            (cons 'model
                  (agent-shell-vertico-sidebar--field-text
                   'model
@@ -488,13 +513,14 @@ repeating those queries during one redisplay."
                 lines)))
       (nreverse lines))))
 
-(defun agent-shell-vertico-sidebar--flat-project-line (root width)
-  "Return the compact flat-row context line for project ROOT at WIDTH."
+(defun agent-shell-vertico-sidebar--flat-project-line (buffer root width)
+  "Return the compact flat-row context line for ROOT at WIDTH."
   (when (memq 'project agent-shell-vertico-sidebar-extra-info)
     (cons (agent-shell-vertico-sidebar--field-text
            'project
            (agent-shell-vertico-sidebar--fit
-            (concat "⌂ " (agent-shell-vertico-sidebar--project-name root))
+            (concat "⌂ " (agent-shell-vertico-sidebar--project-name
+                            root buffer))
             width)
            root)
           'agent-shell-vertico-sidebar-detail)))
@@ -641,7 +667,11 @@ default in `agent-shell-vertico-sidebar-show-details'."
     (cl-stable-sort groups
                     (lambda (left right)
                       (if (eq sort-by 'name)
-                          (string-lessp (car left) (car right))
+                          (string-lessp
+                           (agent-shell-vertico-sidebar--project-name
+                            (car left) (cadr left))
+                           (agent-shell-vertico-sidebar--project-name
+                            (car right) (cadr right)))
                         (agent-shell-vertico-sidebar--compare-buffers
                          (cadr left) (cadr right) sort-by))))))
 
@@ -697,7 +727,7 @@ default in `agent-shell-vertico-sidebar-show-details'."
          (project-line
           (when (not nested)
             (agent-shell-vertico-sidebar--flat-project-line
-             root content-width)))
+             buffer root content-width)))
          (detail-lines
           (when details-visible
             (agent-shell-vertico-sidebar--extra-info-lines
@@ -769,7 +799,8 @@ header; flat rows keep their status icon at column zero."
          (summary (format "%d%s" (length buffers)
                          (if (> attention 0) (format " ▲%d" attention) "")))
          (line (format "%s %s  %s" indicator
-                       (agent-shell-vertico-sidebar--project-name root)
+                       (agent-shell-vertico-sidebar--project-name
+                        root (car buffers))
                        summary))
          (start (point)))
     (insert (agent-shell-vertico-sidebar--fit line width) "\n")
@@ -1310,6 +1341,44 @@ in that order."
           (setq parts (append parts (list text))))))
     (concat " " (string-join parts " · "))))
 
+(defconst agent-shell-vertico-sidebar--help-buffer
+  "*Agent Shell Sidebar Help*"
+  "Buffer used by `agent-shell-vertico-sidebar-help'.")
+
+(defun agent-shell-vertico-sidebar--help-text ()
+  "Return the key reference shown by `agent-shell-vertico-sidebar-help'."
+  (concat
+   "Agent Shell Sidebar\n"
+   "===================\n\n"
+   "Navigation\n"
+   "  j / k       Move to the next or previous row\n"
+   "  RET         Activate the row or metadata field\n"
+   "  mouse-1     Activate at the clicked position\n"
+   "  TAB         Toggle a project or current session details\n"
+   "  S-TAB       Toggle the details default for all sessions\n\n"
+   "Actions\n"
+   "  o / O       Open here / open in another window\n"
+   "  G           Toggle flat or project-grouped view\n"
+   "  s           Choose the sort criterion\n"
+   "  g (gr)      Refresh (regular / Evil state)\n"
+   "  c           Create a new session\n"
+   "  m / M       Set mode / model\n"
+   "  t / T       Traffic / transcript (regular); reverse in Evil\n"
+   "  k / r / i   Kill / restart / interrupt (regular state)\n"
+   "  D / R / I   Kill / restart / interrupt (Evil state)\n"
+   "  q           Close the sidebar\n\n"
+   "Metadata values are individually clickable.  Project values open their\n"
+   "working directory; model and mode values open their selectors.\n"
+   "Press ? in the sidebar to show this help again.\n"))
+
+(defun agent-shell-vertico-sidebar-help ()
+  "Display the agent-shell sidebar key reference."
+  (interactive)
+  (require 'help-mode)
+  (with-help-window (get-buffer-create
+                     agent-shell-vertico-sidebar--help-buffer)
+    (insert (agent-shell-vertico-sidebar--help-text))))
+
 (defvar agent-shell-vertico-sidebar-action-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
@@ -1325,6 +1394,7 @@ in that order."
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
     map)
   "Prefix map for sidebar actions that conflict with Evil keys.")
@@ -1352,6 +1422,7 @@ in that order."
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "C-c") agent-shell-vertico-sidebar-action-map)
@@ -1387,6 +1458,7 @@ in that order."
     ("M" . agent-shell-vertico-sidebar-set-model)
     ("t" . agent-shell-vertico-sidebar-open-transcript)
     ("T" . agent-shell-vertico-sidebar-view-traffic)
+    ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
 
@@ -1419,7 +1491,7 @@ while normal and motion states get the same direct mnemonic commands."
         (unless (equal (car binding) "gr")
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "G" "s" "g" "c" "k" "r"
-                     "i" "m" "M" "t" "T" "q"))
+                     "i" "m" "M" "t" "T" "?" "q"))
         (when-let ((command (lookup-key
                              agent-shell-vertico-sidebar-action-map
                              (kbd key))))
