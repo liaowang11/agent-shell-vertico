@@ -80,9 +80,11 @@ current sidebar buffer."
   "Sort criterion used by the agent-shell sidebar.
 
 `priority' puts sessions needing attention first, followed by working,
-ready, and starting sessions.  `activity' uses the latest agent event,
-`recency' uses the last display time, `status' uses only status, and `name'
-sorts by session title."
+ready, and starting sessions.  Within a priority tier, attention uses its
+entry time and working uses the start of its current busy turn; streamed
+activity does not reorder those sessions.  `activity' uses the latest agent
+event, `recency' uses the last display time, `status' uses only status, and
+`name' sorts by session title."
   :type '(choice (const priority) (const activity) (const recency)
                  (const status) (const name))
   :group 'agent-shell-vertico-sidebar)
@@ -121,6 +123,10 @@ Values are plists with `:kind' (`blocked', `done', or `error') and
 
 (defvar agent-shell-vertico-sidebar--activity (make-hash-table :test #'eq)
   "Buffer to the latest observed agent activity timestamp.")
+
+(defvar agent-shell-vertico-sidebar--busy-since-times
+  (make-hash-table :test #'eq)
+  "Buffer to the timestamp when its current busy turn started.")
 
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
   "Buffer to its agent-shell event subscription token.")
@@ -345,6 +351,13 @@ repeating those queries during one redisplay."
                                   agent-shell-vertico-sidebar--attention)
                         (when (eq status 'blocked)
                           (list :kind 'blocked :time activity-time))))
+         (busy-since-time
+          (if (eq status 'busy)
+              (or (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
+                  (puthash buffer (float-time)
+                           agent-shell-vertico-sidebar--busy-since-times))
+            (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
+            nil))
          (root (agent-shell-vertico-sidebar--project-root buffer))
          (project-name
           (agent-shell-vertico-sidebar--project-name-from-buffer buffer root))
@@ -366,6 +379,7 @@ repeating those queries during one redisplay."
           (agent-shell-vertico-sidebar--status-sort-rank-for status)
           :attention attention
           :activity-time activity-time
+          :busy-since-time busy-since-time
           :recency-time recency-time
           :model (agent-shell-vertico--model-name buffer)
           :mode (agent-shell-vertico--mode-name buffer)
@@ -387,10 +401,19 @@ repeating those queries during one redisplay."
         (float-time time))
       0.0))
 
-(defun agent-shell-vertico-sidebar--attention-time (buffer)
-  "Return the timestamp relevant to attention sorting for BUFFER."
+(defun agent-shell-vertico-sidebar--priority-time (buffer)
+  "Return the timestamp used to order BUFFER by priority.
+
+Attention timestamps order sessions waiting for user action.  Working
+sessions use the time their current turn entered the busy state; streamed
+activity is deliberately not a priority tie-breaker."
   (or (plist-get (agent-shell-vertico-sidebar--attention buffer) :time)
-      (agent-shell-vertico-sidebar--activity-time buffer)))
+      (agent-shell-vertico-sidebar--snapshot-field buffer :busy-since-time)
+      (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
+      (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+        (puthash buffer (float-time)
+                 agent-shell-vertico-sidebar--busy-since-times))
+      0.0))
 
 (defun agent-shell-vertico-sidebar--title (buffer)
   "Return a compact title for BUFFER."
@@ -616,7 +639,7 @@ default in `agent-shell-vertico-sidebar-show-details'."
                        (agent-shell-vertico-sidebar--status-rank right)))
          (left-time (pcase sort-by
                       ('priority
-                       (agent-shell-vertico-sidebar--attention-time left))
+                       (agent-shell-vertico-sidebar--priority-time left))
                       ('activity
                        (agent-shell-vertico-sidebar--activity-time left))
                       ('recency (or (agent-shell-vertico-sidebar--snapshot-field
@@ -628,7 +651,7 @@ default in `agent-shell-vertico-sidebar-show-details'."
                       (_ 0.0)))
          (right-time (pcase sort-by
                        ('priority
-                        (agent-shell-vertico-sidebar--attention-time right))
+                        (agent-shell-vertico-sidebar--priority-time right))
                        ('activity
                         (agent-shell-vertico-sidebar--activity-time right))
                        ('recency (or (agent-shell-vertico-sidebar--snapshot-field
@@ -997,27 +1020,37 @@ sessions just to decide whether an age timer is needed."
     (puthash buffer now agent-shell-vertico-sidebar--activity)
     (pcase kind
       ('permission-request
+       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'blocked :time now)
                 agent-shell-vertico-sidebar--attention))
       ('error
+       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'error :time now)
                 agent-shell-vertico-sidebar--attention))
       ('turn-complete
+       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (if (get-buffer-window buffer 'visible)
            (remhash buffer agent-shell-vertico-sidebar--attention)
          (puthash buffer (list :kind 'done :time now)
                   agent-shell-vertico-sidebar--attention)))
       ('input-submitted
+       (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
        (when (eq (plist-get (gethash buffer
                                     agent-shell-vertico-sidebar--attention)
                             :kind)
                  'done)
          (remhash buffer agent-shell-vertico-sidebar--attention)))
       ('permission-response
-       (unless (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)
-         (remhash buffer agent-shell-vertico-sidebar--attention)))
+       (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
+         (unless (eq status 'blocked)
+           (remhash buffer agent-shell-vertico-sidebar--attention))
+         (when (eq status 'busy)
+           (puthash buffer now agent-shell-vertico-sidebar--busy-since-times))))
+      ('idle
+       (remhash buffer agent-shell-vertico-sidebar--busy-since-times))
       ('clean-up
        (remhash buffer agent-shell-vertico-sidebar--attention)
+       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
       (_ nil))
     (agent-shell-vertico-sidebar--schedule-refresh)))
@@ -1030,6 +1063,8 @@ sessions just to decide whether an age timer is needed."
       (ignore-errors (agent-shell-unsubscribe :subscription subscription)))
     (remhash (current-buffer) agent-shell-vertico-sidebar--subscriptions)
     (remhash (current-buffer) agent-shell-vertico-sidebar--attention)
+    (remhash (current-buffer)
+             agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
@@ -1074,6 +1109,7 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
     (dolist (buffer dead)
       (remhash buffer agent-shell-vertico-sidebar--subscriptions)
       (remhash buffer agent-shell-vertico-sidebar--attention)
+      (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
       (remhash buffer agent-shell-vertico-sidebar--activity)))
   (dolist (buffer (if buffers-supplied buffers (agent-shell-buffers)))
     (agent-shell-vertico-sidebar--watch-buffer buffer schedule)))

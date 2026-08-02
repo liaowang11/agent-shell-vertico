@@ -99,6 +99,9 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-buffer-query-count) 0)
                     ((symbol-value 'agent-shell-test-status-query-count) 0)
                     ((symbol-value 'agent-shell-test-subscriptions) nil)
+                    ((symbol-value
+                      'agent-shell-vertico-sidebar--busy-since-times)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value 'agent-shell-agent-configs) nil)
@@ -163,6 +166,47 @@ Each element in BINDINGS is of the form:
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list ready blocked) 'priority)
                      (list blocked ready))))))
+
+(ert-deftest agent-shell-vertico-sidebar-priority-uses-busy-entry-time ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((older "Codex Agent @ older" "/work/older/"
+              '((:session . ((:id . "o") (:title . "Older")))))
+       (newer "Claude Agent @ newer" "/work/newer/"
+              '((:session . ((:id . "n") (:title . "Newer"))))))
+    (let ((agent-shell-test-statuses (list (cons older 'busy)
+                                           (cons newer 'busy))))
+      ;; Streaming chunks can arrive in either order.  Priority must ignore
+      ;; those activity timestamps and preserve the order in which turns
+      ;; entered the working state.
+      (puthash older 100.0 agent-shell-vertico-sidebar--busy-since-times)
+      (puthash newer 200.0 agent-shell-vertico-sidebar--busy-since-times)
+      (puthash older 300.0 agent-shell-vertico-sidebar--activity)
+      (puthash newer 150.0 agent-shell-vertico-sidebar--activity)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list older newer) 'priority)
+                     (list newer older))))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-entry-time-ignores-chunks ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((times '(10.0 20.0 30.0)))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) (pop times))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted)))
+        (should (= (gethash alpha
+                            agent-shell-vertico-sidebar--busy-since-times)
+                   10.0))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (should (= (gethash alpha
+                            agent-shell-vertico-sidebar--busy-since-times)
+                   10.0))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . turn-complete)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))))))
 
 (ert-deftest agent-shell-vertico-sidebar-priority-sorts-project-groups ()
   (agent-shell-vertico-tests--with-session-buffers

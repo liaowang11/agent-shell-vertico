@@ -47,9 +47,11 @@ which expanded-session values are shown: `status`, `activity`, `project`,
 default omits `last-user-message`.  Removing `project` also removes the flat
 context line.
 The default `priority` sort puts sessions waiting for attention first, followed
-by working and ready sessions; in grouped mode, projects follow the
-highest-priority session they contain.  `s` switches between priority, activity,
-recency, status, and name sorting.
+by working and ready sessions; working sessions keep the order in which their
+current turns entered the busy state, so streamed chunks do not make them
+jump.  In grouped mode, projects follow the highest-priority session they
+contain.  `s` switches between priority, activity, recency, status, and name
+sorting.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
 window is marked for attention.  `o` always jumps to the session at point; the
