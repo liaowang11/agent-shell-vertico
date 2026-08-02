@@ -22,6 +22,73 @@ locations are resolved through `agent-shell-dot-subdir-function`.
 Candidates keep the recent ordering from `agent-shell-buffers` and show
 consult-style annotations for status, model, mode, title, and path.
 
+## Session sidebar
+
+`agent-shell-vertico-sidebar` provides a compact side window for jumping
+between live sessions without opening a minibuffer.  It shows a flat list by
+default; `G` switches to project groups.  `TAB` folds or expands a project
+header, or toggles metadata for only the session at point; `RET`/mouse-1 opens
+the selected session or toggles a project header.  Groups are collapsed by
+default, and session metadata is hidden by default.  `S-TAB` toggles that
+default for all sessions, following Org's global-cycle convention.  Each title
+can wrap within the narrow sidebar, up to
+`agent-shell-vertico-sidebar-title-max-length` characters.
+Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
+which expanded-session values are shown: `status`, `activity`, `project`,
+`model`, `mode`, and `last-user-message`.  Values are packed two per row; the
+default omits `last-user-message`.
+The default `priority` sort puts sessions waiting for attention first, followed
+by working and ready sessions; in grouped mode, projects follow the
+highest-priority session they contain.  `s` switches between priority, activity,
+recency, status, and name sorting.
+
+The sidebar follows `agent-shell` events, so a completed turn in another
+window is marked for attention.  `RET`/`o` jumps to the session at point and
+the other keys expose the same restart, kill, interrupt, model, mode, traffic,
+and transcript operations as the Vertico Embark map.
+
+The compact activity value is the age of the last observed agent event, not
+the total session or turn duration; an actively streaming session therefore
+shows `now`.
+
+The header reports the total number of live sessions and compact non-zero
+status counts using the row icons (`▲` attention, `◆` working, `✓` ready, and
+`○` starting); hover a count for its label.
+
+The sidebar hides the regular mode line and uses its compact header for these
+statistics instead.
+
+```elisp
+(use-package agent-shell-vertico-sidebar
+  :load-path "/path/to/agent-shell-vertico"
+  :after agent-shell-vertico
+  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle))
+  :custom
+  (agent-shell-vertico-sidebar-side 'left)
+  (agent-shell-vertico-sidebar-width 40)
+  (agent-shell-vertico-sidebar-title-max-length 80)
+  (agent-shell-vertico-sidebar-group-by nil)
+  (agent-shell-vertico-sidebar-expand-by-default nil)
+  (agent-shell-vertico-sidebar-show-details nil)
+  (agent-shell-vertico-sidebar-extra-info
+   '(status project model mode activity))
+  (agent-shell-vertico-sidebar-sort-by 'priority))
+```
+
+Sidebar keys include `TAB` (fold or session details), `S-TAB` (all details),
+`G` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
+`r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
+(traffic/transcript), and `q` (close the side window).
+
+In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
+rows, `RET`/`o` open, `O` opens in another window, `TAB` toggles the current
+row, and `S-TAB` toggles details for all sessions.  `q` closes the sidebar,
+and the mnemonic actions remain available.  `D` kills the current session so
+`k` remains navigation; `G`, `s`, `g`, `c`, `r`, `i`, `m`/`M`, and `t`/`T`
+retain their sidebar actions while `v` remains Evil's visual-state key.  The
+local `C-c` prefix remains available as a fallback (for example, `C-c k`
+kills).
+
 ## Transcript recall
 
 Browsing is project-first. The `-project` variants operate on the current
@@ -77,6 +144,10 @@ index is written.
   :config
   (with-eval-after-load 'embark
     (agent-shell-vertico-setup-embark)))
+
+(use-package agent-shell-vertico-sidebar
+  :after agent-shell-vertico
+  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)))
 
 (use-package agent-shell-vertico-transcript
   :after agent-shell-vertico

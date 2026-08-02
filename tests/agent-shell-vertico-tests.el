@@ -20,6 +20,7 @@
 (agent-shell-vertico-tests--ensure-agent-shell-stub)
 
 (require 'agent-shell-vertico)
+(require 'agent-shell-vertico-sidebar)
 (require 'agent-shell-vertico-transcript)
 (require 'agent-shell-vertico-consult)
 
@@ -81,6 +82,8 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-command) nil)
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
+                    ((symbol-value 'agent-shell-test-statuses) nil)
+                    ((symbol-value 'agent-shell-test-subscriptions) nil)
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value 'agent-shell-agent-configs) nil)
@@ -99,6 +102,474 @@ Each element in BINDINGS is of the form:
                   bindings)
              ,@body))
        (mapc #'kill-buffer created))))
+
+(ert-deftest agent-shell-vertico-sidebar-groups-by-project-root ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha one")))))
+       (alpha-two "Claude Agent @ alpha-two" "/work/alpha/"
+                  '((:session . ((:id . "a2") (:title . "Alpha two")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((groups (agent-shell-vertico-sidebar--group-buffers
+                   (list alpha alpha-two beta))))
+      (should (equal (mapcar #'car groups)
+                     '("/work/alpha/" "/work/beta/")))
+      (should (equal (mapcar #'length (mapcar #'cdr groups)) '(2 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-priority-puts-attention-first ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ ready" "/work/ready/"
+              '((:session . ((:id . "r") (:title . "Ready")))))
+       (blocked "Claude Agent @ blocked" "/work/blocked/"
+                '((:session . ((:id . "b") (:title . "Blocked"))))))
+    (let ((agent-shell-test-statuses (list (cons ready 'ready)
+                                           (cons blocked 'blocked))))
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list ready blocked) 'priority)
+                     (list blocked ready))))))
+
+(ert-deftest agent-shell-vertico-sidebar-priority-sorts-project-groups ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((quiet "Codex Agent @ quiet" "/work/quiet/"
+              '((:session . ((:id . "q") (:title . "Quiet")))))
+       (urgent-ready "Codex Agent @ urgent-ready" "/work/urgent/"
+                     '((:session . ((:id . "ur") (:title . "Urgent ready")))))
+       (urgent-blocked "Codex Agent @ urgent-blocked" "/work/urgent/"
+                       '((:session . ((:id . "ub")
+                                      (:title . "Urgent blocked"))))))
+    (let ((agent-shell-test-buffers
+           (list quiet urgent-ready urgent-blocked))
+          (agent-shell-test-statuses
+           (list (cons quiet 'ready)
+                 (cons urgent-ready 'ready)
+                 (cons urgent-blocked 'blocked))))
+      (let ((groups (agent-shell-vertico-sidebar--sort-groups
+                     (agent-shell-vertico-sidebar--group-buffers
+                      agent-shell-test-buffers)
+                     'priority)))
+        (should (equal (mapcar #'car groups)
+                       '("/work/urgent/" "/work/quiet/")))
+        (should (eq (cadr (car groups)) urgent-blocked))))))
+
+(ert-deftest agent-shell-vertico-sidebar-defaults-to-flat ()
+  (should-not (default-value 'agent-shell-vertico-sidebar-group-by)))
+
+(ert-deftest agent-shell-vertico-sidebar-default-width-is-roomy ()
+  (should (= (default-value 'agent-shell-vertico-sidebar-width) 40)))
+
+(ert-deftest agent-shell-vertico-sidebar-status-sort-ignores-attention ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ ready" "/work/ready/"
+              '((:session . ((:id . "r") (:title . "Ready")))))
+       (working "Claude Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-statuses (list (cons ready 'ready)
+                                           (cons working 'busy))))
+      (puthash ready (list :kind 'done :time 2.0)
+               agent-shell-vertico-sidebar--attention)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list ready working) 'status)
+                     (list working ready))))))
+
+(ert-deftest agent-shell-vertico-sidebar-recency-sorts-by-display-time ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((old "Codex Agent @ old" "/work/old/"
+            '((:session . ((:id . "o") (:title . "Old")))))
+       (new "Codex Agent @ new" "/work/new/"
+            '((:session . ((:id . "n") (:title . "New"))))))
+    (with-current-buffer old
+      (setq-local buffer-display-time (encode-time 0 0 10 1 1 2026)))
+    (with-current-buffer new
+      (setq-local buffer-display-time (encode-time 0 0 12 1 1 2026)))
+    (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                    (list old new) 'recency)
+                   (list new old)))))
+
+(ert-deftest agent-shell-vertico-sidebar-renders-stacked-session-blocks ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))])
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "alpha" (buffer-string)))
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should (string-match-p "GPT-5" (buffer-string)))
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (should (eq (get-text-property (line-beginning-position)
+                                       'agent-shell-vertico-sidebar-node)
+                    alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-renders-flat-compact-rows ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should (= (count-lines (point-min) (point-max)) 1))
+        (should-not (eq (get-text-property
+                         (point-min) 'agent-shell-vertico-sidebar-node-kind)
+                        'project))))))
+
+(ert-deftest agent-shell-vertico-sidebar-default-extra-info ()
+  (should (equal
+           (default-value 'agent-shell-vertico-sidebar-extra-info)
+           '(status project model mode activity)))
+  (should-not
+   (memq 'last-user-message
+         (default-value 'agent-shell-vertico-sidebar-extra-info))))
+
+(ert-deftest agent-shell-vertico-sidebar-extra-info-selects-fields ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))]))))))
+    (with-current-buffer alpha
+      (insert "Find the failing test")
+      (setq-local comint-last-input-start (copy-marker (point-min))
+                  comint-last-input-end (copy-marker (point-max))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(last-user-message)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (equal
+                 (split-string (substring-no-properties (buffer-string))
+                               "\n" t)
+                 '("✓ Review alpha" "  ↳ Find the failing test")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))])
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan")
+                                         (:name . "Plan"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(mode status model)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (equal
+                 (split-string (substring-no-properties (buffer-string))
+                               "\n" t)
+                 '("✓ Review alpha" "  Plan · Ready" "  GPT-5")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (equal
+                 (split-string (substring-no-properties (buffer-string))
+                               "\n" t)
+                 '("✓ Review alpha")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-flat-rows-have-no-project-indent ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (memq (char-after (point-min)) '(?\s ?\t)))
+        (search-forward "Review beta")
+        (beginning-of-line)
+        (should-not (memq (char-after) '(?\s ?\t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-header-reports-session-statistics ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((attention "Codex Agent @ attention" "/work/attention/"
+                  '((:session . ((:id . "a") (:title . "Attention")))))
+       (working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working")))))
+       (ready "Codex Agent @ ready" "/work/ready/"
+              '((:session . ((:id . "r") (:title . "Ready")))))
+       (starting "Codex Agent @ starting" "/work/starting/"
+                 '((:session . ((:title . "Starting"))))))
+    (let ((agent-shell-test-buffers
+           (list attention working ready starting))
+          (agent-shell-test-statuses
+           (list (cons attention 'blocked)
+                 (cons working 'busy)
+                 (cons ready 'ready)
+                 (cons starting 'starting))))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (let ((header (agent-shell-vertico-sidebar--header-line)))
+          (should
+           (equal (substring-no-properties header)
+                  " 4 sessions · ▲1 · ◆1 · ✓1 · ○1"))
+          (should (<= (string-width header) 34))
+          (let ((position (string-match
+                           "▲1" (substring-no-properties header))))
+            (should position)
+            (should (equal (get-text-property position 'help-echo header)
+                           "attention"))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-expands-projects-by-default ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (string-match-p "Review alpha" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-toggles-session-details ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-toggle-details)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-toggle-details)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (string-match-p "Ready" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-tab-toggles-session-details ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Review alpha")
+        (beginning-of-line)
+        (call-interactively
+         (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "Ready" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-tab-toggles-only-current-flat-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Review alpha")
+        (beginning-of-line)
+        (call-interactively
+         (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
+        (should (= (how-many "Ready" (point-min) (point-max)) 1))
+        (should (string-match-p "Ready · alpha" (buffer-string)))
+        (should-not (string-match-p "Ready · beta" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-binds-both-tab-events ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB"))
+              #'agent-shell-vertico-sidebar-toggle-at-point))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
+                           (kbd "<tab>"))
+              #'agent-shell-vertico-sidebar-toggle-at-point)))
+
+(ert-deftest agent-shell-vertico-sidebar-binds-both-shift-tab-events ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
+                           (kbd "S-TAB"))
+              #'agent-shell-vertico-sidebar-toggle-details))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
+                           (kbd "<backtab>"))
+              #'agent-shell-vertico-sidebar-toggle-details))
+  (should-not (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "v"))))
+
+(ert-deftest agent-shell-vertico-sidebar-action-prefix-preserves-k-navigation ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "k"))
+              #'agent-shell-vertico-sidebar-kill))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c k"))
+              #'agent-shell-vertico-sidebar-kill))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c o"))
+              #'agent-shell-vertico-sidebar-open)))
+
+(ert-deftest agent-shell-vertico-sidebar-evil-bindings-keep-jk-navigation ()
+  (should (eq (cdr (assoc "j"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'evil-next-line))
+  (should (eq (cdr (assoc "k"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'evil-previous-line))
+  (should (eq (cdr (assoc "D"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-kill))
+  (should (eq (cdr (assoc "TAB"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-toggle-at-point))
+  (should (eq (cdr (assoc "S-TAB"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-toggle-details))
+  (should (eq (cdr (assoc "<backtab>"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-toggle-details))
+  (should-not (assoc "v" agent-shell-vertico-sidebar--evil-bindings)))
+
+(ert-deftest agent-shell-vertico-sidebar-hides-mode-line ()
+  (with-temp-buffer
+    (agent-shell-vertico-sidebar-mode)
+    (should-not mode-line-format)))
+
+(ert-deftest agent-shell-vertico-sidebar-wraps-titles-with-a-character-cap ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "A title that is deliberately long"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-title-max-length 18)
+          (agent-shell-vertico-sidebar-width 16))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (> (count-lines (point-min) (point-max)) 1))
+        (should (string-match-p "A title" (buffer-string)))
+        (should-not (string-match-p "deliberately long" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-aligns-truncated-title-ellipsis ()
+  (let* ((title (make-string 140 ?x))
+         (display (agent-shell-vertico-sidebar--title-display-text title))
+         (lines (agent-shell-vertico-sidebar--wrap-text display 34))
+         (last-line (car (last lines))))
+    (should (string-suffix-p "…" last-line))
+    (should (= (string-width last-line) 34))))
+
+(ert-deftest agent-shell-vertico-sidebar-relative-time-calls-recent-now ()
+  (should (equal (agent-shell-vertico-sidebar--relative-time
+                  (float-time))
+                 "now")))
+
+(ert-deftest agent-shell-vertico-sidebar-folds-project-headers ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (agent-shell-vertico-sidebar-toggle-project)
+        (should-not (string-match-p "Review alpha" (buffer-string)))
+        (agent-shell-vertico-sidebar-toggle-project)
+        (should (string-match-p "Review alpha" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-event-marks-hidden-completion ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . turn-complete)))
+    (should (eq (plist-get (gethash alpha
+                                   agent-shell-vertico-sidebar--attention)
+                           :kind)
+                'done))))
+
+(ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Review alpha")
+        (agent-shell-vertico-sidebar-open)
+        (should (eq agent-shell-test-displayed-buffer alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-binds-both-return-events ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "RET"))
+              #'agent-shell-vertico-sidebar-open))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
+                           (kbd "<return>"))
+              #'agent-shell-vertico-sidebar-open)))
+
+(ert-deftest agent-shell-vertico-sidebar-mouse-face-stops-between-rows ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (let ((boundary (next-single-property-change
+                         (point-min) 'mouse-face nil (point-max))))
+          (should (< boundary (point-max)))
+          (should-not (get-text-property boundary 'mouse-face))
+          (should (eq (get-text-property (1+ boundary) 'mouse-face)
+                      'highlight)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatches-session-action ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Review alpha")
+        (agent-shell-vertico-sidebar-view-traffic)
+        (should (eq agent-shell-test-last-command 'agent-shell-view-traffic))
+        (should (eq agent-shell-test-last-buffer alpha))))))
 
 (ert-deftest agent-shell-vertico-tests-use-agent-shell-stub ()
   (should (bound-and-true-p agent-shell-test-stub-p)))

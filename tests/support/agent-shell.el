@@ -14,6 +14,8 @@
 (defvar agent-shell-test-last-buffer nil)
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
+(defvar agent-shell-test-statuses nil)
+(defvar agent-shell-test-subscriptions nil)
 (defvar agent-shell-dot-subdir-function nil)
 (defvar agent-shell-show-config-icons nil)
 (defvar agent-shell-prefer-viewport-interaction nil)
@@ -32,6 +34,23 @@
 (defun agent-shell-cwd ()
   "Return the current buffer directory."
   default-directory)
+
+(cl-defun agent-shell-status (&key shell-buffer)
+  "Return the stubbed status for SHELL-BUFFER."
+  (or (cdr (assq (or shell-buffer (current-buffer))
+                 agent-shell-test-statuses))
+      'ready))
+
+(cl-defun agent-shell-subscribe-to (&key shell-buffer event on-event)
+  "Record a subscription for SHELL-BUFFER, EVENT, and ON-EVENT."
+  (let ((subscription (list shell-buffer event on-event)))
+    (push subscription agent-shell-test-subscriptions)
+    subscription))
+
+(cl-defun agent-shell-unsubscribe (&key subscription)
+  "Remove stubbed SUBSCRIPTION."
+  (setq agent-shell-test-subscriptions
+        (delq subscription agent-shell-test-subscriptions)))
 
 (defun agent-shell-open-transcript ()
   "Record an open transcript action."
