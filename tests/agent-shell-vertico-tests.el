@@ -4,6 +4,7 @@
 
 (require 'ert)
 (require 'map)
+(require 'timer)
 
 (add-to-list 'load-path (expand-file-name "tests/support" default-directory))
 (add-to-list 'load-path default-directory)
@@ -31,6 +32,17 @@
 (defvar embark-default-action-overrides)
 (defvar embark-target-finders)
 (defvar agent-shell-viewport-view-mode-hook)
+
+(defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
+  "Evaluate BODY in a freshly initialized named sidebar buffer."
+  (declare (indent 0) (debug t))
+  `(let ((sidebar (get-buffer-create "*Agent Shell Sessions*")))
+     (unwind-protect
+         (with-current-buffer sidebar
+           (agent-shell-vertico-sidebar-mode)
+           ,@body)
+       (when (buffer-live-p sidebar)
+         (kill-buffer sidebar)))))
 
 (cl-defun agent-shell-vertico-tests--insert-block
     (&key qid kind group-id label-left label-right body (navigatable t))
@@ -83,6 +95,8 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
                     ((symbol-value 'agent-shell-test-statuses) nil)
+                    ((symbol-value 'agent-shell-test-buffer-query-count) 0)
+                    ((symbol-value 'agent-shell-test-status-query-count) 0)
                     ((symbol-value 'agent-shell-test-subscriptions) nil)
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
@@ -444,6 +458,24 @@ Each element in BINDINGS is of the form:
   (should (eq (cdr (assoc "D"
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-kill))
+  (should (eq (cdr (assoc "R"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-restart))
+  (should (eq (cdr (assoc "I"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-interrupt))
+  (should-not (assoc "r" agent-shell-vertico-sidebar--evil-bindings))
+  (should-not (assoc "i" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (cdr (assoc "gr"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-refresh))
+  (should-not (assoc "g" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (cdr (assoc "t"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-open-transcript))
+  (should (eq (cdr (assoc "T"
+                          agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-view-traffic))
   (should (eq (cdr (assoc "TAB"
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-toggle-at-point))
@@ -454,6 +486,22 @@ Each element in BINDINGS is of the form:
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-toggle-details))
   (should-not (assoc "v" agent-shell-vertico-sidebar--evil-bindings)))
+
+(ert-deftest agent-shell-vertico-sidebar-evil-bindings-install-gr-prefix ()
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (_state key definition)
+                 (push (cons key definition) bindings)))
+              ((symbol-function 'evil-get-auxiliary-keymap)
+               (lambda (&rest _args) nil)))
+      (agent-shell-vertico-sidebar--bind-evil-keys)
+      (let ((refresh-prefix (cdr (assoc "g" bindings))))
+        (should (keymapp refresh-prefix))
+        (should (eq (lookup-key refresh-prefix (kbd "r"))
+                    #'agent-shell-vertico-sidebar-refresh)))
+      (should (eq (cdr (assoc "gr"
+                              agent-shell-vertico-sidebar--evil-bindings))
+                  #'agent-shell-vertico-sidebar-refresh)))))
 
 (ert-deftest agent-shell-vertico-sidebar-hides-mode-line ()
   (with-temp-buffer
@@ -477,17 +525,196 @@ Each element in BINDINGS is of the form:
         (should (string-match-p "A title" (buffer-string)))
         (should-not (string-match-p "deliberately long" (buffer-string)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-aligns-truncated-title-ellipsis ()
-  (let* ((title (make-string 140 ?x))
+(ert-deftest agent-shell-vertico-sidebar-title-ellipsis-does-not-pad ()
+  (let* ((agent-shell-vertico-sidebar-title-max-length 40)
+         (title "3a36c40 origin/main Add compact agent-shell-vertico long tail")
          (display (agent-shell-vertico-sidebar--title-display-text title))
          (lines (agent-shell-vertico-sidebar--wrap-text display 34))
          (last-line (car (last lines))))
-    (should (string-suffix-p "…" last-line))
-    (should (= (string-width last-line) 34))))
+    (should (equal (car lines)
+                   "3a36c40 origin/main Add compact"))
+    (should (equal last-line "agent-s…"))
+    (should-not (string-match-p " +…\\'" last-line))))
+
+(ert-deftest agent-shell-vertico-sidebar-title-normalizes-whitespace ()
+  (should (equal
+           (agent-shell-vertico-sidebar--title-display-text
+            "  first\nsecond\tthird  ")
+           "first second third")))
+
+(ert-deftest agent-shell-vertico-sidebar-refreshes-on-window-resize ()
+  (should (memq #'agent-shell-vertico-sidebar--window-size-change
+               window-size-change-functions)))
+
+(ert-deftest agent-shell-vertico-sidebar-event-burst-keeps-one-idle-refresh ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (callbacks nil)
+          (delay nil)
+          (timer-calls 0))
+      (agent-shell-vertico-tests--with-sidebar
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&optional _buffer) t))
+                  ((symbol-function 'run-with-idle-timer)
+                   (lambda (idle-delay _repeat function &rest _args)
+                     (setq delay idle-delay)
+                     (cl-incf timer-calls)
+                     (push function callbacks)
+                     (timer-create))))
+          (dotimes (_ 10000)
+            (agent-shell-vertico-sidebar--handle-event
+             alpha '((:event . chunk))))
+          (should (= timer-calls 1))
+          (should (= delay 0.5))
+          (should (= (length callbacks) 1))
+          (should agent-shell-vertico-sidebar--dirty))))))
+
+(ert-deftest agent-shell-vertico-sidebar-hidden-events-do-not-schedule-refresh ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (timer-calls 0))
+      (agent-shell-vertico-tests--with-sidebar
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&optional _buffer) nil))
+                  ((symbol-function 'run-with-idle-timer)
+                   (lambda (&rest _args)
+                     (cl-incf timer-calls)
+                     (timer-create))))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . chunk)))
+          (should (= timer-calls 0))
+          (should agent-shell-vertico-sidebar--dirty)
+          (should-not (timerp agent-shell-vertico-sidebar--refresh-timer)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dirty-state-renders-on-reopen ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (render-calls 0))
+      (agent-shell-vertico-tests--with-sidebar
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&optional _buffer) nil)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . chunk)))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-sidebar--sidebar-visible-p)
+                     (lambda (&optional _buffer) t))
+                    ((symbol-function
+                     'agent-shell-vertico-sidebar--render)
+                     (lambda () (cl-incf render-calls))))
+            (agent-shell-vertico-sidebar--render)
+            (should (= render-calls 1))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-uses-one-live-snapshot ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Claude Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (agent-shell-vertico-tests--with-sidebar
+        (should (= agent-shell-test-buffer-query-count 1))
+        (should (= agent-shell-test-status-query-count 2))
+        (should (stringp header-line-format))
+        (let ((agent-shell-test-buffer-query-count 0)
+              (agent-shell-test-status-query-count 0))
+          (format-mode-line header-line-format)
+          (should (= agent-shell-test-buffer-query-count 0))
+          (should (= agent-shell-test-status-query-count 0)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-empty-render-queries-sessions-once ()
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-test-buffer-query-count 0)
+        (agent-shell-test-status-query-count 0))
+    (agent-shell-vertico-tests--with-sidebar
+      (should (= agent-shell-test-buffer-query-count 1))
+      (should (= agent-shell-test-status-query-count 0)))))
+
+(ert-deftest agent-shell-vertico-sidebar-age-refresh-uses-minute-idle ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (timer-args nil)
+          (agent-shell-vertico-sidebar-extra-info '(activity))
+          (agent-shell-vertico-sidebar-show-details t))
+      (agent-shell-vertico-tests--with-sidebar
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&optional _buffer) t))
+                  ((symbol-function 'run-with-timer)
+                   (lambda (delay repeat function &rest args)
+                     (setq timer-args (list delay repeat function args))
+                     (timer-create))))
+          (agent-shell-vertico-sidebar--ensure-age-refresh)
+          (should (= (car timer-args) 60))
+          (should (= (cadr timer-args) 60)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-age-refresh-skips-hidden-details ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (timer-calls 0)
+          (agent-shell-vertico-sidebar-extra-info nil)
+          (agent-shell-vertico-sidebar-show-details t))
+      (agent-shell-vertico-tests--with-sidebar
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&optional _buffer) t))
+                  ((symbol-function 'run-with-timer)
+                   (lambda (&rest _args)
+                     (cl-incf timer-calls)
+                     (timer-create))))
+          (agent-shell-vertico-sidebar--ensure-age-refresh)
+          (should (= timer-calls 0)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resize-events-coalesce ()
+  (let ((callbacks nil)
+        (timer-calls 0)
+        (render-calls 0))
+    (agent-shell-vertico-tests--with-sidebar
+      (setq-local agent-shell-vertico-sidebar--last-rendered-width 20)
+      (cl-letf (((symbol-function 'get-buffer-window)
+                 (lambda (&rest _args) (selected-window)))
+                ((symbol-function 'window-body-width)
+                 (lambda (&rest _args) 30))
+                ((symbol-function 'run-with-idle-timer)
+                 (lambda (_delay _repeat function &rest _args)
+                   (cl-incf timer-calls)
+                   (push function callbacks)
+                   (timer-create)))
+                ((symbol-function 'agent-shell-vertico-sidebar--render)
+                 (lambda () (cl-incf render-calls))))
+        (dotimes (_ 10)
+          (agent-shell-vertico-sidebar--window-size-change))
+        (should (= timer-calls 1))
+        (funcall (car callbacks))
+        (should (= render-calls 1))
+        (should (= agent-shell-vertico-sidebar--last-rendered-width 30))
+        (agent-shell-vertico-sidebar--window-size-change)
+        (should (= timer-calls 1))))))
 
 (ert-deftest agent-shell-vertico-sidebar-relative-time-calls-recent-now ()
   (should (equal (agent-shell-vertico-sidebar--relative-time
                   (float-time))
+                 "now")))
+
+(ert-deftest agent-shell-vertico-sidebar-relative-time-buckets-under-a-minute ()
+  (should (equal (agent-shell-vertico-sidebar--relative-time
+                  (- (float-time) 30))
                  "now")))
 
 (ert-deftest agent-shell-vertico-sidebar-folds-project-headers ()

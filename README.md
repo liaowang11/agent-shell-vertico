@@ -33,6 +33,8 @@ default, and session metadata is hidden by default.  `S-TAB` toggles that
 default for all sessions, following Org's global-cycle convention.  Each title
 can wrap within the narrow sidebar, up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
+The layout measures the current sidebar body width and reflows titles when the
+window is resized.
 Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
 which expanded-session values are shown: `status`, `activity`, `project`,
 `model`, `mode`, and `last-user-message`.  Values are packed two per row; the
@@ -75,19 +77,20 @@ statistics instead.
   (agent-shell-vertico-sidebar-sort-by 'priority))
 ```
 
-Sidebar keys include `TAB` (fold or session details), `S-TAB` (all details),
+The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
+`S-TAB` (all details),
 `G` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
 (traffic/transcript), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `RET`/`o` open, `O` opens in another window, `TAB` toggles the current
-row, and `S-TAB` toggles details for all sessions.  `q` closes the sidebar,
-and the mnemonic actions remain available.  `D` kills the current session so
-`k` remains navigation; `G`, `s`, `g`, `c`, `r`, `i`, `m`/`M`, and `t`/`T`
-retain their sidebar actions while `v` remains Evil's visual-state key.  The
-local `C-c` prefix remains available as a fallback (for example, `C-c k`
-kills).
+row, and `S-TAB` toggles details for all sessions.  `gr` refreshes, `D`
+kills, `R` restarts, and `I` interrupts the current session; `t` opens its
+transcript and `T` shows traffic.  `q` closes the sidebar, while `G`, `s`,
+`c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains
+Evil's visual-state key.  The local `C-c` prefix remains available as a
+fallback (for example, `C-c k` kills).
 
 ## Transcript recall
 

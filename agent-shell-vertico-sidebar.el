@@ -122,11 +122,23 @@ Values are plists with `:kind' (`blocked', `done', or `error') and
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
   "Buffer to its agent-shell event subscription token.")
 
-(defvar agent-shell-vertico-sidebar--refresh-timer nil
-  "Pending debounced sidebar refresh timer.")
+(defvar-local agent-shell-vertico-sidebar--refresh-timer nil
+  "Pending idle sidebar refresh timer.")
 
-(defvar agent-shell-vertico-sidebar--age-refresh-timer nil
+(defvar-local agent-shell-vertico-sidebar--age-refresh-timer nil
   "Timer that keeps visible activity ages current.")
+
+(defvar-local agent-shell-vertico-sidebar--resize-timer nil
+  "Pending idle sidebar resize timer.")
+
+(defvar-local agent-shell-vertico-sidebar--dirty nil
+  "Non-nil when an event changed the sidebar's rendered state.")
+
+(defvar-local agent-shell-vertico-sidebar--last-rendered-width nil
+  "Body width used by the most recent sidebar render.")
+
+(defvar-local agent-shell-vertico-sidebar--render-snapshots nil
+  "Buffer-to-snapshot table used during one sidebar render.")
 
 (defvar-local agent-shell-vertico-sidebar--expanded-projects nil
   "Hash table of expanded project roots in the current sidebar buffer.")
@@ -163,12 +175,13 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
 
 (defun agent-shell-vertico-sidebar--project-root (buffer)
   "Return the normalized project root for BUFFER."
-  (with-current-buffer buffer
-    (file-name-as-directory
-     (expand-file-name
-      (condition-case nil
-          (agent-shell-cwd)
-        (error default-directory))))))
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :root)
+      (with-current-buffer buffer
+        (file-name-as-directory
+         (expand-file-name
+          (condition-case nil
+              (agent-shell-cwd)
+            (error default-directory)))))))
 
 (defun agent-shell-vertico-sidebar--project-name (root)
   "Return a compact display name for project ROOT."
@@ -202,7 +215,8 @@ Return an alist whose keys are roots and whose values are buffer lists."
 
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the raw status symbol for BUFFER."
-  (or (when (fboundp 'agent-shell-status)
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
+      (when (fboundp 'agent-shell-status)
         (condition-case nil
             (agent-shell-status :shell-buffer buffer)
           (error nil)))
@@ -215,7 +229,8 @@ Return an alist whose keys are roots and whose values are buffer lists."
 
 (defun agent-shell-vertico-sidebar--attention (buffer)
   "Return attention metadata for BUFFER, or nil."
-  (or (gethash buffer agent-shell-vertico-sidebar--attention)
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :attention)
+      (gethash buffer agent-shell-vertico-sidebar--attention)
       (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)
         (list :kind 'blocked
               :time (or (gethash buffer agent-shell-vertico-sidebar--activity)
@@ -226,12 +241,67 @@ Return an alist whose keys are roots and whose values are buffer lists."
 
 (defun agent-shell-vertico-sidebar--status-name (buffer)
   "Return a display status name for BUFFER."
-  (pcase (plist-get (agent-shell-vertico-sidebar--attention buffer) :kind)
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-name)
+      (pcase (plist-get (agent-shell-vertico-sidebar--attention buffer) :kind)
+        ('blocked "Waiting")
+        ('done "Done")
+        ('error "Error")
+        (_
+         (pcase (agent-shell-vertico-sidebar--raw-status buffer)
+           ('busy "Working")
+           ('ready (if (agent-shell-vertico--session-field buffer :id)
+                       "Ready"
+                     "Starting"))
+           ('starting "Starting")
+           (_ "Unknown"))))))
+
+(defun agent-shell-vertico-sidebar--status-rank (buffer)
+  "Return a status rank for BUFFER.  Lower ranks sort first."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-rank)
+      (cond
+       ((agent-shell-vertico-sidebar--attention buffer) 0)
+       ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy) 1)
+       ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'ready) 2)
+       (t 3))))
+
+(defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
+  "Return the raw status rank for BUFFER.  Lower ranks sort first.
+
+Unlike `agent-shell-vertico-sidebar--status-rank', this deliberately
+ignores attention metadata; attention is the concern of `priority'."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :raw-status-rank)
+      (pcase (agent-shell-vertico-sidebar--raw-status buffer)
+        ('blocked 0)
+        ('busy 1)
+        ('ready 2)
+        ('starting 3)
+        (_ 4))))
+
+(defun agent-shell-vertico-sidebar--status-rank-for (status attention)
+  "Return the priority rank for STATUS and ATTENTION metadata."
+  (cond
+   (attention 0)
+   ((eq status 'busy) 1)
+   ((eq status 'ready) 2)
+   (t 3)))
+
+(defun agent-shell-vertico-sidebar--status-sort-rank-for (status)
+  "Return the raw status rank for STATUS."
+  (pcase status
+    ('blocked 0)
+    ('busy 1)
+    ('ready 2)
+    ('starting 3)
+    (_ 4)))
+
+(defun agent-shell-vertico-sidebar--status-name-for (buffer status attention)
+  "Return a display status for BUFFER from STATUS and ATTENTION."
+  (pcase (plist-get attention :kind)
     ('blocked "Waiting")
     ('done "Done")
     ('error "Error")
     (_
-     (pcase (agent-shell-vertico-sidebar--raw-status buffer)
+     (pcase status
        ('busy "Working")
        ('ready (if (agent-shell-vertico--session-field buffer :id)
                    "Ready"
@@ -239,29 +309,53 @@ Return an alist whose keys are roots and whose values are buffer lists."
        ('starting "Starting")
        (_ "Unknown")))))
 
-(defun agent-shell-vertico-sidebar--status-rank (buffer)
-  "Return a status rank for BUFFER.  Lower ranks sort first."
-  (cond
-   ((agent-shell-vertico-sidebar--attention buffer) 0)
-   ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy) 1)
-   ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'ready) 2)
-   (t 3)))
+(defun agent-shell-vertico-sidebar--session-snapshot (buffer)
+  "Return one render snapshot for live session BUFFER.
 
-(defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
-  "Return the raw status rank for BUFFER.  Lower ranks sort first.
+The snapshot deliberately reads the live status once.  Sorting, grouping,
+header statistics, and row rendering consume the resulting plist instead of
+repeating those queries during one redisplay."
+  (let* ((status (agent-shell-vertico-sidebar--raw-status buffer))
+         (activity-time (agent-shell-vertico-sidebar--activity-time buffer))
+         (attention (or (gethash buffer
+                                  agent-shell-vertico-sidebar--attention)
+                        (when (eq status 'blocked)
+                          (list :kind 'blocked :time activity-time))))
+         (root (agent-shell-vertico-sidebar--project-root buffer))
+         (recency-time (or (when-let ((time (buffer-local-value
+                                             'buffer-display-time buffer)))
+                             (float-time time))
+                           0.0)))
+    (list :buffer buffer
+          :root root
+          :title (agent-shell-vertico-sidebar--title buffer)
+          :status status
+          :status-name
+          (agent-shell-vertico-sidebar--status-name-for
+           buffer status attention)
+          :status-rank (agent-shell-vertico-sidebar--status-rank-for
+                        status attention)
+          :raw-status-rank
+          (agent-shell-vertico-sidebar--status-sort-rank-for status)
+          :attention attention
+          :activity-time activity-time
+          :recency-time recency-time
+          :model (agent-shell-vertico--model-name buffer)
+          :mode (agent-shell-vertico--mode-name buffer)
+          :details-visible
+          (agent-shell-vertico-sidebar--session-details-expanded-p buffer))))
 
-Unlike `agent-shell-vertico-sidebar--status-rank', this deliberately
-ignores attention metadata; attention is the concern of `priority'."
-  (pcase (agent-shell-vertico-sidebar--raw-status buffer)
-    ('blocked 0)
-    ('busy 1)
-    ('ready 2)
-    ('starting 3)
-    (_ 4)))
+(defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
+  "Return FIELD from BUFFER's current render snapshot, when available."
+  (when-let ((snapshot
+              (and (hash-table-p agent-shell-vertico-sidebar--render-snapshots)
+                   (gethash buffer agent-shell-vertico-sidebar--render-snapshots))))
+    (plist-get snapshot field)))
 
 (defun agent-shell-vertico-sidebar--activity-time (buffer)
   "Return latest observed activity time for BUFFER."
-  (or (gethash buffer agent-shell-vertico-sidebar--activity)
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :activity-time)
+      (gethash buffer agent-shell-vertico-sidebar--activity)
       (when-let ((time (buffer-local-value 'buffer-display-time buffer)))
         (float-time time))
       0.0))
@@ -273,13 +367,14 @@ ignores attention metadata; attention is the concern of `priority'."
 
 (defun agent-shell-vertico-sidebar--title (buffer)
   "Return a compact title for BUFFER."
-  (let ((title (agent-shell-vertico--title buffer)))
-    (if (or (null title) (string= title "-"))
-        (let ((name (buffer-name buffer)))
-          (if (string-match " Agent @ \\(.*\\)\\'" name)
-              (match-string 1 name)
-            name))
-      title)))
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :title)
+      (let ((title (agent-shell-vertico--title buffer)))
+        (if (or (null title) (string= title "-"))
+            (let ((name (buffer-name buffer)))
+              (if (string-match " Agent @ \\(.*\\)\\'" name)
+                  (match-string 1 name)
+                name))
+          title))))
 
 (defun agent-shell-vertico-sidebar--last-user-message (buffer)
   "Return the latest submitted user message for BUFFER, or nil."
@@ -305,8 +400,7 @@ ignores attention metadata; attention is the concern of `priority'."
   (when (> time 0)
     (let ((seconds (max 0 (- (float-time) time))))
       (cond
-       ((< seconds 1) "now")
-       ((< seconds 60) (format "%ds" (floor seconds)))
+       ((< seconds 60) "now")
        ((< seconds 3600) (format "%dm" (floor (/ seconds 60))))
        ((< seconds 86400) (format "%dh" (floor (/ seconds 3600))))
        (t (format "%dd" (floor (/ seconds 86400))))))))
@@ -325,8 +419,12 @@ ignores attention metadata; attention is the concern of `priority'."
                                  (agent-shell-vertico-sidebar--activity-time
                                   buffer)))
                    (project . ,(agent-shell-vertico-sidebar--project-name root))
-                   (model . ,(agent-shell-vertico--model-name buffer))
-                   (mode . ,(agent-shell-vertico--mode-name buffer))
+                   (model . ,(or (agent-shell-vertico-sidebar--snapshot-field
+                                  buffer :model)
+                                 (agent-shell-vertico--model-name buffer)))
+                   (mode . ,(or (agent-shell-vertico-sidebar--snapshot-field
+                                 buffer :mode)
+                                (agent-shell-vertico--mode-name buffer)))
                    (last-user-message
                     . ,(when last-message
                          (concat "↳ " last-message)))))
@@ -362,10 +460,12 @@ default in `agent-shell-vertico-sidebar-show-details'."
             value))
       agent-shell-vertico-sidebar-show-details)))
 
-(defun agent-shell-vertico-sidebar--any-session-details-visible-p ()
+(defun agent-shell-vertico-sidebar--any-session-details-visible-p
+    (&optional buffers)
   "Return non-nil when any live session has visible detail lines."
   (seq-some #'agent-shell-vertico-sidebar--session-details-expanded-p
-            (seq-filter #'buffer-live-p (agent-shell-buffers))))
+            (seq-filter #'buffer-live-p
+                        (or buffers (agent-shell-buffers)))))
 
 (defun agent-shell-vertico-sidebar--join (fields)
   "Join non-empty strings in FIELDS with a middle dot."
@@ -377,15 +477,15 @@ default in `agent-shell-vertico-sidebar-show-details'."
 (defun agent-shell-vertico-sidebar--title-display-text (title)
   "Truncate TITLE to the configured display character limit."
   (let* ((limit (max 1 agent-shell-vertico-sidebar-title-max-length))
-         (title (or title "")))
+         (title (string-trim
+                 (replace-regexp-in-string "[[:space:]]+" " "
+                                           (or title "")))))
     (if (> (length title) limit)
         (concat (substring title 0 (max 0 (1- limit))) "…")
       title)))
 
 (defun agent-shell-vertico-sidebar--wrap-text (text width)
-  "Wrap TEXT to WIDTH columns, preserving words where possible.
-
-Right-align a terminal ellipsis on the final line when present."
+  "Wrap TEXT to WIDTH columns, preserving words where possible."
   (let ((remaining (string-trim (or text "")))
         (width (max 1 width))
         lines)
@@ -402,19 +502,7 @@ Right-align a terminal ellipsis on the final line when present."
               (string-trim-left
                (substring remaining
                           (if (and break (> break 0)) (1+ break) cut))))))
-    (let ((result (nreverse (cons remaining lines))))
-      (when-let ((tail (and (string-suffix-p "…" (car (last result)))
-                            (last result))))
-        (let* ((line (car tail))
-               (prefix (substring line 0 -1))
-               (prefix-width (max 0 (1- width)))
-               (prefix (truncate-string-to-width
-                        prefix prefix-width 0 nil nil))
-               (padding (make-string
-                         (max 0 (- prefix-width (string-width prefix)))
-                         ?\s)))
-          (setcar tail (concat prefix padding "…"))))
-      result)))
+    (nreverse (cons remaining lines))))
 
 (defun agent-shell-vertico-sidebar--fit (string width)
   "Fit STRING to WIDTH columns, adding an ellipsis when needed."
@@ -451,9 +539,10 @@ Right-align a terminal ellipsis on the final line when present."
                        (agent-shell-vertico-sidebar--attention-time left))
                       ('activity
                        (agent-shell-vertico-sidebar--activity-time left))
-                      ('recency (or (when-let ((time (buffer-local-value
-                                                       'buffer-display-time
-                                                       left)))
+                      ('recency (or (agent-shell-vertico-sidebar--snapshot-field
+                                     left :recency-time)
+                                    (when-let ((time (buffer-local-value
+                                                       'buffer-display-time left)))
                                       (float-time time))
                                     0.0))
                       (_ 0.0)))
@@ -462,9 +551,10 @@ Right-align a terminal ellipsis on the final line when present."
                         (agent-shell-vertico-sidebar--attention-time right))
                        ('activity
                         (agent-shell-vertico-sidebar--activity-time right))
-                       ('recency (or (when-let ((time (buffer-local-value
-                                                        'buffer-display-time
-                                                        right)))
+                       ('recency (or (agent-shell-vertico-sidebar--snapshot-field
+                                      right :recency-time)
+                                     (when-let ((time (buffer-local-value
+                                                        'buffer-display-time right)))
                                        (float-time time))
                                      0.0))
                        (_ 0.0))))
@@ -531,7 +621,8 @@ Right-align a terminal ellipsis on the final line when present."
 
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
   "Return rendered session lines for BUFFER at WIDTH under ROOT."
-  (let* ((content-width (- width (if nested 4 2)))
+  (let* ((content-width
+          (max 1 (- width (if nested 4 2))))
          (title (agent-shell-vertico-sidebar--title buffer))
          (icon (propertize
                 (agent-shell-vertico-sidebar--icon buffer)
@@ -608,38 +699,90 @@ header; flat rows keep their status icon at column zero."
 (defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
+                            buffers))
+         (snapshot-table (make-hash-table :test #'eq))
          (width (or (when-let ((window (get-buffer-window (current-buffer))))
-                      (window-width window))
+                      (window-body-width window))
                     agent-shell-vertico-sidebar-width))
          (point-node (agent-shell-vertico-sidebar--point-node))
          (inhibit-read-only t))
-    (agent-shell-vertico-sidebar--watch-existing)
-    (erase-buffer)
-    (if (null buffers)
-        (insert (propertize "  No agent-shell sessions\n"
-                            'face 'agent-shell-vertico-sidebar-detail))
-      (if agent-shell-vertico-sidebar-group-by
-          (dolist (group
-                   (agent-shell-vertico-sidebar--sort-groups
-                    (agent-shell-vertico-sidebar--group-buffers buffers)
-                    agent-shell-vertico-sidebar-sort-by))
-            (agent-shell-vertico-sidebar--insert-project
-             (car group) (cdr group) width))
-        (dolist (buffer
-                 (agent-shell-vertico-sidebar--sort-buffers
-                  buffers agent-shell-vertico-sidebar-sort-by))
-          (agent-shell-vertico-sidebar--insert-row
-           (agent-shell-vertico-sidebar--session-lines
-            buffer (agent-shell-vertico-sidebar--project-root buffer) width)
-           'session buffer))))
-    (goto-char (point-min))
-    (when (and point-node (agent-shell-vertico-sidebar--goto-node point-node))
-      (beginning-of-line))
-    (agent-shell-vertico-sidebar--ensure-age-refresh)))
+    (dolist (snapshot snapshots)
+      (puthash (plist-get snapshot :buffer) snapshot snapshot-table))
+    (setq-local agent-shell-vertico-sidebar--render-snapshots snapshot-table)
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-sidebar--cancel-refresh)
+          (agent-shell-vertico-sidebar--cancel-resize)
+          (setq agent-shell-vertico-sidebar--dirty nil
+                agent-shell-vertico-sidebar--last-rendered-width width
+                header-line-format
+                (agent-shell-vertico-sidebar--header-line-from-snapshots
+                 snapshots))
+          (agent-shell-vertico-sidebar--watch-existing buffers nil t)
+          (erase-buffer)
+          (if (null buffers)
+              (insert (propertize "  No agent-shell sessions\n"
+                                  'face 'agent-shell-vertico-sidebar-detail))
+            (if agent-shell-vertico-sidebar-group-by
+                (dolist (group
+                         (agent-shell-vertico-sidebar--sort-groups
+                          (agent-shell-vertico-sidebar--group-buffers buffers)
+                          agent-shell-vertico-sidebar-sort-by))
+                  (agent-shell-vertico-sidebar--insert-project
+                   (car group) (cdr group) width))
+              (dolist (buffer
+                       (agent-shell-vertico-sidebar--sort-buffers
+                        buffers agent-shell-vertico-sidebar-sort-by))
+                (agent-shell-vertico-sidebar--insert-row
+                 (agent-shell-vertico-sidebar--session-lines
+                  buffer (agent-shell-vertico-sidebar--project-root buffer)
+                  width)
+                 'session buffer))))
+          (goto-char (point-min))
+          (when (and point-node
+                     (agent-shell-vertico-sidebar--goto-node point-node))
+            (beginning-of-line))
+          (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
+      (setq agent-shell-vertico-sidebar--render-snapshots nil))))
+
+(defun agent-shell-vertico-sidebar--window-size-change (&optional frame)
+  "Coalesce a visible sidebar re-render after FRAME's windows resize."
+  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (when-let ((window (get-buffer-window sidebar frame)))
+      (with-current-buffer sidebar
+        (let ((width (window-body-width window)))
+          (when (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                     (not (equal width
+                                 agent-shell-vertico-sidebar--last-rendered-width))
+                     (not (timerp agent-shell-vertico-sidebar--resize-timer)))
+            (setq agent-shell-vertico-sidebar--resize-timer
+                  (run-with-idle-timer
+                   0.1 nil
+                   (lambda ()
+                     (when (buffer-live-p sidebar)
+                       (with-current-buffer sidebar
+                         (setq agent-shell-vertico-sidebar--resize-timer nil)
+                         (when-let ((window (get-buffer-window sidebar frame)))
+                           (let ((width (window-body-width window)))
+                             (when (and
+                                    (derived-mode-p
+                                     'agent-shell-vertico-sidebar-mode)
+                                    (not (equal
+                                          width
+                                          agent-shell-vertico-sidebar--last-rendered-width)))
+                               (setq agent-shell-vertico-sidebar--last-rendered-width
+                                     width)
+                               (agent-shell-vertico-sidebar--render)))))))))))))))
 
 (defun agent-shell-vertico-sidebar--sidebar-buffer ()
   "Return the sidebar buffer, creating it when necessary."
   (get-buffer-create "*Agent Shell Sessions*"))
+
+(defun agent-shell-vertico-sidebar--sidebar-visible-p (&optional buffer)
+  "Return non-nil when BUFFER, or the named sidebar, is visible."
+  (when-let ((sidebar (or buffer (get-buffer "*Agent Shell Sessions*"))))
+    (get-buffer-window sidebar 'visible)))
 
 (defun agent-shell-vertico-sidebar--cancel-refresh ()
   "Cancel the pending sidebar refresh timer."
@@ -653,36 +796,77 @@ header; flat rows keep their status icon at column zero."
     (cancel-timer agent-shell-vertico-sidebar--age-refresh-timer)
     (setq agent-shell-vertico-sidebar--age-refresh-timer nil)))
 
-(defun agent-shell-vertico-sidebar--ensure-age-refresh ()
-  "Keep activity ages current while the sidebar is visible."
-  (when-let ((buffer (get-buffer "*Agent Shell Sessions*")))
-    (cond
-     ((and (agent-shell-vertico-sidebar--any-session-details-visible-p)
-           (get-buffer-window buffer 'visible)
-           (not (timerp agent-shell-vertico-sidebar--age-refresh-timer)))
-      (setq agent-shell-vertico-sidebar--age-refresh-timer
-            (run-with-timer
-             1 1
-             (lambda ()
-               (if-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
-                   (if (get-buffer-window sidebar 'visible)
-                       (agent-shell-vertico-sidebar-refresh)
-                     (agent-shell-vertico-sidebar--cancel-age-refresh))
-                 (agent-shell-vertico-sidebar--cancel-age-refresh))))))
-     ((or (not (agent-shell-vertico-sidebar--any-session-details-visible-p))
-          (not (get-buffer-window buffer 'visible)))
-      (agent-shell-vertico-sidebar--cancel-age-refresh)))))
+(defun agent-shell-vertico-sidebar--cancel-resize ()
+  "Cancel the pending sidebar resize timer."
+  (when (timerp agent-shell-vertico-sidebar--resize-timer)
+    (cancel-timer agent-shell-vertico-sidebar--resize-timer)
+    (setq agent-shell-vertico-sidebar--resize-timer nil)))
+
+(defun agent-shell-vertico-sidebar--ensure-age-refresh
+    (&optional snapshots snapshots-supplied)
+  "Keep visible activity ages current while details are displayed.
+
+SNAPSHOTS, when supplied by the current render, avoids rediscovering live
+sessions just to decide whether an age timer is needed."
+  (let ((sidebar (or (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                          (current-buffer))
+                     (get-buffer "*Agent Shell Sessions*"))))
+    (when sidebar
+      (with-current-buffer sidebar
+        (let* ((visible (agent-shell-vertico-sidebar--sidebar-visible-p
+                         sidebar))
+               (activity-configured
+                (memq 'activity agent-shell-vertico-sidebar-extra-info))
+               (details-visible
+                (if snapshots-supplied
+                    (seq-some (lambda (snapshot)
+                                (plist-get snapshot :details-visible))
+                              snapshots)
+                  (agent-shell-vertico-sidebar--any-session-details-visible-p)))
+               (needed (and visible activity-configured details-visible)))
+          (cond
+           ((and needed
+                 (not (timerp agent-shell-vertico-sidebar--age-refresh-timer)))
+            (setq agent-shell-vertico-sidebar--age-refresh-timer
+                  (run-with-timer
+                   60 60
+                   (lambda ()
+                     (if (and (buffer-live-p sidebar)
+                              (with-current-buffer sidebar
+                                (and
+                                 (agent-shell-vertico-sidebar--sidebar-visible-p
+                                  sidebar)
+                                 (memq 'activity
+                                       agent-shell-vertico-sidebar-extra-info))))
+                         (agent-shell-vertico-sidebar-refresh)
+                       (when (buffer-live-p sidebar)
+                         (with-current-buffer sidebar
+                           (agent-shell-vertico-sidebar--cancel-age-refresh))))))))
+           ((not needed)
+            (agent-shell-vertico-sidebar--cancel-age-refresh))))))))
 
 (defun agent-shell-vertico-sidebar--schedule-refresh (&rest _args)
-  "Schedule a debounced refresh when the sidebar exists."
-  (when-let ((buffer (get-buffer "*Agent Shell Sessions*")))
-    (agent-shell-vertico-sidebar--cancel-refresh)
-    (setq agent-shell-vertico-sidebar--refresh-timer
-          (run-with-idle-timer
-           0.2 nil
-           (lambda ()
-             (setq agent-shell-vertico-sidebar--refresh-timer nil)
-             (agent-shell-vertico-sidebar-refresh))))))
+  "Mark the sidebar dirty and schedule one idle refresh when visible."
+  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (with-current-buffer sidebar
+      (setq agent-shell-vertico-sidebar--dirty t)
+      (if (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+               (agent-shell-vertico-sidebar--sidebar-visible-p sidebar))
+          (when (not (timerp agent-shell-vertico-sidebar--refresh-timer))
+            (setq agent-shell-vertico-sidebar--refresh-timer
+                  (run-with-idle-timer
+                   0.5 nil
+                   (lambda ()
+                     (when (buffer-live-p sidebar)
+                       (with-current-buffer sidebar
+                         (setq agent-shell-vertico-sidebar--refresh-timer nil)
+                         (when (and agent-shell-vertico-sidebar--dirty
+                                    (agent-shell-vertico-sidebar--sidebar-visible-p
+                                     sidebar))
+                           (agent-shell-vertico-sidebar--render))))))))
+        (agent-shell-vertico-sidebar--cancel-refresh)
+        (agent-shell-vertico-sidebar--cancel-resize)
+        (agent-shell-vertico-sidebar--cancel-age-refresh)))))
 
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
   "Update sidebar metadata for BUFFER after agent EVENT."
@@ -727,8 +911,10 @@ header; flat rows keep their status icon at column zero."
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
-(defun agent-shell-vertico-sidebar--watch-buffer (&optional buffer)
-  "Subscribe to events from BUFFER when supported by agent-shell."
+(defun agent-shell-vertico-sidebar--watch-buffer (&optional buffer schedule)
+  "Subscribe to events from BUFFER when supported by agent-shell.
+
+When SCHEDULE is non-nil, mark the sidebar dirty after subscribing."
   (setq buffer (or buffer (current-buffer)))
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
@@ -745,10 +931,19 @@ header; flat rows keep their status icon at column zero."
     (with-current-buffer buffer
       (add-hook 'kill-buffer-hook
                 #'agent-shell-vertico-sidebar--unwatch-buffer nil t))
-    (agent-shell-vertico-sidebar--schedule-refresh)))
+    (when schedule
+      (agent-shell-vertico-sidebar--schedule-refresh))))
 
-(defun agent-shell-vertico-sidebar--watch-existing ()
-  "Subscribe to all currently live agent-shell buffers."
+(defun agent-shell-vertico-sidebar--watch-buffer-on-mode-hook ()
+  "Subscribe the current agent-shell buffer and mark the sidebar dirty."
+  (agent-shell-vertico-sidebar--watch-buffer (current-buffer) t))
+
+(defun agent-shell-vertico-sidebar--watch-existing
+    (&optional buffers schedule buffers-supplied)
+  "Subscribe to currently live agent-shell BUFFERS.
+
+When BUFFERS-SUPPLIED is nil, BUFFERS is queried once.  When SCHEDULE is
+non-nil, newly subscribed buffers mark the sidebar dirty."
   (let (dead)
     (maphash (lambda (buffer _subscription)
                (unless (buffer-live-p buffer)
@@ -758,8 +953,8 @@ header; flat rows keep their status icon at column zero."
       (remhash buffer agent-shell-vertico-sidebar--subscriptions)
       (remhash buffer agent-shell-vertico-sidebar--attention)
       (remhash buffer agent-shell-vertico-sidebar--activity)))
-  (dolist (buffer (agent-shell-buffers))
-    (agent-shell-vertico-sidebar--watch-buffer buffer)))
+  (dolist (buffer (if buffers-supplied buffers (agent-shell-buffers)))
+    (agent-shell-vertico-sidebar--watch-buffer buffer schedule)))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
   "Mark completed output in BUFFER as seen."
@@ -954,6 +1149,24 @@ in that order."
                 'face face
                 'help-echo label)))
 
+(defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
+  "Return a cached header string for SNAPSHOTS."
+  (let ((counts (make-vector 4 0))
+        (parts (list (format "%d session%s"
+                            (length snapshots)
+                            (if (= (length snapshots) 1) "" "s")))))
+    (dolist (snapshot snapshots)
+      (cl-incf (aref counts (plist-get snapshot :status-rank))))
+    (dolist (stat `((0 "▲" "attention" agent-shell-vertico-sidebar-attention)
+                    (1 "◆" "working" agent-shell-vertico-sidebar-working)
+                    (2 "✓" "ready" agent-shell-vertico-sidebar-ready)
+                    (3 "○" "starting" agent-shell-vertico-sidebar-detail)))
+      (pcase-let ((`(,index ,icon ,label ,face) stat))
+        (when-let ((text (agent-shell-vertico-sidebar--header-stat
+                          (aref counts index) icon label face)))
+          (setq parts (append parts (list text))))))
+    (concat " " (string-join parts " · "))))
+
 (defun agent-shell-vertico-sidebar--header-line ()
   "Return the sidebar header with live session statistics."
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
@@ -1019,6 +1232,12 @@ in that order."
     map)
   "Keymap for `agent-shell-vertico-sidebar-mode'.")
 
+(defconst agent-shell-vertico-sidebar--evil-g-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "r") #'agent-shell-vertico-sidebar-refresh)
+    map)
+  "Prefix map for the Evil `gr' refresh binding.")
+
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
     ("k" . evil-previous-line)
@@ -1033,22 +1252,23 @@ in that order."
     ("<backtab>" . agent-shell-vertico-sidebar-toggle-details)
     ("G" . agent-shell-vertico-sidebar-toggle-grouping)
     ("s" . agent-shell-vertico-sidebar-set-sort)
-    ("g" . agent-shell-vertico-sidebar-refresh)
+    ("gr" . agent-shell-vertico-sidebar-refresh)
     ("c" . agent-shell-vertico-sidebar-new)
     ("D" . agent-shell-vertico-sidebar-kill)
-    ("r" . agent-shell-vertico-sidebar-restart)
-    ("i" . agent-shell-vertico-sidebar-interrupt)
+    ("R" . agent-shell-vertico-sidebar-restart)
+    ("I" . agent-shell-vertico-sidebar-interrupt)
     ("m" . agent-shell-vertico-sidebar-set-mode)
     ("M" . agent-shell-vertico-sidebar-set-model)
-    ("t" . agent-shell-vertico-sidebar-view-traffic)
-    ("T" . agent-shell-vertico-sidebar-open-transcript)
+    ("t" . agent-shell-vertico-sidebar-open-transcript)
+    ("T" . agent-shell-vertico-sidebar-view-traffic)
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
 
-The explicit `j'/`k' entries keep vertical navigation intact; `D' is the
-destructive session action so `k' never kills a session.  Other mnemonic
-actions intentionally take precedence over their generic Evil commands in
-this read-only sidebar.")
+The explicit `j'/`k' entries keep vertical navigation intact; `D'/`R'/`I'
+are the destructive session actions so navigation and lowercase mnemonics
+remain available.  Refresh is `gr', and the other mnemonic actions
+intentionally take precedence over their generic Evil commands in this
+read-only sidebar.")
 
 (defun agent-shell-vertico-sidebar--bind-evil-keys ()
   "Install direct Dired-style bindings for Evil sidebar states.
@@ -1067,8 +1287,11 @@ while normal and motion states get the same direct mnemonic commands."
         (define-key auxiliary (kbd "C-c v") nil))
       (evil-local-set-key state (kbd "v") nil)
       (evil-local-set-key state (kbd "C-c v") nil)
+      (evil-local-set-key state (kbd "g")
+                          agent-shell-vertico-sidebar--evil-g-map)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
-        (evil-local-set-key state (kbd (car binding)) (cdr binding)))
+        (unless (equal (car binding) "gr")
+          (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "G" "s" "g" "c" "k" "r"
                      "i" "m" "M" "t" "T" "q"))
         (when-let ((command (lookup-key
@@ -1083,8 +1306,12 @@ while normal and motion states get the same direct mnemonic commands."
               buffer-read-only t
               cursor-type nil
               mode-line-format nil
-              header-line-format
-              '((:eval (agent-shell-vertico-sidebar--header-line))))
+              header-line-format nil
+              agent-shell-vertico-sidebar--refresh-timer nil
+              agent-shell-vertico-sidebar--age-refresh-timer nil
+              agent-shell-vertico-sidebar--resize-timer nil
+              agent-shell-vertico-sidebar--dirty nil
+              agent-shell-vertico-sidebar--last-rendered-width nil)
   (setq-local agent-shell-vertico-sidebar--expanded-projects
               (make-hash-table :test #'equal))
   (setq-local agent-shell-vertico-sidebar--expanded-sessions
@@ -1093,13 +1320,14 @@ while normal and motion states get the same direct mnemonic commands."
             #'agent-shell-vertico-sidebar--cancel-refresh nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-age-refresh nil t)
+  (add-hook 'kill-buffer-hook
+            #'agent-shell-vertico-sidebar--cancel-resize nil t)
   (local-set-key (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "S-TAB") #'agent-shell-vertico-sidebar-toggle-details)
   (local-set-key (kbd "<backtab>") #'agent-shell-vertico-sidebar-toggle-details)
   (local-set-key (kbd "C-c") agent-shell-vertico-sidebar-action-map)
   (agent-shell-vertico-sidebar--bind-evil-keys)
-  (agent-shell-vertico-sidebar--watch-existing)
   (agent-shell-vertico-sidebar--render))
 
 (defun agent-shell-vertico-sidebar--display-buffer ()
@@ -1116,9 +1344,9 @@ while normal and motion states get the same direct mnemonic commands."
                         (no-other-window . nil)))))))
     (set-window-dedicated-p window t)
     (with-current-buffer buffer
-      (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
-        (agent-shell-vertico-sidebar-mode))
-      (agent-shell-vertico-sidebar--render))
+      (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-sidebar-mode)))
     window))
 
 ;;;###autoload
@@ -1135,13 +1363,35 @@ while normal and motion states get the same direct mnemonic commands."
 (defun agent-shell-vertico-sidebar-focus ()
   "Focus the visible sidebar, opening it when necessary."
   (interactive)
-  (select-window (or (get-buffer-window "*Agent Shell Sessions*")
+  (let* ((buffer (get-buffer "*Agent Shell Sessions*"))
+         (existing-window (and buffer (get-buffer-window buffer)))
+         (window (or existing-window
                      (agent-shell-vertico-sidebar--display-buffer))))
+    (when (and existing-window (window-live-p window))
+      (with-current-buffer buffer
+        (when (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render))))
+    (select-window window)))
+
+(defun agent-shell-vertico-sidebar--window-configuration-change
+    (&optional _frame)
+  "Cancel sidebar timers when its window is no longer visible."
+  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (with-current-buffer sidebar
+      (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
+          (agent-shell-vertico-sidebar--ensure-age-refresh)
+        (agent-shell-vertico-sidebar--cancel-refresh)
+        (agent-shell-vertico-sidebar--cancel-resize)
+        (agent-shell-vertico-sidebar--cancel-age-refresh)))))
 
 (add-hook 'agent-shell-mode-hook
-          #'agent-shell-vertico-sidebar--watch-buffer)
+          #'agent-shell-vertico-sidebar--watch-buffer-on-mode-hook)
 (add-hook 'window-selection-change-functions
           #'agent-shell-vertico-sidebar--window-selection-change)
+(add-hook 'window-size-change-functions
+          #'agent-shell-vertico-sidebar--window-size-change)
+(add-hook 'window-configuration-change-functions
+          #'agent-shell-vertico-sidebar--window-configuration-change)
 
 (provide 'agent-shell-vertico-sidebar)
 

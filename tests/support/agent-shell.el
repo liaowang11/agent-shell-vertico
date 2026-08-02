@@ -15,6 +15,8 @@
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
 (defvar agent-shell-test-statuses nil)
+(defvar agent-shell-test-buffer-query-count 0)
+(defvar agent-shell-test-status-query-count 0)
 (defvar agent-shell-test-subscriptions nil)
 (defvar agent-shell-dot-subdir-function nil)
 (defvar agent-shell-show-config-icons nil)
@@ -25,6 +27,7 @@
 
 (defun agent-shell-buffers ()
   "Return stubbed agent shell buffers."
+  (cl-incf agent-shell-test-buffer-query-count)
   agent-shell-test-buffers)
 
 (defun agent-shell-project-buffers ()
@@ -37,6 +40,7 @@
 
 (cl-defun agent-shell-status (&key shell-buffer)
   "Return the stubbed status for SHELL-BUFFER."
+  (cl-incf agent-shell-test-status-query-count)
   (or (cdr (assq (or shell-buffer (current-buffer))
                  agent-shell-test-statuses))
       'ready))
