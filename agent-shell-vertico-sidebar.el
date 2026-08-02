@@ -424,7 +424,8 @@ repeating those queries during one redisplay."
                   'agent-shell-vertico-sidebar-field field
                   'agent-shell-vertico-sidebar-field-help-echo help-echo
                   'mouse-face 'highlight
-                  'help-echo help-echo))))
+                  'help-echo help-echo
+                  'kbd-help help-echo))))
 
 (defun agent-shell-vertico-sidebar--extra-info-lines
     (buffer root width &optional omit-project)
@@ -731,6 +732,7 @@ header; flat rows keep their status icon at column zero."
   (let ((start (point))
         (first-prefix (if nested "  " ""))
         (continuation-prefix (if nested "    " "  "))
+        (title-end nil)
         (first t))
     (dolist (line lines)
       (insert (if first first-prefix continuation-prefix))
@@ -740,14 +742,20 @@ header; flat rows keep their status icon at column zero."
           (add-text-properties
            line-start (point)
            (list 'face (cdr line)))))
+      (when (null (cdr line))
+        (setq title-end (point)))
       (insert "\n")
       (setq first nil))
     (add-text-properties
      start (1- (point))
      (list 'agent-shell-vertico-sidebar-node node
-           'agent-shell-vertico-sidebar-node-kind kind
-           'mouse-face 'highlight
-           'help-echo (buffer-name node)))
+           'agent-shell-vertico-sidebar-node-kind kind))
+    (when title-end
+      (add-text-properties
+       start (1- title-end)
+       (list 'mouse-face 'highlight
+             'help-echo (buffer-name node)
+             'kbd-help "RET/mouse-1: open session")))
     (agent-shell-vertico-sidebar--restore-field-properties
      start (1- (point)))))
 
@@ -771,7 +779,8 @@ header; flat rows keep their status icon at column zero."
            'agent-shell-vertico-sidebar-node root
            'agent-shell-vertico-sidebar-node-kind 'project
            'mouse-face 'highlight
-           'help-echo "TAB/RET/mouse-1: toggle project"))
+           'help-echo "TAB/RET/mouse-1: toggle project"
+           'kbd-help "TAB/RET/mouse-1: toggle project"))
     (when expanded
       (dolist (buffer buffers)
         (agent-shell-vertico-sidebar--insert-row

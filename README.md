@@ -65,6 +65,17 @@ status counts using the row icons (`▲` attention, `◆` working, `✓` ready, 
 The sidebar hides the regular mode line and uses its compact header for these
 statistics instead.
 
+Metadata values carry both `help-echo` and `kbd-help`.  With point on a value,
+`M-x display-local-help` shows its activation hint in the Echo Area without a
+mouse event.  For automatic point help after an idle delay, enable Emacs's
+built-in `help-at-pt` support:
+
+```elisp
+(with-eval-after-load 'help-at-pt
+  (setq help-at-pt-display-when-idle t)
+  (help-at-pt-set-timer))
+```
+
 ```elisp
 (use-package agent-shell-vertico-sidebar
   :load-path "/path/to/agent-shell-vertico"

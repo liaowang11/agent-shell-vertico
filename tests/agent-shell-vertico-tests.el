@@ -286,7 +286,31 @@ Each element in BINDINGS is of the form:
           (search-forward (car case))
           (should (eq (get-text-property (1- (point))
                                          'agent-shell-vertico-sidebar-field)
-                      (cdr case))))))))
+                      (cdr case)))
+          (should (eq (get-text-property (1- (point)) 'mouse-face)
+                      'highlight))
+          (should (equal (get-text-property (1- (point)) 'kbd-help)
+                         (get-text-property (1- (point)) 'help-echo)))
+          (should-not (get-text-property (point) 'mouse-face)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-field-help-works-at-point ()
+  (require 'help-at-pt)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan")
+                                         (:name . "Plan"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Plan")
+        (should (equal (help-at-pt-kbd-string)
+                       "RET/mouse-1: set mode"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-activates-fields-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -907,7 +931,9 @@ Each element in BINDINGS is of the form:
                          (point-min) 'mouse-face nil (point-max))))
           (should (< boundary (point-max)))
           (should-not (get-text-property boundary 'mouse-face))
-          (should (eq (get-text-property (1+ boundary) 'mouse-face)
+          (search-forward "Review beta")
+          (beginning-of-line)
+          (should (eq (get-text-property (point) 'mouse-face)
                       'highlight)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-dispatches-session-action ()
