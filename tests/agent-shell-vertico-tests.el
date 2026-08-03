@@ -1060,6 +1060,79 @@ Each element in BINDINGS is of the form:
        (eq (buffer-local-value 'major-mode session)
            'agent-shell-mode)))))
 
+(ert-deftest agent-shell-vertico-model-name-reads-config-options ()
+  "Agents advertising the model only via config options must still resolve.
+Claude Code leaves the session :model-id and :models fields nil."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "claude-agent @ alpha" "/work/alpha/"
+              '((:session
+                 . ((:id . "a")
+                    (:model-id . nil)
+                    (:models . nil)
+                    (:config-options
+                     . (((:id . "model") (:category . "model")
+                         (:current-value . "opus[1m]")
+                         (:options ((:value . "default")
+                                    (:name . "Default (recommended)"))
+                                   ((:value . "opus[1m]")
+                                    (:name . "Opus (1M context)")))))))))))
+    (should (equal (agent-shell-vertico--model-name alpha)
+                   "Opus (1M context)"))))
+
+(ert-deftest agent-shell-vertico-mode-name-prefers-config-option ()
+  "The config option carries the live mode; session :mode-id can be stale.
+Changing the mode through a config option updates only the option unless
+the agent also sends a `current_mode_update' notification."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "claude-agent @ alpha" "/work/alpha/"
+              '((:session
+                 . ((:id . "a")
+                    (:mode-id . "auto")
+                    (:modes . [((:id . "auto") (:name . "Auto"))
+                               ((:id . "plan") (:name . "Plan Mode"))])
+                    (:config-options
+                     . (((:id . "mode") (:category . "mode")
+                         (:current-value . "plan")
+                         (:options ((:value . "auto") (:name . "Auto"))
+                                   ((:value . "plan")
+                                    (:name . "Plan Mode")))))))))))
+    (should (equal (agent-shell-vertico--mode-name alpha) "Plan Mode"))))
+
+(ert-deftest agent-shell-vertico-model-name-falls-back-to-session-fields ()
+  "Agents without config options keep resolving from session fields."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))])
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan")
+                                         (:name . "Plan"))]))))))
+    (should (equal (agent-shell-vertico--model-name alpha) "GPT-5"))
+    (should (equal (agent-shell-vertico--mode-name alpha) "Plan"))))
+
+(ert-deftest agent-shell-vertico-sidebar-renders-config-option-model ()
+  "The sidebar shows a real model name for config-option-only agents."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "claude-agent @ alpha" "/work/alpha/"
+              '((:session
+                 . ((:id . "a")
+                    (:title . "Review alpha")
+                    (:config-options
+                     . (((:id . "model") (:category . "model")
+                         (:current-value . "opus[1m]")
+                         (:options ((:value . "opus[1m]")
+                                    (:name . "Opus (1M context)")))))))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(model))
+          (agent-shell-vertico-sidebar-width 60))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "Opus (1M context)" (buffer-string)))))))
+
 (ert-deftest agent-shell-vertico-completion-table-adds-agent-shell-metadata ()
   (let ((metadata (funcall (agent-shell-vertico--completion-table 'all)
                            "" nil 'metadata)))

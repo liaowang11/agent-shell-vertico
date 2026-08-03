@@ -4,6 +4,7 @@
 
 (require 'cl-lib)
 (require 'map)
+(require 'seq)
 
 (defconst agent-shell-test-stub-p t
   "Non-nil when the agent-shell test stub is loaded.")
@@ -106,6 +107,70 @@
 (defun agent-shell--config-icon (&rest _args)
   "Return a stub icon string."
   "[#]")
+
+;; Session config options.  These mirror the real accessors in
+;; agent-shell-config.el, which agents such as Claude Code rely on: they
+;; advertise the current model only through `configOptions', leaving the
+;; session's :model-id and :models fields nil.
+
+(defun agent-shell--config-options (state)
+  "Return current config options from STATE."
+  (or (map-nested-elt state '(:session :config-options))
+      (map-elt state :config-options)))
+
+(defun agent-shell--config-option-by-category (state category)
+  "Return a config option in STATE matching CATEGORY, or nil.
+Prefers the option whose `:id' equals CATEGORY, as several options may
+share a category."
+  (let ((matches (seq-filter (lambda (option)
+                               (equal category (map-elt option :category)))
+                             (agent-shell--config-options state))))
+    (or (seq-find (lambda (option)
+                    (equal category (map-elt option :id)))
+                  matches)
+        (car matches))))
+
+(defun agent-shell--config-option-as-models (option)
+  "Convert OPTION values to legacy model display shape."
+  (mapcar (lambda (value)
+            `((:model-id . ,(map-elt value :value))
+              (:name . ,(map-elt value :name))
+              (:description . ,(map-elt value :description))))
+          (map-elt option :options)))
+
+(defun agent-shell--config-option-as-modes (option)
+  "Convert OPTION values to legacy mode display shape."
+  (mapcar (lambda (value)
+            `((:id . ,(map-elt value :value))
+              (:name . ,(map-elt value :name))
+              (:description . ,(map-elt value :description))))
+          (map-elt option :options)))
+
+(defun agent-shell--current-model-id (state)
+  "Return current model ID from STATE.
+Prefers the \"model\" config option, falls back to session :model-id."
+  (or (map-elt (agent-shell--config-option-by-category state "model")
+               :current-value)
+      (map-nested-elt state '(:session :model-id))))
+
+(defun agent-shell--current-mode-id (state)
+  "Return current mode ID from STATE.
+Prefers the \"mode\" config option, falls back to session :mode-id."
+  (or (map-elt (agent-shell--config-option-by-category state "mode")
+               :current-value)
+      (map-nested-elt state '(:session :mode-id))))
+
+(defun agent-shell--get-available-models (state)
+  "Return available models from STATE, preferring config options."
+  (if-let* ((option (agent-shell--config-option-by-category state "model")))
+      (agent-shell--config-option-as-models option)
+    (map-nested-elt state '(:session :models))))
+
+(defun agent-shell--get-available-modes (state)
+  "Return available modes from STATE, preferring config options."
+  (if-let* ((option (agent-shell--config-option-by-category state "mode")))
+      (agent-shell--config-option-as-modes option)
+    (map-nested-elt state '(:session :modes))))
 
 (defun agent-shell-restart (&rest args)
   "Record a restart action with ARGS."

@@ -26,6 +26,10 @@
 (require 'text-property-search)
 
 (declare-function agent-shell--config-icon "agent-shell")
+(declare-function agent-shell--current-mode-id "agent-shell-config")
+(declare-function agent-shell--current-model-id "agent-shell-config")
+(declare-function agent-shell--get-available-models "agent-shell-config")
+(declare-function agent-shell--get-available-modes "agent-shell")
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-attention--clear-buffer "agent-shell-attention")
@@ -108,22 +112,31 @@ so the ellipsis stays visible and item annotations are not crowded."
                       (append items nil))))
       (or (map-elt item :name) id))))
 
+;; Mode and model are resolved through agent-shell's own accessors, which
+;; prefer the session config option and fall back to the session `:mode-id'
+;; and `:model-id' fields.  Reading those fields directly is not enough:
+;; agents such as Claude Code advertise the model only as a config option,
+;; leaving `:model-id' and `:models' nil, and a mode changed through a config
+;; option leaves `:mode-id' stale.
+
 (defun agent-shell-vertico--mode-name (buffer)
   "Return current session mode name for BUFFER."
-  (let ((mode-id (agent-shell-vertico--session-field buffer :mode-id)))
+  (let* ((state (agent-shell-vertico--state buffer))
+         (mode-id (agent-shell--current-mode-id state)))
     (or (agent-shell-vertico--lookup-name
          mode-id
-         (agent-shell-vertico--session-field buffer :modes)
+         (agent-shell--get-available-modes state)
          :id)
         mode-id
         "-")))
 
 (defun agent-shell-vertico--model-name (buffer)
   "Return current session model name for BUFFER."
-  (let ((model-id (agent-shell-vertico--session-field buffer :model-id)))
+  (let* ((state (agent-shell-vertico--state buffer))
+         (model-id (agent-shell--current-model-id state)))
     (or (agent-shell-vertico--lookup-name
          model-id
-         (agent-shell-vertico--session-field buffer :models)
+         (agent-shell--get-available-models state)
          :model-id)
         model-id
         "-")))
