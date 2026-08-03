@@ -1394,7 +1394,7 @@ in that order."
    "  S-TAB       Toggle the details default for all sessions\n\n"
    "Actions\n"
    "  o / O       Open here / open in another window\n"
-   "  G           Toggle flat or project-grouped view\n"
+   "  =           Toggle flat or project-grouped view\n"
    "  s           Choose the sort criterion\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"
@@ -1419,7 +1419,7 @@ in that order."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
-    (define-key map (kbd "G") #'agent-shell-vertico-sidebar-toggle-grouping)
+    (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
@@ -1447,7 +1447,7 @@ in that order."
     (define-key map (kbd "S-TAB") #'agent-shell-vertico-sidebar-toggle-details)
     (define-key map (kbd "<backtab>")
                 #'agent-shell-vertico-sidebar-toggle-details)
-    (define-key map (kbd "G") #'agent-shell-vertico-sidebar-toggle-grouping)
+    (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
@@ -1483,7 +1483,7 @@ in that order."
     ("O" . agent-shell-vertico-sidebar-open-other-window)
     ("S-TAB" . agent-shell-vertico-sidebar-toggle-details)
     ("<backtab>" . agent-shell-vertico-sidebar-toggle-details)
-    ("G" . agent-shell-vertico-sidebar-toggle-grouping)
+    ("=" . agent-shell-vertico-sidebar-toggle-grouping)
     ("s" . agent-shell-vertico-sidebar-set-sort)
     ("gr" . agent-shell-vertico-sidebar-refresh)
     ("c" . agent-shell-vertico-sidebar-new)
@@ -1526,7 +1526,7 @@ while normal and motion states get the same direct mnemonic commands."
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (equal (car binding) "gr")
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "G" "s" "g" "c" "k" "r"
+      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r"
                      "i" "m" "M" "t" "T" "?" "q"))
         (when-let ((command (lookup-key
                              agent-shell-vertico-sidebar-action-map
