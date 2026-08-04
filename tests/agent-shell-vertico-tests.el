@@ -2325,6 +2325,62 @@ value would pre-bind it, clobbering embark's own default finder list."
             "\\[gr\\] Resume"
             (agent-shell-vertico-transcript--header-line))))))))
 
+(ert-deftest agent-shell-vertico-transcript-resume-uses-resume-session ()
+  "Without viewport interaction, resume through `agent-shell-resume-session'."
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :session-id "past-session"
+          :working-directory "/work/project/"))
+        (agent-shell-prefer-viewport-interaction nil)
+        resumed
+        started)
+    (cl-letf (((symbol-function 'agent-shell-resume-session)
+               (lambda (session-id) (setq resumed session-id)))
+              ((symbol-function 'agent-shell--start)
+               (lambda (&rest _arguments) (setq started t))))
+      (agent-shell-vertico-transcript--resume-record record)
+      (should (equal resumed "past-session"))
+      (should-not started))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-displays-viewport ()
+  "With viewport interaction, resume unfocused and show the viewport.
+
+`agent-shell-resume-session' always displays the shell buffer itself, so
+the resumed session would otherwise appear in `agent-shell-mode'."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :session-id "past-session"
+           :working-directory "/work/project/"))
+         (shell-buffer (generate-new-buffer " *agent-shell-vertico-resume*"))
+         (agent-shell-prefer-viewport-interaction t)
+         started-arguments
+         viewport-arguments
+         resumed)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-shell-resume-session)
+                   (lambda (session-id) (setq resumed session-id)))
+                  ((symbol-function 'agent-shell--auto-preferred-config)
+                   (lambda () '((:buffer-name . "Codex"))))
+                  ((symbol-function 'agent-shell--start)
+                   (lambda (&rest arguments)
+                     (setq started-arguments arguments)
+                     shell-buffer))
+                  ((symbol-function
+                    'agent-shell--display-viewport-when-ready)
+                   (lambda (&rest arguments)
+                     (setq viewport-arguments arguments))))
+          (agent-shell-vertico-transcript--resume-record record)
+          (should-not resumed)
+          (should (equal (plist-get started-arguments :session-id)
+                         "past-session"))
+          (should (plist-get started-arguments :no-focus))
+          (should (plist-get started-arguments :new-session))
+          (should (eq (plist-get viewport-arguments :shell-buffer)
+                      shell-buffer)))
+      (kill-buffer shell-buffer))))
+
 (ert-deftest agent-shell-vertico-transcript-clean-text-removes-tool-sections ()
   (let ((clean
          (agent-shell-vertico-transcript--clean-text

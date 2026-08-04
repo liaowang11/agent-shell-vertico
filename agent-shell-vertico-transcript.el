@@ -34,7 +34,12 @@
 (defvar projectile-current-project-on-switch)
 (defvar projectile-mode)
 
+(declare-function agent-shell--auto-preferred-config "agent-shell" ())
+(declare-function agent-shell--display-viewport-when-ready
+                  "agent-shell" (&rest arguments))
+(declare-function agent-shell--start "agent-shell" (&rest arguments))
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
+(declare-function agent-shell-select-config "agent-shell" (&rest arguments))
 (declare-function dired "dired" (dirname &optional switches))
 (declare-function evil-local-set-key "evil" (state key definition))
 (declare-function projectile-project-root "projectile" (&optional dir))
@@ -677,6 +682,29 @@ that is how they are reached in Evil states."
     (agent-shell-vertico-transcript--unbind-evil-keys)
     (read-only-mode -1)))
 
+(defun agent-shell-vertico-transcript--resume-session (session-id)
+  "Resume SESSION-ID, respecting `agent-shell-prefer-viewport-interaction'.
+
+`agent-shell-resume-session' displays the shell buffer itself, so a
+resumed session lands in `agent-shell-mode' even for users who interact
+through viewports.  When viewport interaction is preferred, start the
+shell without focus and let `agent-shell' display the viewport once the
+session is selected, which is what `agent-shell' does when it starts a
+shell for a viewport."
+  (if (not agent-shell-prefer-viewport-interaction)
+      (agent-shell-resume-session session-id)
+    (let ((shell-buffer
+           (agent-shell--start
+            :config (or (agent-shell--auto-preferred-config)
+                        (agent-shell-select-config
+                         :prompt "Resume with agent: ")
+                        (error "No agent config found"))
+            :session-id session-id
+            :new-session t
+            :no-focus t)))
+      (agent-shell--display-viewport-when-ready :shell-buffer shell-buffer)
+      shell-buffer)))
+
 (defun agent-shell-vertico-transcript--resume-record (record)
   "Resume transcript RECORD without checking for a live buffer."
   (let ((session-id
@@ -692,7 +720,7 @@ that is how they are reached in Evil states."
             default-directory))
           (agent-shell-transcript-file-path-function
            (lambda () file)))
-      (agent-shell-resume-session session-id))))
+      (agent-shell-vertico-transcript--resume-session session-id))))
 
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)

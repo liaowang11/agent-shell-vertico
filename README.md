@@ -138,7 +138,10 @@ project without asking for one.
 
 Browse and search selections open the transcript file. Resume commands switch
 to a matching live shell when possible, otherwise they resume the recorded
-session. The transcript reader provides:
+session. When `agent-shell-prefer-viewport-interaction` is non-nil, a resumed
+session is shown in its viewport rather than in the shell buffer.
+
+The transcript reader provides:
 
 - `r` smart resume or switch to the live session
 - `R` force a new resumed shell

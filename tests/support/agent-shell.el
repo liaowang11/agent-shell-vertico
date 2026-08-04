@@ -104,6 +104,29 @@
   (setq agent-shell-test-last-command 'agent-shell-resume-session
         agent-shell-test-last-args (list session-id)))
 
+(defvar agent-shell-test-start-buffer nil
+  "Stub: buffer returned by `agent-shell--start'.")
+
+(cl-defun agent-shell--start (&rest args)
+  "Record a private start action with ARGS."
+  (setq agent-shell-test-last-command 'agent-shell--start
+        agent-shell-test-last-args args)
+  (or agent-shell-test-start-buffer (current-buffer)))
+
+(defun agent-shell--auto-preferred-config ()
+  "Return the stubbed preferred config."
+  (car agent-shell-agent-configs))
+
+(cl-defun agent-shell-select-config (&key _prompt)
+  "Return the stubbed selected config."
+  (car agent-shell-agent-configs))
+
+(cl-defun agent-shell--display-viewport-when-ready (&rest args)
+  "Record a viewport display request with ARGS."
+  (setq agent-shell-test-last-command
+        'agent-shell--display-viewport-when-ready
+        agent-shell-test-last-args args))
+
 (defun agent-shell--config-icon (&rest _args)
   "Return a stub icon string."
   "[#]")
