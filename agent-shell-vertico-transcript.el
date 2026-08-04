@@ -55,6 +55,7 @@
   agent
   model
   session-id
+  title
   started
   working-directory
   preview
@@ -115,13 +116,32 @@ creating the directory."
                   project-root))
     (expand-file-name directory default-directory)))
 
+(defun agent-shell-vertico-transcript--header-end ()
+  "Return where the current buffer's transcript header ends.
+
+The header ends at the `---' separator, or at the first speaker heading
+when a transcript has none.  Bodies quote header fields verbatim
+whenever an agent echoes a file or an older transcript, so a search for
+a field has to stop here rather than pick a quoted line up."
+  (save-excursion
+    (goto-char (point-min))
+    (cond
+     ((re-search-forward "^---[ \t]*$" nil t)
+      (match-beginning 0))
+     ((progn
+        (goto-char (point-min))
+        (re-search-forward "^## " nil t))
+      (match-beginning 0))
+     (t (point-max)))))
+
 (defun agent-shell-vertico-transcript--header-value (label)
   "Return the current buffer's Markdown header value for LABEL."
-  (goto-char (point-min))
-  (when (re-search-forward
-         (format "^\\*\\*%s:\\*\\*[ \t]+\\(.+\\)$" (regexp-quote label))
-         nil t)
-    (string-trim (match-string-no-properties 1))))
+  (let ((header-end (agent-shell-vertico-transcript--header-end)))
+    (goto-char (point-min))
+    (when (re-search-forward
+           (format "^\\*\\*%s:\\*\\*[ \t]+\\(.+\\)$" (regexp-quote label))
+           header-end t)
+      (string-trim (match-string-no-properties 1)))))
 
 (defun agent-shell-vertico-transcript--first-user-message ()
   "Return the first nonblank line of the first user message."
@@ -153,6 +173,7 @@ creating the directory."
              (agent-shell-vertico-transcript--header-value "Session ID")
              (agent-shell-vertico-transcript--header-value "Session")))
            (model (agent-shell-vertico-transcript--header-value "Model"))
+           (title (agent-shell-vertico-transcript--header-value "Title"))
            (preview (agent-shell-vertico-transcript--first-user-message))
            (attributes (file-attributes file))
            (normalized-root
@@ -166,6 +187,7 @@ creating the directory."
        :agent agent
        :model model
        :session-id session-id
+       :title title
        :started started
        :working-directory
        (and working-directory
@@ -425,43 +447,120 @@ time with the newest first."
     "Resumable")
    (t "Transcript only")))
 
-(defun agent-shell-vertico-transcript--record-candidate (record)
-  "Return a completion candidate for RECORD."
-  (let* ((started
-          (or
-           (agent-shell-vertico-transcript-record-started record)
-           (file-name-sans-extension
-            (file-name-nondirectory
-             (agent-shell-vertico-transcript-record-file record)))))
-         (candidate
-          (format "[%s] %s" started
-                  (agent-shell-vertico-transcript-record-preview record))))
+(defconst agent-shell-vertico-transcript--key-char #x100000
+  "First character of the private-use range used to key candidates.")
+
+(defconst agent-shell-vertico-transcript--key-range #xfffe
+  "Number of characters one candidate key character can encode.")
+
+(defun agent-shell-vertico-transcript--candidate-key (index)
+  "Return an invisible completion key for INDEX.
+
+Completion collapses candidates with equal text, so two sessions an
+agent titled the same way would leave one of them unreachable.  The key
+is private-use characters carrying `invisible', the approach Consult
+uses for repeated lines: candidates stay distinct while the minibuffer
+shows the title alone."
+  (let ((key nil)
+        (remaining index))
+    (while (progn
+             (setq key
+                   (concat
+                    (char-to-string
+                     (+ agent-shell-vertico-transcript--key-char
+                        (% remaining
+                           agent-shell-vertico-transcript--key-range)))
+                    key))
+             (and (>= remaining agent-shell-vertico-transcript--key-range)
+                  (setq remaining
+                        (/ remaining
+                           agent-shell-vertico-transcript--key-range)))))
+    (propertize key 'invisible t)))
+
+(defun agent-shell-vertico-transcript--candidate-text (record)
+  "Return the text shown for RECORD in completion.
+
+The session title when the transcript has one, else its first user
+message.  No time is shown: the list is ordered by last change and the
+annotation carries both times."
+  (or (agent-shell-vertico-transcript-record-title record)
+      (agent-shell-vertico-transcript-record-preview record)
+      (file-name-sans-extension
+       (file-name-nondirectory
+        (agent-shell-vertico-transcript-record-file record)))))
+
+(defun agent-shell-vertico-transcript--record-candidate (record &optional index)
+  "Return a completion candidate for RECORD.
+With INDEX, append the invisible key that keeps candidates distinct."
+  (let ((candidate
+         (concat
+          (agent-shell-vertico-transcript--candidate-text record)
+          (when index
+            (agent-shell-vertico-transcript--candidate-key index)))))
     (put-text-property
      0 (length candidate) 'agent-shell-vertico-transcript-record
      record candidate)
     candidate))
 
+(defun agent-shell-vertico-transcript--record-candidates (records)
+  "Return one distinct completion candidate per record in RECORDS."
+  (seq-map-indexed
+   (lambda (record index)
+     (agent-shell-vertico-transcript--record-candidate record index))
+   records))
+
 (defun agent-shell-vertico-transcript--record-from-candidate (candidate)
   "Return the transcript record carried by CANDIDATE."
-  (get-text-property
-   0 'agent-shell-vertico-transcript-record candidate))
+  (when (and (stringp candidate)
+             (> (length candidate) 0))
+    (get-text-property
+     0 'agent-shell-vertico-transcript-record candidate)))
+
+(defun agent-shell-vertico-transcript--record-created (record)
+  "Return RECORD's creation time for display."
+  (let ((started (agent-shell-vertico-transcript-record-started record)))
+    (cond
+     ((and started (>= (length started) 16)) (substring started 0 16))
+     (started started)
+     (t
+      (format-time-string
+       "%F %R"
+       (agent-shell-vertico-transcript-record-modified-time record))))))
 
 (defun agent-shell-vertico-transcript--record-annotation (candidate)
-  "Return an annotation for transcript CANDIDATE."
+  "Return an annotation for transcript CANDIDATE.
+
+Columns run from most to least identifying.  The project and the first
+user message are what tell two sessions with the same title apart, so
+they come first, then the agent and whether the session can be reached,
+then when it last changed and when it started.  The first message is
+left out when the candidate already shows it."
   (when-let* ((record
                (agent-shell-vertico-transcript--record-from-candidate
                 candidate)))
     (marginalia--fields
+     ((or (agent-shell-vertico-transcript-record-project-name record) "-")
+      :truncate 14 :face 'marginalia-value)
+     ((let ((preview
+             (agent-shell-vertico-transcript-record-preview record)))
+        (if (equal preview
+                   (agent-shell-vertico-transcript--candidate-text record))
+            ""
+          (or preview "")))
+      :truncate 0.4 :face 'marginalia-documentation)
+     ((or (agent-shell-vertico-transcript-record-agent record) "-")
+      :truncate 10 :face 'marginalia-value)
      ((agent-shell-vertico-transcript--record-status record)
       :truncate 16 :face 'marginalia-type)
-     ((or (agent-shell-vertico-transcript-record-agent record) "-")
-      :truncate 14 :face 'marginalia-value)
-     ((or (agent-shell-vertico-transcript-record-started record)
-          (format-time-string
-           "%F %R"
-           (agent-shell-vertico-transcript-record-modified-time
-            record)))
-      :truncate 18 :face 'marginalia-date))))
+     ((marginalia--time
+       (agent-shell-vertico-transcript-record-modified-time record))
+      :truncate 12 :face 'marginalia-date)
+     ((agent-shell-vertico-transcript--record-created record)
+      :truncate 16 :face 'marginalia-date))))
+
+(add-to-list 'marginalia-annotators
+             '(agent-shell-transcript
+               agent-shell-vertico-transcript--record-annotation none))
 
 (defun agent-shell-vertico-transcript--completing-read-record
     (prompt records)
@@ -469,23 +568,26 @@ time with the newest first."
   (unless records
     (user-error "No matching agent-shell transcripts"))
   (let* ((candidates
-          (mapcar
-           #'agent-shell-vertico-transcript--record-candidate
-           records))
+          (agent-shell-vertico-transcript--record-candidates records))
          (selection
-          (completing-read
-           prompt
-           (lambda (string pred action)
-             (if (eq action 'metadata)
-                 `(metadata
-                   (category . agent-shell-transcript)
-                   (annotation-function
-                    . ,#'agent-shell-vertico-transcript--record-annotation)
-                   (display-sort-function . identity)
-                   (cycle-sort-function . identity))
-               (complete-with-action action candidates string pred)))
-           nil t)))
+          ;; Keep the text properties on the returned candidate so the
+          ;; record comes back directly, rather than through a lookup by
+          ;; display text that repeated titles make ambiguous.
+          (let ((minibuffer-allow-text-properties t))
+            (completing-read
+             prompt
+             (lambda (string pred action)
+               (if (eq action 'metadata)
+                   `(metadata
+                     (category . agent-shell-transcript)
+                     (annotation-function
+                      . ,#'agent-shell-vertico-transcript--record-annotation)
+                     (display-sort-function . identity)
+                     (cycle-sort-function . identity))
+                 (complete-with-action action candidates string pred)))
+             nil t))))
     (or
+     (agent-shell-vertico-transcript--record-from-candidate selection)
      (when-let* ((candidate (assoc-string selection candidates)))
        (agent-shell-vertico-transcript--record-from-candidate candidate))
      (user-error "Transcript no longer exists"))))

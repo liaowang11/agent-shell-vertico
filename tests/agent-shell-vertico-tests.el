@@ -1754,6 +1754,243 @@ value would pre-bind it, clobbering embark's own default finder list."
               "Find the viewport history implementation"))))
       (delete-file file))))
 
+(ert-deftest agent-shell-vertico-transcript-parse-title-header ()
+  (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "# Agent Shell Transcript\n\n"
+                    "**Agent:** Claude\n"
+                    "**Started:** 2026-08-04 10:43:15\n"
+                    "**Working Directory:** /work/project\n"
+                    "**Session ID:** abc-123\n"
+                    "**Title:** Understand session list display\n\n"
+                    "---\n\n"
+                    "## User (2026-08-04 10:43:15)\n\n"
+                    "In agent-shell-vertico-transcript.el\n\n"
+                    ;; The body quotes a header field; it must not be read
+                    ;; as this transcript's own title.
+                    "**Title:** quoted from somewhere else\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--parse-file
+                  file "/work/project/")))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-title record)
+              "Understand session list display"))
+            (should
+             (equal
+              (agent-shell-vertico-transcript-record-preview record)
+              "In agent-shell-vertico-transcript.el"))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-parse-ignores-quoted-headers ()
+  "Header fields are read from the header only.
+
+Agents echo files and older transcripts, so bodies carry lines shaped
+like a header field.  Reading one as this transcript's own field would
+label it with someone else's agent or title."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "# Agent Shell Transcript\n\n"
+                    "**Started:** 2026-08-04 10:43:15\n"
+                    "**Working Directory:** /work/project\n\n"
+                    "---\n\n"
+                    "## User (2026-08-04 10:43:15)\n\n"
+                    "Here is an older transcript:\n\n"
+                    "**Agent:** Kiro\n"
+                    "**Title:** someone else's session\n"
+                    "**Session ID:** quoted-id\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--parse-file
+                  file "/work/project/")))
+            (should-not
+             (agent-shell-vertico-transcript-record-agent record))
+            (should-not
+             (agent-shell-vertico-transcript-record-title record))
+            (should-not
+             (agent-shell-vertico-transcript-record-session-id record))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-prefers-title ()
+  (let ((titled
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcripts/titled.md"
+          :started "2026-08-04 10:43:15"
+          :title "Understand session list display"
+          :preview "In agent-shell-vertico-transcript.el"))
+        (untitled
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcripts/untitled.md"
+          :started "2026-08-04 10:43:15"
+          :preview "In agent-shell-vertico-transcript.el")))
+    ;; The title is the candidate, with no timestamp: the list is ordered
+    ;; by last change and the annotation carries the times.
+    (should
+     (equal
+      (substring-no-properties
+       (agent-shell-vertico-transcript--record-candidate titled 0))
+      (concat "Understand session list display"
+              (agent-shell-vertico-transcript--candidate-key 0))))
+    ;; Without a title the first user message stands in.
+    (should
+     (equal
+      (substring-no-properties
+       (agent-shell-vertico-transcript--record-candidate untitled 0))
+      (concat "In agent-shell-vertico-transcript.el"
+              (agent-shell-vertico-transcript--candidate-key 0))))))
+
+(ert-deftest agent-shell-vertico-transcript-candidates-stay-distinct ()
+  "Records sharing a title must stay separately selectable.
+
+Completion collapses candidates with equal text, so two sessions an
+agent gave the same summary would leave one of them unreachable."
+  (let* ((first-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/first.md"
+           :title "Set up emacsclient configuration"))
+         (second-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/second.md"
+           :title "Set up emacsclient configuration"))
+         (candidates
+          (agent-shell-vertico-transcript--record-candidates
+           (list first-record second-record))))
+    (should (= (length candidates) 2))
+    ;; The strings differ, so neither candidate is collapsed.
+    (should-not
+     (equal (substring-no-properties (nth 0 candidates))
+            (substring-no-properties (nth 1 candidates))))
+    ;; What the user reads is the same title for both.
+    (should
+     (equal
+      (mapcar
+       (lambda (candidate)
+         (replace-regexp-in-string
+          "[\x100000-\x10fffd]+\\'" ""
+          (substring-no-properties candidate)))
+       candidates)
+      '("Set up emacsclient configuration"
+        "Set up emacsclient configuration")))
+    ;; Each candidate still resolves to its own record.
+    (should
+     (eq (agent-shell-vertico-transcript--record-from-candidate
+          (nth 1 candidates))
+         second-record))))
+
+(ert-deftest agent-shell-vertico-transcript-read-record-resolves-same-title ()
+  "Selecting the second of two same-titled records returns that record."
+  (let* ((first-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/first.md"
+           :title "Set up emacsclient configuration"))
+         (second-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/second.md"
+           :title "Set up emacsclient configuration")))
+    ;; A completion UI that preserves text properties, which is what
+    ;; `minibuffer-allow-text-properties' buys.
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _args)
+                 (nth 1 (all-completions "" candidates)))))
+      (should
+       (eq
+        (agent-shell-vertico-transcript--completing-read-record
+         "Transcript: " (list first-record second-record))
+        second-record)))
+    ;; A UI that strips them still resolves, because the candidate
+    ;; strings themselves are distinct.
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _args)
+                 (substring-no-properties
+                  (nth 1 (all-completions "" candidates))))))
+      (should
+       (eq
+        (agent-shell-vertico-transcript--completing-read-record
+         "Transcript: " (list first-record second-record))
+        second-record)))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-orders-columns ()
+  "Annotation columns run from most to least identifying."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :project-name "agent-shell-vertico"
+           :agent "Claude"
+           :session-id "abc-123"
+           :title "Understand session list display"
+           :preview "In agent-shell-vertico-transcript.el"
+           :started "2026-08-04 10:43:15"
+           :modified-time (encode-time 30 45 19 4 8 2026)))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0))
+         (annotation
+          (substring-no-properties
+           (agent-shell-vertico-transcript--record-annotation candidate))))
+    ;; Stubbed `marginalia--fields' joins the columns with a space, so the
+    ;; column values appear in order.
+    (should
+     (equal
+      annotation
+      (string-join
+       (list "agent-shell-vertico"
+             "In agent-shell-vertico-transcript.el"
+             "Claude"
+             "Resumable"
+             (marginalia--time (encode-time 30 45 19 4 8 2026))
+             "2026-08-04 10:43")
+       " ")))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-skips-shown-preview ()
+  "The first message column is empty when the candidate already shows it."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :project-name "agent-shell-vertico"
+           :agent "Claude"
+           :preview "In agent-shell-vertico-transcript.el"
+           :started "2026-08-04 10:43:15"
+           :modified-time (encode-time 30 45 19 4 8 2026)))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0))
+         (annotation
+          (substring-no-properties
+           (agent-shell-vertico-transcript--record-annotation candidate))))
+    (should
+     (equal
+      annotation
+      (string-join
+       (list "agent-shell-vertico"
+             ""
+             "Claude"
+             "Transcript only"
+             (marginalia--time (encode-time 30 45 19 4 8 2026))
+             "2026-08-04 10:43")
+       " ")))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-falls-back-to-file-time ()
+  "A transcript with no start header shows its file time as created."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :project-name "project"
+           :preview "Hello"
+           :modified-time (encode-time 30 45 19 4 8 2026)))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0))
+         (annotation
+          (substring-no-properties
+           (agent-shell-vertico-transcript--record-annotation candidate))))
+    (should (string-suffix-p "2026-08-04 19:45" annotation))))
+
+(ert-deftest agent-shell-vertico-transcript-marginalia-annotator-registered ()
+  (should
+   (equal
+    (alist-get 'agent-shell-transcript marginalia-annotators)
+    '(agent-shell-vertico-transcript--record-annotation none))))
+
 (ert-deftest agent-shell-vertico-transcript-records-filter-shared-directory ()
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
          (other-root (make-temp-file "agent-shell-vertico-other-" t))
@@ -2169,6 +2406,34 @@ value would pre-bind it, clobbering embark's own default finder list."
         (agent-shell-vertico-transcript--read-record
          "Transcript: " (list record))
         record)))))
+
+(ert-deftest agent-shell-vertico-consult-browse-reader-keeps-records-distinct ()
+  "The Consult reader resolves same-titled records to the right one."
+  (let* ((first-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/first.md"
+           :title "Set up emacsclient configuration"))
+         (second-record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/second.md"
+           :title "Set up emacsclient configuration"))
+         (agent-shell-vertico-transcript-read-record-function
+          #'agent-shell-vertico-consult--read-record))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest _options)
+                 (should (= (length candidates) 2))
+                 ;; Consult looks the selection up with `member', which
+                 ;; needs the candidate strings to differ.
+                 (car (member (nth 1 candidates) candidates))))
+              ((symbol-function 'consult--temporary-files)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--jump-preview)
+               (lambda () (lambda (&rest _arguments)))))
+      (should
+       (eq
+        (agent-shell-vertico-transcript--read-record
+         "Transcript: " (list first-record second-record))
+        second-record)))))
 
 (ert-deftest agent-shell-vertico-transcript-parser-accepts-session-header ()
   (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))

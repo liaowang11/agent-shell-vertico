@@ -14,6 +14,10 @@
   "Stub for marginalia--fields. Concatenates field values with spaces."
   `(string-join (list ,@(mapcar (lambda (f) (car f)) fields)) " "))
 
+(defun marginalia--time (time)
+  "Stub for marginalia--time.  Formats TIME as an absolute age."
+  (format-time-string "%b %d %H:%M" time))
+
 (provide 'marginalia)
 
 ;;; marginalia.el ends here

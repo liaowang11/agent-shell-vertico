@@ -211,10 +211,10 @@ the caller decides what to open once the minibuffer is gone."
   (unless records
     (user-error "No matching agent-shell transcripts"))
   (let* ((candidates
-          (mapcar
-           #'agent-shell-vertico-transcript--record-candidate
-           records))
+          (agent-shell-vertico-transcript--record-candidates records))
          (selection
+          ;; Annotations come from the Marginalia annotator registered for
+          ;; the category, so both readers render from one definition.
           (consult--read
            candidates
            :prompt prompt
@@ -222,8 +222,6 @@ the caller decides what to open once the minibuffer is gone."
            :state (agent-shell-vertico-consult--state)
            :require-match t
            :category 'agent-shell-transcript
-           :annotate
-           #'agent-shell-vertico-transcript--record-annotation
            :sort nil)))
     (or
      (agent-shell-vertico-transcript--record-from-candidate selection)

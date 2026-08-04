@@ -141,6 +141,14 @@ to a matching live shell when possible, otherwise they resume the recorded
 session. When `agent-shell-prefer-viewport-interaction` is non-nil, a resumed
 session is shown in its viewport rather than in the shell buffer.
 
+Each candidate is the session title, taken from the transcript's `**Title:**`
+header, and falls back to the first user message for transcripts written
+without one. Sessions are listed newest first by last change. Annotations run
+from most to least identifying: project, first user message, agent,
+availability, last change, and start time. They are rendered by a Marginalia
+annotator registered for the `agent-shell-transcript` category, so
+`marginalia-cycle` turns them off.
+
 The transcript reader provides:
 
 - `r` smart resume or switch to the live session
