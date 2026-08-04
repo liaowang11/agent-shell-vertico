@@ -132,6 +132,38 @@
          (t
           (funcall sink action)))))))
 
+(defun agent-shell-vertico-consult--preview-major-mode ()
+  "Return the major mode used to display transcript previews."
+  (if (fboundp 'markdown-mode)
+      'markdown-mode
+    'text-mode))
+
+(defun agent-shell-vertico-consult--open-preview (file opener)
+  "Open FILE for preview with OPENER, highlighted as Markdown.
+
+Consult opens preview buffers with `delay-mode-hooks' bound, so a
+transcript never reaches the state its Markdown mode needs to fontify.
+Two cases show up as an unhighlighted preview:
+
+- A Markdown mode that finishes its setup in mode hooks, such as
+  Polymode's `poly-markdown-mode', installs itself as the fontification
+  engine and then never fontifies anything.  Previewing in the plain mode
+  returned by `agent-shell-vertico-consult--preview-major-mode' leaves
+  jit-lock in charge instead.
+
+- A file above `consult-preview-partial-size' is read into a buffer with
+  no file name, where `set-auto-mode' cannot detect Markdown and leaves
+  Fundamental mode.  Set the mode there directly."
+  (let* ((mode (agent-shell-vertico-consult--preview-major-mode))
+         (auto-mode-alist (cons (cons "\\.md\\'" mode) auto-mode-alist))
+         (buffer (funcall opener file)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (eq major-mode 'fundamental-mode)
+          (delay-mode-hooks (funcall mode))
+          (font-lock-mode 1))))
+    buffer))
+
 (defun agent-shell-vertico-consult--position (candidate &optional opener)
   "Return a Consult marker for CANDIDATE, opening with OPENER."
   (when candidate
@@ -167,7 +199,10 @@ the caller decides what to open once the minibuffer is gone."
       (when (eq action 'preview)
         (funcall
          preview action
-         (agent-shell-vertico-consult--position candidate open))
+         (agent-shell-vertico-consult--position
+          candidate
+          (lambda (file)
+            (agent-shell-vertico-consult--open-preview file open))))
         (unless candidate
           (funcall open))))))
 

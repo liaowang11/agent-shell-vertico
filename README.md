@@ -168,8 +168,12 @@ UUIDs.
 Content search runs `rg --json` asynchronously through Consult, aggregates
 matches per transcript as they arrive, and previews the first match. A changed
 query cancels the previous search process. Loading `agent-shell-vertico-consult`
-also gives ordinary transcript browsing live preview. No persistent cache or
-index is written.
+also gives ordinary transcript browsing live preview. Previews open in plain
+`markdown-mode`: Consult previews files with `delay-mode-hooks` bound, which
+leaves a Markdown mode that finishes its setup in hooks (Polymode, for example)
+unable to fontify, and a file above `consult-preview-partial-size` is previewed
+in a buffer with no file name, where the mode cannot be detected at all. No
+persistent cache or index is written.
 
 ## Setup
 

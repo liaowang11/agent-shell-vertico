@@ -2381,6 +2381,55 @@ the resumed session would otherwise appear in `agent-shell-mode'."
                       shell-buffer)))
       (kill-buffer shell-buffer))))
 
+(ert-deftest agent-shell-vertico-consult-preview-forces-plain-markdown ()
+  "Preview opens transcripts in the preview mode, not the user's Markdown mode.
+
+Consult previews files with `delay-mode-hooks' bound, which leaves a
+Polymode Markdown buffer unable to fontify."
+  (let (seen-mode)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-consult--preview-major-mode)
+               (lambda () 'text-mode)))
+      (agent-shell-vertico-consult--open-preview
+       "/tmp/transcript.md"
+       (lambda (_file)
+         (setq seen-mode
+               (assoc-default "/tmp/transcript.md" auto-mode-alist
+                              #'string-match-p))
+         nil))
+      (should (eq seen-mode 'text-mode)))))
+
+(ert-deftest agent-shell-vertico-consult-preview-sets-undetected-mode ()
+  "A partial preview buffer has no file name, so set its mode explicitly."
+  (let ((buffer (generate-new-buffer " *agent-shell-vertico-preview*")))
+    (unwind-protect
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-consult--preview-major-mode)
+                   (lambda () 'text-mode)))
+          (with-current-buffer buffer
+            (fundamental-mode))
+          (should (eq (agent-shell-vertico-consult--open-preview
+                       "/tmp/transcript.md"
+                       (lambda (_file) buffer))
+                      buffer))
+          (should (eq (buffer-local-value 'major-mode buffer) 'text-mode)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-consult-preview-keeps-detected-mode ()
+  (let ((buffer (generate-new-buffer " *agent-shell-vertico-preview*")))
+    (unwind-protect
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-consult--preview-major-mode)
+                   (lambda () 'text-mode)))
+          (with-current-buffer buffer
+            (emacs-lisp-mode))
+          (agent-shell-vertico-consult--open-preview
+           "/tmp/transcript.md"
+           (lambda (_file) buffer))
+          (should (eq (buffer-local-value 'major-mode buffer)
+                      'emacs-lisp-mode)))
+      (kill-buffer buffer))))
+
 (ert-deftest agent-shell-vertico-transcript-clean-text-removes-tool-sections ()
   (let ((clean
          (agent-shell-vertico-transcript--clean-text
