@@ -146,7 +146,17 @@ session. The transcript reader provides:
 - `b` browse other transcripts from the same project
 - `n`/`p` move between user messages
 - `N`/`P` move between agent messages
+- `]`/`[` move between messages of either speaker
 - `i` manually set or repair the session ID header
+- `?` show the key reference
+
+Evil's state keymaps take precedence over minor mode keymaps, so in Evil
+normal and motion states the reader binds two-key sequences instead: `gr`
+(resume), `gR` (force resume), `gc` (clean reader), `gb` (browse), `gi`
+(session ID), `g?` (key reference), and the vim-unimpaired style motions
+`]]`/`[[` (either speaker), `]u`/`[u` (user messages) and `]a`/`[a` (agent
+messages). Evil's own `g`, `]` and `[` commands and all text motions keep
+working, and the header line shows whichever key set applies.
 
 Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
 Session IDs are treated as opaque strings, so providers are not restricted to

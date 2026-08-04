@@ -32,6 +32,8 @@
 (defvar embark-default-action-overrides)
 (defvar embark-target-finders)
 (defvar agent-shell-viewport-view-mode-hook)
+(defvar evil-local-mode)
+(defvar evil-state)
 
 (defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
   "Evaluate BODY in a freshly initialized named sidebar buffer."
@@ -2200,6 +2202,128 @@ value would pre-bind it, clobbering embark's own default finder list."
     (should (looking-at-p "## Agent (one)"))
     (agent-shell-vertico-transcript-next-agent)
     (should (looking-at-p "## Agent (two)"))))
+
+(ert-deftest agent-shell-vertico-transcript-navigation-by-message ()
+  (with-temp-buffer
+    (insert "## User (one)\n\nFirst\n\n"
+            "## Agent (one)\n\nReply\n\n"
+            "## User (two)\n\nSecond\n")
+    (goto-char (point-min))
+    (agent-shell-vertico-transcript-next-message)
+    (should (looking-at-p "## User (one)"))
+    (agent-shell-vertico-transcript-next-message)
+    (should (looking-at-p "## Agent (one)"))
+    (agent-shell-vertico-transcript-next-message)
+    (should (looking-at-p "## User (two)"))
+    (agent-shell-vertico-transcript-previous-message)
+    (should (looking-at-p "## Agent (one)"))))
+
+(ert-deftest agent-shell-vertico-transcript-mode-map-keeps-plain-bindings ()
+  (should (eq (lookup-key agent-shell-vertico-transcript-mode-map (kbd "r"))
+              #'agent-shell-vertico-transcript-resume-current))
+  (should (eq (lookup-key agent-shell-vertico-transcript-mode-map (kbd "n"))
+              #'agent-shell-vertico-transcript-next-user))
+  (should (eq (lookup-key agent-shell-vertico-transcript-mode-map (kbd "]"))
+              #'agent-shell-vertico-transcript-next-message))
+  (should (eq (lookup-key agent-shell-vertico-transcript-mode-map (kbd "["))
+              #'agent-shell-vertico-transcript-previous-message))
+  (should (eq (lookup-key agent-shell-vertico-transcript-mode-map (kbd "?"))
+              #'agent-shell-vertico-transcript-help)))
+
+(ert-deftest agent-shell-vertico-transcript-evil-bindings-are-two-key ()
+  "Evil bindings must not shadow single-key Evil commands or prefixes."
+  (dolist (binding agent-shell-vertico-transcript--evil-bindings)
+    (should (> (length (car binding)) 1)))
+  (dolist (key '("r" "R" "c" "b" "i" "n" "p" "N" "P" "?" "g" "]" "["))
+    (should-not (assoc key
+                       agent-shell-vertico-transcript--evil-bindings))))
+
+(ert-deftest agent-shell-vertico-transcript-evil-bindings-cover-actions ()
+  (should (eq (cdr (assoc "gr"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-resume-current))
+  (should (eq (cdr (assoc "gR"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-force-resume-current))
+  (should (eq (cdr (assoc "gc"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-clean-view))
+  (should (eq (cdr (assoc "gb"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-browse-from-current))
+  (should (eq (cdr (assoc "gi"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-set-session-id))
+  (should (eq (cdr (assoc "g?"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-help)))
+
+(ert-deftest agent-shell-vertico-transcript-evil-bindings-cover-navigation ()
+  (should (eq (cdr (assoc "]]"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-next-message))
+  (should (eq (cdr (assoc "[["
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-previous-message))
+  (should (eq (cdr (assoc "]u"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-next-user))
+  (should (eq (cdr (assoc "[u"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-previous-user))
+  (should (eq (cdr (assoc "]a"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-next-agent))
+  (should (eq (cdr (assoc "[a"
+                          agent-shell-vertico-transcript--evil-bindings))
+              #'agent-shell-vertico-transcript-previous-agent)))
+
+(ert-deftest agent-shell-vertico-transcript-evil-bindings-install-per-state ()
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (state key definition)
+                 (push (list state key definition) bindings))))
+      (agent-shell-vertico-transcript--bind-evil-keys)
+      (dolist (state '(normal motion))
+        (should
+         (member (list state (kbd "gr")
+                       #'agent-shell-vertico-transcript-resume-current)
+                 bindings))
+        (should
+         (member (list state (kbd "]u")
+                       #'agent-shell-vertico-transcript-next-user)
+                 bindings))))))
+
+(ert-deftest agent-shell-vertico-transcript-help-lists-both-key-sets ()
+  (let ((help (agent-shell-vertico-transcript--help-text)))
+    (should (string-match-p "^  r / R" help))
+    (should (string-match-p "^  gr / gR" help))
+    (should (string-match-p "\\]\\]" help))))
+
+(ert-deftest agent-shell-vertico-transcript-header-line-follows-evil-state ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :agent "Codex"
+          :project-name "project"
+          :session-id "session")))
+    (with-temp-buffer
+      (setq-local agent-shell-vertico-transcript--record record)
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-transcript--live-buffer)
+                 (lambda (_session-id) nil)))
+        (let ((evil-local-mode nil)
+              (evil-state nil))
+          (should
+           (string-match-p
+            "\\[r\\] Resume"
+            (agent-shell-vertico-transcript--header-line))))
+        (let ((evil-local-mode t)
+              (evil-state 'normal))
+          (should
+           (string-match-p
+            "\\[gr\\] Resume"
+            (agent-shell-vertico-transcript--header-line))))))))
 
 (ert-deftest agent-shell-vertico-transcript-clean-text-removes-tool-sections ()
   (let ((clean

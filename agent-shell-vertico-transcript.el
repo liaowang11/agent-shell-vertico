@@ -29,11 +29,14 @@
 (defvar agent-shell-transcript-file-path-function)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
+(defvar evil-local-mode)
+(defvar evil-state)
 (defvar projectile-current-project-on-switch)
 (defvar projectile-mode)
 
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
 (declare-function dired "dired" (dirname &optional switches))
+(declare-function evil-local-set-key "evil" (state key definition))
 (declare-function projectile-project-root "projectile" (&optional dir))
 (declare-function projectile-relevant-known-projects "projectile" ())
 
@@ -539,7 +542,91 @@ It receives a prompt and a list of transcript records.")
   "n" #'agent-shell-vertico-transcript-next-user
   "p" #'agent-shell-vertico-transcript-previous-user
   "N" #'agent-shell-vertico-transcript-next-agent
-  "P" #'agent-shell-vertico-transcript-previous-agent)
+  "P" #'agent-shell-vertico-transcript-previous-agent
+  "]" #'agent-shell-vertico-transcript-next-message
+  "[" #'agent-shell-vertico-transcript-previous-message
+  "?" #'agent-shell-vertico-transcript-help)
+
+(defconst agent-shell-vertico-transcript--evil-bindings
+  '(("gr" . agent-shell-vertico-transcript-resume-current)
+    ("gR" . agent-shell-vertico-transcript-force-resume-current)
+    ("gc" . agent-shell-vertico-transcript-clean-view)
+    ("gb" . agent-shell-vertico-transcript-browse-from-current)
+    ("gi" . agent-shell-vertico-transcript-set-session-id)
+    ("g?" . agent-shell-vertico-transcript-help)
+    ("]]" . agent-shell-vertico-transcript-next-message)
+    ("[[" . agent-shell-vertico-transcript-previous-message)
+    ("]u" . agent-shell-vertico-transcript-next-user)
+    ("[u" . agent-shell-vertico-transcript-previous-user)
+    ("]a" . agent-shell-vertico-transcript-next-agent)
+    ("[a" . agent-shell-vertico-transcript-previous-agent))
+  "Transcript bindings for Evil normal and motion states.
+
+Evil's state keymaps take precedence over minor mode maps, so the
+single-key bindings in `agent-shell-vertico-transcript-mode-map' never
+run while Evil is in normal state.  Every key here is a two-key sequence
+starting with `g', `]' or `[', which Emacs looks up across all active
+keymaps: Evil's own `gg', `gv', `]p' and the rest stay reachable, and no
+single-key Evil command is shadowed.  The bracket pairs follow the
+vim-unimpaired convention, where `]' moves forward and `[' backward.")
+
+(defun agent-shell-vertico-transcript--bind-evil-keys ()
+  "Install `agent-shell-vertico-transcript--evil-bindings' for this buffer.
+Does nothing when Evil is not loaded."
+  (when (fboundp 'evil-local-set-key)
+    (dolist (state '(normal motion))
+      (dolist (binding agent-shell-vertico-transcript--evil-bindings)
+        (evil-local-set-key state (kbd (car binding)) (cdr binding))))))
+
+(defun agent-shell-vertico-transcript--unbind-evil-keys ()
+  "Remove `agent-shell-vertico-transcript--evil-bindings' from this buffer."
+  (when (fboundp 'evil-local-set-key)
+    (dolist (state '(normal motion))
+      (dolist (binding agent-shell-vertico-transcript--evil-bindings)
+        (evil-local-set-key state (kbd (car binding)) nil)))))
+
+(defun agent-shell-vertico-transcript--evil-state-p ()
+  "Return non-nil when Evil handles keys in the current buffer."
+  (and (bound-and-true-p evil-local-mode)
+       (memq (bound-and-true-p evil-state) '(normal motion visual))))
+
+(defconst agent-shell-vertico-transcript--help-buffer
+  "*Agent Shell Transcript Help*"
+  "Buffer used by `agent-shell-vertico-transcript-help'.")
+
+(defun agent-shell-vertico-transcript--help-text ()
+  "Return the key reference shown by `agent-shell-vertico-transcript-help'."
+  (concat
+   "Agent Shell Transcript\n"
+   "======================\n\n"
+   "Keys\n"
+   "  r / R       Resume / resume in a new shell\n"
+   "  c           Clean reader view (messages only)\n"
+   "  b           Browse this project's transcripts\n"
+   "  i           Set the session ID header\n"
+   "  n / p       Next / previous user message\n"
+   "  N / P       Next / previous agent message\n"
+   "  ] / [       Next / previous message\n"
+   "  ?           This help\n\n"
+   "Keys in Evil normal and motion states\n"
+   "  gr / gR     Resume / resume in a new shell\n"
+   "  gc          Clean reader view (messages only)\n"
+   "  gb          Browse this project's transcripts\n"
+   "  gi          Set the session ID header\n"
+   "  ]u / [u     Next / previous user message\n"
+   "  ]a / [a     Next / previous agent message\n"
+   "  ]] / [[     Next / previous message\n"
+   "  g?          This help\n\n"
+   "Evil states get two-key sequences only, so Evil's own g, ] and [\n"
+   "commands and every text motion keep working.\n"))
+
+(defun agent-shell-vertico-transcript-help ()
+  "Display the transcript key reference."
+  (interactive)
+  (require 'help-mode)
+  (with-help-window (get-buffer-create
+                     agent-shell-vertico-transcript--help-buffer)
+    (insert (agent-shell-vertico-transcript--help-text))))
 
 (defvar-keymap agent-shell-vertico-transcript-embark-map
   :doc "Embark actions for `agent-shell' transcripts."
@@ -556,18 +643,24 @@ It receives a prompt and a list of transcript records.")
   "f" #'agent-shell-vertico-transcript-embark-copy-file)
 
 (defun agent-shell-vertico-transcript--header-line ()
-  "Return a header line for the current transcript buffer."
+  "Return a header line for the current transcript buffer.
+Action keys are shown with the `g' prefix while Evil handles keys, since
+that is how they are reached in Evil states."
   (when agent-shell-vertico-transcript--record
-    (let ((record agent-shell-vertico-transcript--record))
+    (let ((record agent-shell-vertico-transcript--record)
+          (prefix (if (agent-shell-vertico-transcript--evil-state-p)
+                      "g"
+                    "")))
       (format
-       " %s · %s · %s    [r] Resume  [R] Force  [c] Clean  [b] Browse"
+       " %s · %s · %s    [%sr] Resume  [%sR] Force  [%sc] Clean  [%sb] Browse"
        (or
         (agent-shell-vertico-transcript-record-agent record)
         "Unknown agent")
        (or
         (agent-shell-vertico-transcript-record-project-name record)
         "Unscoped")
-       (agent-shell-vertico-transcript--record-status record)))))
+       (agent-shell-vertico-transcript--record-status record)
+       prefix prefix prefix prefix))))
 
 (define-minor-mode agent-shell-vertico-transcript-mode
   "Read and act on an `agent-shell' transcript."
@@ -578,8 +671,10 @@ It receives a prompt and a list of transcript records.")
         (setq-local header-line-format
                     '(:eval
                       (agent-shell-vertico-transcript--header-line)))
+        (agent-shell-vertico-transcript--bind-evil-keys)
         (read-only-mode 1))
     (setq-local header-line-format nil)
+    (agent-shell-vertico-transcript--unbind-evil-keys)
     (read-only-mode -1)))
 
 (defun agent-shell-vertico-transcript--resume-record (record)
@@ -644,11 +739,12 @@ It receives a prompt and a list of transcript records.")
    (user-error "Current buffer is not an agent-shell transcript")))
 
 (defun agent-shell-vertico-transcript--move-to-speaker
-    (speaker direction)
-  "Move to the next or previous SPEAKER heading in DIRECTION."
+    (speakers direction)
+  "Move to the next or previous heading for SPEAKERS in DIRECTION.
+SPEAKERS is a list of heading names such as (\"User\")."
   (let ((regexp
-         (format "^## %s\\(?:[ \t(].*\\)?$"
-                 (regexp-quote speaker)))
+         (format "^## \\(?:%s\\)\\(?:[ \t(].*\\)?$"
+                 (mapconcat #'regexp-quote speakers "\\|")))
         found)
     (when (and (> direction 0)
                (looking-at-p regexp)
@@ -656,7 +752,7 @@ It receives a prompt and a list of transcript records.")
                 (not (= (point) (point-min)))
                 (equal
                  agent-shell-vertico-transcript--last-navigation
-                 (cons speaker (point)))))
+                 (cons speakers (point)))))
       (forward-line 1))
     (setq found
           (if (> direction 0)
@@ -667,30 +763,40 @@ It receives a prompt and a list of transcript records.")
           (goto-char (match-beginning 0))
           (setq
            agent-shell-vertico-transcript--last-navigation
-           (cons speaker (point))))
+           (cons speakers (point))))
       (user-error "No %s %s message"
                   (if (> direction 0) "next" "previous")
-                  (downcase speaker)))))
+                  (mapconcat #'downcase speakers " or ")))))
 
 (defun agent-shell-vertico-transcript-next-user ()
   "Move to the next user message."
   (interactive)
-  (agent-shell-vertico-transcript--move-to-speaker "User" 1))
+  (agent-shell-vertico-transcript--move-to-speaker '("User") 1))
 
 (defun agent-shell-vertico-transcript-previous-user ()
   "Move to the previous user message."
   (interactive)
-  (agent-shell-vertico-transcript--move-to-speaker "User" -1))
+  (agent-shell-vertico-transcript--move-to-speaker '("User") -1))
 
 (defun agent-shell-vertico-transcript-next-agent ()
   "Move to the next agent message."
   (interactive)
-  (agent-shell-vertico-transcript--move-to-speaker "Agent" 1))
+  (agent-shell-vertico-transcript--move-to-speaker '("Agent") 1))
 
 (defun agent-shell-vertico-transcript-previous-agent ()
   "Move to the previous agent message."
   (interactive)
-  (agent-shell-vertico-transcript--move-to-speaker "Agent" -1))
+  (agent-shell-vertico-transcript--move-to-speaker '("Agent") -1))
+
+(defun agent-shell-vertico-transcript-next-message ()
+  "Move to the next user or agent message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker '("User" "Agent") 1))
+
+(defun agent-shell-vertico-transcript-previous-message ()
+  "Move to the previous user or agent message."
+  (interactive)
+  (agent-shell-vertico-transcript--move-to-speaker '("User" "Agent") -1))
 
 (defun agent-shell-vertico-transcript--clean-text (text)
   "Return user and agent sections extracted from transcript TEXT."
