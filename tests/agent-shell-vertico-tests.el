@@ -560,8 +560,9 @@ Each element in BINDINGS is of the form:
           (let ((position (string-match
                            "▲1" (substring-no-properties header))))
             (should position)
+            ;; Counts are per attention kind now, so each names its own.
             (should (equal (get-text-property position 'help-echo header)
-                           "attention"))))))))
+                           "waiting"))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-expands-projects-by-default ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1168,6 +1169,123 @@ and `window-state-put', which only carry parameters marked writable in
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should (string-match-p "✖ Failed run" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-done-icon-differs-from-blocked ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((finished "Codex Agent @ finished" "/work/finished/"
+                 '((:session . ((:id . "f") (:title . "Finished")))))
+       (waiting "Claude Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting"))))))
+    (let ((agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash finished (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash waiting (list :kind 'blocked :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (should (equal (agent-shell-vertico-sidebar--icon finished) "●"))
+      (should (equal (agent-shell-vertico-sidebar--icon waiting) "▲")))))
+
+(ert-deftest agent-shell-vertico-sidebar-icons-fall-back-to-text ()
+  (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
+    (should-not (agent-shell-vertico-sidebar--nerd-icons-p))
+    (dolist (slot '((error . "✖") (blocked . "▲") (done . "●")
+                    (working . "◆") (ready . "✓") (starting . "○")
+                    (project . "⌂") (message . "↳")
+                    (expanded . "▾") (collapsed . "▸")))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
+                     (cdr slot))))))
+
+(ert-deftest agent-shell-vertico-sidebar-uses-nerd-icons-when-enabled ()
+  (cl-letf (((symbol-function 'nerd-icons-codicon)
+             (lambda (name &rest _) (format "<cod:%s>" name)))
+            ((symbol-function 'nerd-icons-mdicon)
+             (lambda (name &rest _) (format "<md:%s>" name))))
+    (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
+      (should (agent-shell-vertico-sidebar--nerd-icons-p))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'error)
+                     "<cod:nf-cod-error>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'blocked)
+                     "<cod:nf-cod-stop_circle>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'done)
+                     "<cod:nf-cod-circle_large_filled>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'ready)
+                     "<cod:nf-cod-circle_large>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'starting)
+                     "<cod:nf-cod-dash>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'project)
+                     "<cod:nf-cod-root_folder>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'message)
+                     "<cod:nf-cod-arrow_small_right>"))
+      ;; The working icon is the one slot drawn from the Material set.
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'working)
+                     "<md:nf-md-dots_circle>"))
+      ;; Folds keep their text characters whatever the icon setting.
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'expanded) "▾"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'collapsed)
+                     "▸")))))
+
+(ert-deftest agent-shell-vertico-sidebar-icon-gap-widens-for-nerd-icons ()
+  (cl-letf (((symbol-function 'nerd-icons-codicon)
+             (lambda (name &rest _) (format "<cod:%s>" name)))
+            ((symbol-function 'nerd-icons-mdicon)
+             (lambda (name &rest _) (format "<md:%s>" name))))
+    ;; Text characters sit comfortably one space from the title.
+    (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
+      (should (equal (agent-shell-vertico-sidebar--icon-gap) " ")))
+    (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
+      ;; A terminal can only widen the gap by whole columns.
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+        (should (equal (agent-shell-vertico-sidebar--icon-gap) "  ")))
+      ;; A graphical frame gets a fraction of a column instead.
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+        (let ((gap (agent-shell-vertico-sidebar--icon-gap)))
+          (should (equal (substring-no-properties gap) "  "))
+          (should (equal (get-text-property 1 'display gap)
+                         '(space :width 0.5))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-content-width-accounts-for-gap ()
+  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+    ;; Text mode: one column for the character, one for its space.
+    (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
+      (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 38))
+      (should (= (agent-shell-vertico-sidebar--content-width 40 t) 36)))
+    ;; Icons in a terminal spend one more column on the wider gap.
+    (cl-letf (((symbol-function 'nerd-icons-codicon)
+               (lambda (name &rest _) (format "<cod:%s>" name))))
+      (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
+        (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 37))
+        (should (= (agent-shell-vertico-sidebar--content-width 40 t) 35))))))
+
+(ert-deftest agent-shell-vertico-sidebar-header-counts-attention-kinds ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((failed "Codex Agent @ failed" "/work/failed/"
+               '((:session . ((:id . "f") (:title . "Failed")))))
+       (waiting "Claude Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (finished "Codex Agent @ finished" "/work/finished/"
+                 '((:session . ((:id . "d") (:title . "Finished"))))))
+    (let ((agent-shell-test-buffers (list failed waiting finished))
+          (agent-shell-test-statuses (list (cons failed 'ready)
+                                           (cons waiting 'ready)
+                                           (cons finished 'ready)))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq))
+          (agent-shell-vertico-sidebar-use-nerd-icons nil))
+      (puthash failed (list :kind 'error :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash waiting (list :kind 'blocked :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash finished (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        ;; Every count uses the icon its own rows use.
+        (should (equal (substring-no-properties
+                        (agent-shell-vertico-sidebar--header-line))
+                       " 3 sessions · ✖1 · ▲1 · ●1"))
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (substring-no-properties header-line-format)
+                       " 3 sessions · ✖1 · ▲1 · ●1"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers

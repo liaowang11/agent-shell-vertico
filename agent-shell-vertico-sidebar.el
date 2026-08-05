@@ -115,6 +115,18 @@ latest submitted prompt and is omitted by default."
                          (const :tag "Last user message" last-user-message)))
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-use-nerd-icons 'auto
+  "Whether the sidebar draws its status marks with nerd-icons.
+
+`auto' uses icons when the `nerd-icons' package can be loaded and the
+plain characters otherwise.  `t' always asks nerd-icons to draw them, and
+nil always uses the characters.  Project folds keep their characters
+either way."
+  :type '(choice (const :tag "When nerd-icons is available" auto)
+                 (const :tag "Always" t)
+                 (const :tag "Never" nil))
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-follow-workspaces t
   "Whether the sidebar reopens itself after a workspace switch.
 
@@ -386,6 +398,8 @@ repeating those queries during one redisplay."
            buffer status attention)
           :status-rank (agent-shell-vertico-sidebar--status-rank-for
                         status attention)
+          :icon-slot (agent-shell-vertico-sidebar--icon-slot-for
+                      status attention)
           :raw-status-rank
           (agent-shell-vertico-sidebar--status-sort-rank-for status)
           :attention attention
@@ -528,7 +542,9 @@ activity is deliberately not a priority tie-breaker."
                  (agent-shell-vertico-sidebar--field-text
                   'last-user-message
                   (when last-message
-                    (concat "↳ " last-message))))))
+                    (concat (agent-shell-vertico-sidebar--slot-icon 'message)
+                            (agent-shell-vertico-sidebar--icon-gap)
+                            last-message))))))
          fields)
     (dolist (field agent-shell-vertico-sidebar-extra-info)
       (unless (and omit-project (eq field 'project))
@@ -553,8 +569,9 @@ activity is deliberately not a priority tie-breaker."
     (cons (agent-shell-vertico-sidebar--field-text
            'project
            (agent-shell-vertico-sidebar--fit
-            (concat "⌂ " (agent-shell-vertico-sidebar--project-name
-                            root buffer))
+            (concat (agent-shell-vertico-sidebar--slot-icon 'project)
+                    (agent-shell-vertico-sidebar--icon-gap)
+                    (agent-shell-vertico-sidebar--project-name root buffer))
             width)
            root)
           'agent-shell-vertico-sidebar-detail)))
@@ -622,19 +639,125 @@ default in `agent-shell-vertico-sidebar-show-details'."
   "Fit STRING to WIDTH columns, adding an ellipsis when needed."
   (truncate-string-to-width (or string "") (max 1 width) 0 nil "…"))
 
-(defun agent-shell-vertico-sidebar--icon (buffer)
-  "Return the status icon for BUFFER.
+(defconst agent-shell-vertico-sidebar--icons
+  '((error     "nf-cod-error"               "✖")
+    (blocked   "nf-cod-stop_circle"         "▲")
+    (done      "nf-cod-circle_large_filled" "●")
+    (working   "nf-md-dots_circle"          "◆")
+    (ready     "nf-cod-circle_large"        "✓")
+    (starting  "nf-cod-dash"                "○")
+    (project   "nf-cod-root_folder"         "⌂")
+    (message   "nf-cod-arrow_small_right"   "↳")
+    (expanded  nil                          "▾")
+    (collapsed nil                          "▸"))
+  "Slot, nerd-icons name, and plain character for each sidebar mark.
 
-A failed request gets its own icon so it is distinguishable from a session
-waiting for a permission response or holding unseen output."
-  (if (eq (plist-get (agent-shell-vertico-sidebar--attention buffer) :kind)
-          'error)
-      "✖"
-    (pcase (agent-shell-vertico-sidebar--status-rank buffer)
-      (0 "▲")
-      (1 "◆")
-      (2 "✓")
-      (_ "○"))))
+Slots with no nerd-icons name always draw their character.  Done and ready
+are the filled and hollow circle of one family, because a done session is a
+ready session whose output nobody has read yet.")
+
+(defconst agent-shell-vertico-sidebar--icon-order
+  '(error blocked done working ready starting)
+  "Order in which status counts appear in headers.")
+
+(defvar agent-shell-vertico-sidebar--nerd-icons-available 'unknown
+  "Whether the `nerd-icons' package could be loaded.
+
+`unknown' until the first look, so a missing package is searched for once
+rather than on every drawn icon.")
+
+(defun agent-shell-vertico-sidebar--nerd-icons-p ()
+  "Return non-nil when the sidebar should draw nerd-icons glyphs."
+  (pcase agent-shell-vertico-sidebar-use-nerd-icons
+    ('auto (when (eq agent-shell-vertico-sidebar--nerd-icons-available
+                     'unknown)
+             (setq agent-shell-vertico-sidebar--nerd-icons-available
+                   (and (require 'nerd-icons nil t) t)))
+           agent-shell-vertico-sidebar--nerd-icons-available)
+    (value value)))
+
+(defun agent-shell-vertico-sidebar--slot-icon (slot &optional face)
+  "Return the mark for SLOT, drawn in FACE."
+  (pcase-let* ((`(,_ ,name ,text) (assq slot
+                                        agent-shell-vertico-sidebar--icons))
+               (drawer (when name
+                         (if (string-prefix-p "nf-md-" name)
+                             'nerd-icons-mdicon
+                           'nerd-icons-codicon))))
+    (if (and drawer
+             (agent-shell-vertico-sidebar--nerd-icons-p)
+             (fboundp drawer))
+        (if face
+            (funcall drawer name :face face)
+          (funcall drawer name))
+      (if face (propertize text 'face face) text))))
+
+(defun agent-shell-vertico-sidebar--icon-frame ()
+  "Return the frame showing the sidebar, or nil for the selected frame."
+  (when-let ((window (get-buffer-window
+                      (or (get-buffer "*Agent Shell Sessions*")
+                          (current-buffer))
+                      t)))
+    (window-frame window)))
+
+(defun agent-shell-vertico-sidebar--icon-gap ()
+  "Return the spacing between a mark and the text after it.
+
+Nerd-icons glyphs fill their cell, so they need more room than a plain
+character does.  A terminal can only widen the gap by whole columns; a
+graphical frame takes a fraction of one instead."
+  (cond
+   ((not (agent-shell-vertico-sidebar--nerd-icons-p)) " ")
+   ((display-graphic-p (agent-shell-vertico-sidebar--icon-frame))
+    (concat " " (propertize " " 'display '(space :width 0.5))))
+   (t "  ")))
+
+(defun agent-shell-vertico-sidebar--content-width (width nested)
+  "Return the columns left for text on a session row of WIDTH.
+
+NESTED rows are indented below a project header."
+  (max 1 (- width
+            (if nested 2 0)
+            1
+            (string-width (agent-shell-vertico-sidebar--icon-gap)))))
+
+(defun agent-shell-vertico-sidebar--icon-slot-for (status attention)
+  "Return the icon slot for STATUS and ATTENTION metadata."
+  (or (pcase (plist-get attention :kind)
+        ('error 'error)
+        ('blocked 'blocked)
+        ('done 'done))
+      (pcase (agent-shell-vertico-sidebar--status-rank-for status nil)
+        (1 'working)
+        (2 'ready)
+        (_ 'starting))))
+
+(defun agent-shell-vertico-sidebar--icon-slot (buffer)
+  "Return the icon slot for BUFFER."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :icon-slot)
+      (agent-shell-vertico-sidebar--icon-slot-for
+       (agent-shell-vertico-sidebar--raw-status buffer)
+       (agent-shell-vertico-sidebar--attention buffer))))
+
+(defun agent-shell-vertico-sidebar--icon-counts (slots)
+  "Return an alist of slot to count for SLOTS, in display order.
+
+Slots with no sessions are left out."
+  (let (counts)
+    (dolist (slot agent-shell-vertico-sidebar--icon-order)
+      (let ((count (seq-count (lambda (other) (eq other slot)) slots)))
+        (when (> count 0)
+          (push (cons slot count) counts))))
+    (nreverse counts)))
+
+(defun agent-shell-vertico-sidebar--icon (buffer)
+  "Return the status mark for BUFFER, drawn in its status face.
+
+A failed request, a session waiting for a permission response, and a
+session holding unseen output each get their own mark."
+  (agent-shell-vertico-sidebar--slot-icon
+   (agent-shell-vertico-sidebar--icon-slot buffer)
+   (agent-shell-vertico-sidebar--status-face buffer)))
 
 (defun agent-shell-vertico-sidebar--status-face (buffer)
   "Return the status face for BUFFER."
@@ -753,11 +876,9 @@ waiting for a permission response or holding unseen output."
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
   "Return rendered session lines for BUFFER at WIDTH under ROOT."
   (let* ((content-width
-          (max 1 (- width (if nested 4 2))))
+          (agent-shell-vertico-sidebar--content-width width nested))
          (title (agent-shell-vertico-sidebar--title buffer))
-         (icon (propertize
-                (agent-shell-vertico-sidebar--icon buffer)
-                'face (agent-shell-vertico-sidebar--status-face buffer)))
+         (icon (agent-shell-vertico-sidebar--icon buffer))
          (details-visible
           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
          (title-lines
@@ -773,7 +894,8 @@ waiting for a permission response or holding unseen output."
             (agent-shell-vertico-sidebar--extra-info-lines
              buffer root content-width (not nested)))))
     (setq title-lines
-          (cons (concat icon " " (car title-lines))
+          (cons (concat icon (agent-shell-vertico-sidebar--icon-gap)
+                        (car title-lines))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
             (when project-line (list project-line))
@@ -809,9 +931,10 @@ header; flat rows keep their status icon at column zero."
       (let ((line-start (line-beginning-position)))
         (insert (car line))
         (when (cdr line)
-          (add-text-properties
-           line-start (point)
-           (list 'face (cdr line)))))
+          ;; Merge rather than set: an icon carries its own font family in
+          ;; its face, and replacing that face would leave the glyph with
+          ;; no font to draw it.
+          (add-face-text-property line-start (point) (cdr line))))
       (when (null (cdr line))
         (setq title-end (point)))
       (insert "\n")
@@ -834,20 +957,32 @@ header; flat rows keep their status icon at column zero."
   (let* ((expanded
           (agent-shell-vertico-sidebar--project-expanded-p root))
          (attention
-          (seq-count #'agent-shell-vertico-sidebar--attention buffers))
-         (indicator (if expanded "▾" "▸"))
+          (seq-filter
+           (lambda (entry) (memq (car entry) '(error blocked done)))
+           (agent-shell-vertico-sidebar--icon-counts
+            (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers))))
+         (indicator (agent-shell-vertico-sidebar--slot-icon
+                     (if expanded 'expanded 'collapsed)))
          (summary (format "%d%s" (length buffers)
-                         (if (> attention 0) (format " ▲%d" attention) "")))
+                          (mapconcat
+                           (lambda (entry)
+                             (format " %s%d"
+                                     (agent-shell-vertico-sidebar--slot-icon
+                                      (car entry))
+                                     (cdr entry)))
+                           attention "")))
          (line (format "%s %s  %s" indicator
                        (agent-shell-vertico-sidebar--project-name
                         root (car buffers))
                        summary))
          (start (point)))
     (insert (agent-shell-vertico-sidebar--fit line width) "\n")
+    ;; Merged, so the summary icons keep the font family in their own face.
+    (add-face-text-property start (1- (point))
+                            'agent-shell-vertico-sidebar-project)
     (add-text-properties
      start (1- (point))
-     (list 'face 'agent-shell-vertico-sidebar-project
-           'agent-shell-vertico-sidebar-node root
+     (list 'agent-shell-vertico-sidebar-node root
            'agent-shell-vertico-sidebar-node-kind 'project
            'mouse-face 'highlight
            'help-echo "TAB/RET/mouse-1: toggle project"
@@ -1359,40 +1494,49 @@ in that order."
                 'face face
                 'help-echo label)))
 
-(defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
-  "Return a cached header string for SNAPSHOTS."
-  (let ((counts (make-vector 4 0))
-        (parts (list (format "%d session%s"
-                            (length snapshots)
-                            (if (= (length snapshots) 1) "" "s")))))
-    (dolist (snapshot snapshots)
-      (cl-incf (aref counts (plist-get snapshot :status-rank))))
-    (dolist (stat `((0 "▲" "attention" agent-shell-vertico-sidebar-attention)
-                    (1 "◆" "working" agent-shell-vertico-sidebar-working)
-                    (2 "✓" "ready" agent-shell-vertico-sidebar-ready)
-                    (3 "○" "starting" agent-shell-vertico-sidebar-detail)))
-      (pcase-let ((`(,index ,icon ,label ,face) stat))
+(defconst agent-shell-vertico-sidebar--slot-labels
+  '((error . "error")
+    (blocked . "waiting")
+    (done . "done")
+    (working . "working")
+    (ready . "ready")
+    (starting . "starting"))
+  "Tooltip wording for each status count in the header.")
+
+(defun agent-shell-vertico-sidebar--slot-face (slot)
+  "Return the face SLOT is drawn in."
+  (pcase slot
+    ((or 'error 'blocked 'done) 'agent-shell-vertico-sidebar-attention)
+    ('working 'agent-shell-vertico-sidebar-working)
+    ('ready 'agent-shell-vertico-sidebar-ready)
+    (_ 'agent-shell-vertico-sidebar-detail)))
+
+(defun agent-shell-vertico-sidebar--header-line-for (slots)
+  "Return the header line counting SLOTS, one segment per occupied slot."
+  (let ((parts (list (format "%d session%s"
+                             (length slots)
+                             (if (= (length slots) 1) "" "s")))))
+    (dolist (entry (agent-shell-vertico-sidebar--icon-counts slots))
+      (pcase-let ((`(,slot . ,count) entry))
         (when-let ((text (agent-shell-vertico-sidebar--header-stat
-                          (aref counts index) icon label face)))
+                          count
+                          (agent-shell-vertico-sidebar--slot-icon slot)
+                          (alist-get slot
+                                     agent-shell-vertico-sidebar--slot-labels)
+                          (agent-shell-vertico-sidebar--slot-face slot))))
           (setq parts (append parts (list text))))))
     (concat " " (string-join parts " · "))))
 
+(defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
+  "Return a cached header string for SNAPSHOTS."
+  (agent-shell-vertico-sidebar--header-line-for
+   (mapcar (lambda (snapshot) (plist-get snapshot :icon-slot)) snapshots)))
+
 (defun agent-shell-vertico-sidebar--header-line ()
   "Return the sidebar header with live session statistics."
-  (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
-         (counts (agent-shell-vertico-sidebar--session-statistics))
-         (parts (list (format "%d session%s"
-                              (length buffers)
-                              (if (= (length buffers) 1) "" "s")))))
-    (dolist (stat `((0 "▲" "attention" agent-shell-vertico-sidebar-attention)
-                    (1 "◆" "working" agent-shell-vertico-sidebar-working)
-                    (2 "✓" "ready" agent-shell-vertico-sidebar-ready)
-                    (3 "○" "starting" agent-shell-vertico-sidebar-detail)))
-      (pcase-let ((`(,index ,icon ,label ,face) stat))
-        (when-let ((text (agent-shell-vertico-sidebar--header-stat
-                          (aref counts index) icon label face)))
-          (setq parts (append parts (list text))))))
-    (concat " " (string-join parts " · "))))
+  (agent-shell-vertico-sidebar--header-line-for
+   (mapcar #'agent-shell-vertico-sidebar--icon-slot
+           (seq-filter #'buffer-live-p (agent-shell-buffers)))))
 
 (defconst agent-shell-vertico-sidebar--help-buffer
   "*Agent Shell Sidebar Help*"

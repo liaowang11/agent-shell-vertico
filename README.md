@@ -54,22 +54,48 @@ contain.  `s` switches between priority, activity, recency, status, and name
 sorting.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
-window is marked for attention.  A failed request is marked with its own `✖`
-icon, so it is distinguishable from a session waiting for a permission
-response or holding unseen output.  Submitting a new prompt clears any of
-those marks, since the previous turn has by then been seen.  `o` always jumps
-to the session at point; the other keys expose the same restart, kill,
-interrupt, model, mode, traffic, and transcript operations as the Vertico
-Embark map.
+window is marked for attention.  A failed request, a session waiting for a
+permission response, and a session holding unseen output each get their own
+mark.  Submitting a new prompt clears any of them, since the previous turn
+has by then been seen.  `o` always jumps to the session at point; the other
+keys expose the same restart, kill, interrupt, model, mode, traffic, and
+transcript operations as the Vertico Embark map.
+
+Marks are drawn with [nerd-icons](https://github.com/rainstormstudio/nerd-icons.el)
+when that package is available, and with plain characters otherwise.  Set
+`agent-shell-vertico-sidebar-use-nerd-icons` to `t` or nil to force one or the
+other.  Project folds keep their `▾` and `▸` characters either way.
+
+| Meaning | Icon | Character |
+| --- | --- | --- |
+| Failed request | `nf-cod-error` | `✖` |
+| Waiting for a permission response | `nf-cod-stop_circle` | `▲` |
+| Finished, output unread | `nf-cod-circle_large_filled` | `●` |
+| Working | `nf-md-dots_circle` | `◆` |
+| Ready | `nf-cod-circle_large` | `✓` |
+| Starting | `nf-cod-dash` | `○` |
+| Working directory | `nf-cod-root_folder` | `⌂` |
+| Last user message | `nf-cod-arrow_small_right` | `↳` |
+
+Finished-unread and ready are the filled and hollow circle of one family
+because they are the same session before and after you look at it: a turn
+that completes while its buffer is off screen is marked unread, and selecting
+that window clears the mark, leaving an ordinary ready row.
+
+Nerd-icons glyphs fill their cell, so they are drawn with a wider gap than a
+plain character needs.  A graphical frame gets half a column, the only
+widening a terminal can render is a whole one, and the gap is chosen per
+render from the frame the sidebar is on.
 
 The compact activity value is the age of the last observed agent event, not
 the total session or turn duration; an actively streaming session therefore
 shows `now`.
 
 The header reports the total number of live sessions and compact non-zero
-status counts using the row icons (`▲` attention, `◆` working, `✓` ready, and
-`○` starting); hover a count for its label.  Errored sessions are counted
-under `▲`, together with the other sessions needing attention.
+status counts, each using the same mark its rows use, so a failed request, a
+waiting session, and an unread completion are counted apart.  Hover a count
+for its label.  Project headers summarize the same three counts for the
+sessions they contain.
 
 The sidebar hides the regular mode line and uses its compact header for these
 statistics instead.
