@@ -1649,16 +1649,24 @@ window layout, so only `frame' can lose the sidebar's side window."
 
 (defun agent-shell-vertico-sidebar--restore-workspace-visibility
     (&optional scope)
-  "Reopen the sidebar after switching into a workspace without one.
+  "Give the new workspace the sidebar visibility of the one being left.
+
+The restored layout of a workspace last left with the sidebar open brings
+that window back, so a sidebar hidden before the switch is closed again,
+just as a visible one is reopened.
 
 SCOPE is persp-mode's activation scope, as for
 `agent-shell-vertico-sidebar--save-workspace-visibility'."
   (when (and (eq scope 'frame)
-             agent-shell-vertico-sidebar-follow-workspaces
-             agent-shell-vertico-sidebar--visible-before-workspace-switch
-             (not (agent-shell-vertico-sidebar--selected-frame-window)))
-    (save-selected-window
-      (agent-shell-vertico-sidebar--display-buffer))))
+             agent-shell-vertico-sidebar-follow-workspaces)
+    (let ((window (agent-shell-vertico-sidebar--selected-frame-window))
+          (visible
+           agent-shell-vertico-sidebar--visible-before-workspace-switch))
+      (cond ((and visible (not window))
+             (save-selected-window
+               (agent-shell-vertico-sidebar--display-buffer)))
+            ((and (not visible) (window-live-p window))
+             (delete-window window))))))
 
 (defun agent-shell-vertico-sidebar--install-workspace-hooks ()
   "Make the sidebar survive persp-mode workspace switches."

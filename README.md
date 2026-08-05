@@ -71,11 +71,13 @@ statistics instead.
 
 Workspace packages such as persp-mode, used by the Doom Emacs `:ui
 workspaces` module, save one window layout per workspace and restore it on
-every switch.  A layout saved before the sidebar existed has no sidebar
-window, so switching into that workspace would remove the sidebar.  When
-persp-mode is loaded, a sidebar that was visible before the switch is
-reopened right after it, so it stays put while you move between workspaces.
-Set `agent-shell-vertico-sidebar-follow-workspaces` to nil to leave each
+every switch.  Each restored layout therefore carries whatever sidebar
+state that workspace was last left in: one saved before the sidebar existed
+would remove the sidebar, and one saved with the sidebar open would bring it
+back after you closed it.  When persp-mode is loaded, the sidebar is reopened
+or closed right after the switch to match the visibility it had before the
+switch, so it stays put while you move between workspaces.  Set
+`agent-shell-vertico-sidebar-follow-workspaces` to nil to leave each
 workspace with only the layout it saved.
 
 Metadata values carry both `help-echo` and `kbd-help`.  With point on a value,

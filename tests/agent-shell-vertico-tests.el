@@ -891,6 +891,33 @@ Each element in BINDINGS is of the form:
       (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame))
     (should (= display-calls 0))))
 
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-closes-sidebar ()
+  "A sidebar brought back by the workspace's own layout is closed again.
+persp-mode restores each workspace's saved window layout, so a workspace
+last left with the sidebar open restores that window.  A sidebar hidden
+before the switch stays hidden after it."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces t)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch nil)
+        (agent-shell-test-buffers nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should (window-live-p window))
+          (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame)
+          (should-not (window-live-p window))
+          (should-not (get-buffer-window sidebar)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-close-can-be-disabled ()
+  "Nil `agent-shell-vertico-sidebar-follow-workspaces' closes nothing."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces nil)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch nil)
+        (agent-shell-test-buffers nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame)
+          (should (window-live-p window)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-workspace-switch-can-be-disabled ()
   "Nil `agent-shell-vertico-sidebar-follow-workspaces' reopens nothing."
   (let ((agent-shell-vertico-sidebar-follow-workspaces nil)
