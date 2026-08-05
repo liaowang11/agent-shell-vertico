@@ -477,24 +477,103 @@ shows the title alone."
                            agent-shell-vertico-transcript--key-range)))))
     (propertize key 'invisible t)))
 
-(defun agent-shell-vertico-transcript--candidate-text (record)
+(defconst agent-shell-vertico-transcript--annotation-columns
+  '((project . 0.2)
+    (agent . 0.14)
+    (status . 16)
+    (changed . 12)
+    (created . 16))
+  "Truncation width of each annotation column, in display order.
+
+A float is a fraction of `marginalia-field-width', which marginalia
+resolves against the window width, so those columns shrink on a narrow
+frame.  The two time columns are fixed, because a timestamp cut in half
+tells the reader nothing.  `--record-annotation' renders these columns
+and `--candidate-width' subtracts them from the window, so the two stay
+in step.")
+
+(defun agent-shell-vertico-transcript--column-width (name)
+  "Return the truncation width of the annotation column NAME."
+  (alist-get name agent-shell-vertico-transcript--annotation-columns))
+
+(defun agent-shell-vertico-transcript--annotation-width (window-width)
+  "Return the widest annotation the columns produce in WINDOW-WIDTH.
+
+Marginalia resolves a fractional column against half the window, capped
+by `marginalia-field-width', and puts `marginalia-separator' before every
+column."
+  (let ((field-width (min (/ window-width 2) marginalia-field-width))
+        (separator (string-width marginalia-separator)))
+    (cl-loop
+     for (_name . width) in agent-shell-vertico-transcript--annotation-columns
+     sum (+ separator
+            (if (floatp width)
+                (round (* width field-width))
+              width)))))
+
+(defconst agent-shell-vertico-transcript--candidate-width-step 10
+  "Step marginalia rounds the annotation column up to.
+Mirrors `marginalia--cand-width-step'.")
+
+(defconst agent-shell-vertico-transcript--candidate-width-min 19
+  "Smallest width a candidate keeps.
+Below roughly ninety columns of window the annotation no longer fits
+beside a readable candidate.  The annotation is cut there rather than the
+candidate shrinking to nothing.")
+
+(defun agent-shell-vertico-transcript--candidate-width (window-width)
+  "Return the display width a candidate may use inside WINDOW-WIDTH.
+
+Marginalia starts the annotation at the widest candidate rounded up to a
+multiple of `--candidate-width-step' and never checks that the annotation
+still fits, so one long title pushes every column past the right edge of
+every row.  Reserving the annotation its own room is what keeps the
+columns on screen.  The result is one column short of a multiple of the
+step, because the invisible key character counts toward the width
+marginalia measures."
+  (let ((step agent-shell-vertico-transcript--candidate-width-step))
+    (max agent-shell-vertico-transcript--candidate-width-min
+         (1- (* step
+                (/ (- window-width
+                      (agent-shell-vertico-transcript--annotation-width
+                       window-width))
+                   step))))))
+
+(defun agent-shell-vertico-transcript--truncate (string width)
+  "Return STRING within WIDTH columns, keeping the whole of it reachable.
+The full text goes on `help-echo', which is what the completion UI shows
+when the reader points at the candidate."
+  (if (<= (string-width string) width)
+      string
+    (let ((short (truncate-string-to-width string width 0 nil t)))
+      (put-text-property 0 (length short) 'help-echo string short)
+      short)))
+
+(defun agent-shell-vertico-transcript--candidate-text (record &optional width)
   "Return the text shown for RECORD in completion.
 
 The session title when the transcript has one, else its first user
 message.  No time is shown: the list is ordered by last change and the
-annotation carries both times."
-  (or (agent-shell-vertico-transcript-record-title record)
-      (agent-shell-vertico-transcript-record-preview record)
-      (file-name-sans-extension
-       (file-name-nondirectory
-        (agent-shell-vertico-transcript-record-file record)))))
+annotation carries both times.  WIDTH, when given, is how many columns
+the text may use."
+  (let ((text
+         (or (agent-shell-vertico-transcript-record-title record)
+             (agent-shell-vertico-transcript-record-preview record)
+             (file-name-sans-extension
+              (file-name-nondirectory
+               (agent-shell-vertico-transcript-record-file record))))))
+    (if width
+        (agent-shell-vertico-transcript--truncate text width)
+      text)))
 
-(defun agent-shell-vertico-transcript--record-candidate (record &optional index)
+(defun agent-shell-vertico-transcript--record-candidate
+    (record &optional index width)
   "Return a completion candidate for RECORD.
-With INDEX, append the invisible key that keeps candidates distinct."
+With INDEX, append the invisible key that keeps candidates distinct.
+WIDTH, when given, is how many columns the candidate text may use."
   (let ((candidate
          (concat
-          (agent-shell-vertico-transcript--candidate-text record)
+          (agent-shell-vertico-transcript--candidate-text record width)
           (when index
             (agent-shell-vertico-transcript--candidate-key index)))))
     (put-text-property
@@ -502,12 +581,19 @@ With INDEX, append the invisible key that keeps candidates distinct."
      record candidate)
     candidate))
 
-(defun agent-shell-vertico-transcript--record-candidates (records)
-  "Return one distinct completion candidate per record in RECORDS."
-  (seq-map-indexed
-   (lambda (record index)
-     (agent-shell-vertico-transcript--record-candidate record index))
-   records))
+(defun agent-shell-vertico-transcript--record-candidates
+    (records &optional width)
+  "Return one distinct completion candidate per record in RECORDS.
+WIDTH is how many columns a candidate may use, by default whatever the
+minibuffer leaves once the annotation has its room."
+  (let ((width
+         (or width
+             (agent-shell-vertico-transcript--candidate-width
+              (window-width (minibuffer-window))))))
+    (seq-map-indexed
+     (lambda (record index)
+       (agent-shell-vertico-transcript--record-candidate record index width))
+     records)))
 
 (defun agent-shell-vertico-transcript--record-from-candidate (candidate)
   "Return the transcript record carried by CANDIDATE."
@@ -530,33 +616,38 @@ With INDEX, append the invisible key that keeps candidates distinct."
 (defun agent-shell-vertico-transcript--record-annotation (candidate)
   "Return an annotation for transcript CANDIDATE.
 
-Columns run from most to least identifying.  The project and the first
-user message are what tell two sessions with the same title apart, so
-they come first, then the agent and whether the session can be reached,
-then when it last changed and when it started.  The first message is
-left out when the candidate already shows it."
+Columns run from most to least identifying: the project, the agent, and
+whether the session can be reached, then when it last changed and when it
+started.
+
+The first user message is not a column.  It claimed up to a third of the
+row, and the candidate itself shows it whenever a transcript has no
+title.
+
+The last change is always a relative age and the start is always a
+stamp, and the two carry different faces, so the columns never read as
+two of the same thing.  `marginalia--time' would switch to a stamp after
+two weeks, which is what made them hard to tell apart."
   (when-let* ((record
                (agent-shell-vertico-transcript--record-from-candidate
                 candidate)))
     (marginalia--fields
      ((or (agent-shell-vertico-transcript-record-project-name record) "-")
-      :truncate 14 :face 'marginalia-value)
-     ((let ((preview
-             (agent-shell-vertico-transcript-record-preview record)))
-        (if (equal preview
-                   (agent-shell-vertico-transcript--candidate-text record))
-            ""
-          (or preview "")))
-      :truncate 0.4 :face 'marginalia-documentation)
+      :truncate (agent-shell-vertico-transcript--column-width 'project)
+      :face 'marginalia-value)
      ((or (agent-shell-vertico-transcript-record-agent record) "-")
-      :truncate 10 :face 'marginalia-value)
+      :truncate (agent-shell-vertico-transcript--column-width 'agent)
+      :face 'marginalia-value)
      ((agent-shell-vertico-transcript--record-status record)
-      :truncate 16 :face 'marginalia-type)
-     ((marginalia--time
+      :truncate (agent-shell-vertico-transcript--column-width 'status)
+      :face 'marginalia-type)
+     ((marginalia--time-relative
        (agent-shell-vertico-transcript-record-modified-time record))
-      :truncate 12 :face 'marginalia-date)
+      :truncate (agent-shell-vertico-transcript--column-width 'changed)
+      :face 'marginalia-date)
      ((agent-shell-vertico-transcript--record-created record)
-      :truncate 16 :face 'marginalia-date))))
+      :truncate (agent-shell-vertico-transcript--column-width 'created)
+      :face 'shadow))))
 
 (add-to-list 'marginalia-annotators
              '(agent-shell-transcript

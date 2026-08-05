@@ -10,6 +10,10 @@
 
 (defvar marginalia-annotators nil "Stub.")
 
+(defvar marginalia-field-width 80 "Stub.")
+
+(defvar marginalia-separator "  " "Stub.")
+
 (defmacro marginalia--fields (&rest fields)
   "Stub for marginalia--fields. Concatenates field values with spaces."
   `(string-join (list ,@(mapcar (lambda (f) (car f)) fields)) " "))
@@ -17,6 +21,10 @@
 (defun marginalia--time (time)
   "Stub for marginalia--time.  Formats TIME as an absolute age."
   (format-time-string "%b %d %H:%M" time))
+
+(defun marginalia--time-relative (time)
+  "Stub for marginalia--time-relative.  Formats TIME as a relative age."
+  (format "%s ago" (seconds-to-string (float-time (time-since time)))))
 
 (provide 'marginalia)
 

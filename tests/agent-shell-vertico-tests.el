@@ -1994,7 +1994,7 @@ agent gave the same summary would leave one of them unreachable."
            :title "Set up emacsclient configuration"))
          (candidates
           (agent-shell-vertico-transcript--record-candidates
-           (list first-record second-record))))
+           (list first-record second-record) 200)))
     (should (= (length candidates) 2))
     ;; The strings differ, so neither candidate is collapsed.
     (should-not
@@ -2073,20 +2073,24 @@ agent gave the same summary would leave one of them unreachable."
       annotation
       (string-join
        (list "agent-shell-vertico"
-             "In agent-shell-vertico-transcript.el"
              "Claude"
              "Resumable"
-             (marginalia--time (encode-time 30 45 19 4 8 2026))
+             (marginalia--time-relative (encode-time 30 45 19 4 8 2026))
              "2026-08-04 10:43")
        " ")))))
 
-(ert-deftest agent-shell-vertico-transcript-annotation-skips-shown-preview ()
-  "The first message column is empty when the candidate already shows it."
+(ert-deftest agent-shell-vertico-transcript-annotation-omits-first-message ()
+  "The first user message is not a column.
+
+It used to claim up to a third of the row.  The candidate itself shows it
+whenever a transcript has no title, and the reader shows it in full."
   (let* ((record
           (agent-shell-vertico-transcript-record-create
            :file "/tmp/transcripts/session.md"
            :project-name "agent-shell-vertico"
            :agent "Claude"
+           :session-id "abc-123"
+           :title "Understand session list display"
            :preview "In agent-shell-vertico-transcript.el"
            :started "2026-08-04 10:43:15"
            :modified-time (encode-time 30 45 19 4 8 2026)))
@@ -2095,17 +2099,74 @@ agent gave the same summary would leave one of them unreachable."
          (annotation
           (substring-no-properties
            (agent-shell-vertico-transcript--record-annotation candidate))))
-    (should
-     (equal
-      annotation
-      (string-join
-       (list "agent-shell-vertico"
-             ""
-             "Claude"
-             "Transcript only"
-             (marginalia--time (encode-time 30 45 19 4 8 2026))
-             "2026-08-04 10:43")
-       " ")))))
+    (should-not
+     (string-match-p "In agent-shell-vertico-transcript" annotation))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-keeps-change-relative ()
+  "The last change stays a relative age however old the transcript is.
+
+`marginalia--time' switches to an absolute stamp after two weeks, which
+put two absolute times beside each other and made the last change and the
+start time hard to tell apart."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :project-name "lyra-ask-hcp-eval"
+           :agent "Claude"
+           :session-id "abc-123"
+           :title "Bootstrap the eval harness"
+           :started "2025-04-11 09:03:22"
+           :modified-time (time-subtract (current-time)
+                                         (days-to-time 400))))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0))
+         (annotation
+          (substring-no-properties
+           (agent-shell-vertico-transcript--record-annotation candidate))))
+    (should (string-match-p " ago " annotation))
+    (should (string-suffix-p "2025-04-11 09:03" annotation))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-width-fits-annotation ()
+  "A candidate never pushes the annotation past the right edge.
+
+Marginalia starts the annotation at the widest candidate rounded up to a
+multiple of ten and never checks that the annotation still fits, so an
+unbounded title left every column off screen."
+  (dolist (window '(236 120 100))
+    (let ((width (agent-shell-vertico-transcript--candidate-width window))
+          (annotation
+           (agent-shell-vertico-transcript--annotation-width window)))
+      ;; One column short of a multiple of ten, because the invisible key
+      ;; character counts toward the candidate width.
+      (should (zerop (% (1+ width) 10)))
+      (should (<= (+ width 1 annotation) window)))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-width-has-a-floor ()
+  "A window too narrow for both keeps the candidate readable.
+The annotation is cut there rather than the title shrinking to nothing."
+  (should (= (agent-shell-vertico-transcript--candidate-width 40) 19)))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-cut-to-width ()
+  "A long candidate is cut to its budget and keeps the full text to hand."
+  (let* ((title
+          (concat "Investigate why for this pair of comparison between raw "
+                  "subagent and previous subagent implementation, i think "
+                  "this is a systematic issue with subagent design"))
+         (record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcripts/session.md"
+           :title title))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0 39))
+         (text
+          (replace-regexp-in-string
+           "[\x100000-\x10fffd]+\\'" ""
+           (substring-no-properties candidate))))
+    (should (<= (string-width text) 39))
+    (should (string-prefix-p "Investigate why for this pair" text))
+    (should (< (string-width text) (string-width title)))
+    ;; The whole title stays reachable, which is what `help-echo' is for.
+    (should (equal (get-text-property 0 'help-echo candidate) title))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-falls-back-to-file-time ()
   "A transcript with no start header shows its file time as created."
