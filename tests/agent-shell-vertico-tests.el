@@ -1122,6 +1122,53 @@ and `window-state-put', which only carry parameters marked writable in
                            :kind)
                 'done))))
 
+(ert-deftest agent-shell-vertico-sidebar-new-turn-clears-attention ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    ;; Submitting a new prompt means the user has seen whatever the previous
+    ;; turn produced, whether that was a completion or an error.
+    (dolist (kind '(done error blocked))
+      (let ((agent-shell-vertico-sidebar--attention
+             (make-hash-table :test #'eq)))
+        (puthash alpha (list :kind kind :time 10.0)
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-error-icon-differs-from-attention ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((failed "Codex Agent @ failed" "/work/failed/"
+               '((:session . ((:id . "f") (:title . "Failed")))))
+       (blocked "Claude Agent @ blocked" "/work/blocked/"
+                '((:session . ((:id . "b") (:title . "Blocked"))))))
+    (let ((agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash failed (list :kind 'error :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash blocked (list :kind 'blocked :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (should (equal (agent-shell-vertico-sidebar--icon failed) "✖"))
+      (should (equal (agent-shell-vertico-sidebar--icon blocked) "▲"))
+      ;; An errored session still sorts into the attention tier.
+      (should (= (agent-shell-vertico-sidebar--status-rank failed) 0)))))
+
+(ert-deftest agent-shell-vertico-sidebar-renders-error-icon ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((failed "Codex Agent @ failed" "/work/failed/"
+               '((:session . ((:id . "f") (:title . "Failed run"))))))
+    (let ((agent-shell-test-buffers (list failed))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash failed (list :kind 'error :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "✖ Failed run" (buffer-string)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"

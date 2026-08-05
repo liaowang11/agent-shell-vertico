@@ -54,9 +54,13 @@ contain.  `s` switches between priority, activity, recency, status, and name
 sorting.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
-window is marked for attention.  `o` always jumps to the session at point; the
-other keys expose the same restart, kill, interrupt, model, mode, traffic, and
-transcript operations as the Vertico Embark map.
+window is marked for attention.  A failed request is marked with its own `✖`
+icon, so it is distinguishable from a session waiting for a permission
+response or holding unseen output.  Submitting a new prompt clears any of
+those marks, since the previous turn has by then been seen.  `o` always jumps
+to the session at point; the other keys expose the same restart, kill,
+interrupt, model, mode, traffic, and transcript operations as the Vertico
+Embark map.
 
 The compact activity value is the age of the last observed agent event, not
 the total session or turn duration; an actively streaming session therefore
@@ -64,7 +68,8 @@ shows `now`.
 
 The header reports the total number of live sessions and compact non-zero
 status counts using the row icons (`▲` attention, `◆` working, `✓` ready, and
-`○` starting); hover a count for its label.
+`○` starting); hover a count for its label.  Errored sessions are counted
+under `▲`, together with the other sessions needing attention.
 
 The sidebar hides the regular mode line and uses its compact header for these
 statistics instead.

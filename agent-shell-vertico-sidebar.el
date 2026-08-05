@@ -623,12 +623,18 @@ default in `agent-shell-vertico-sidebar-show-details'."
   (truncate-string-to-width (or string "") (max 1 width) 0 nil "…"))
 
 (defun agent-shell-vertico-sidebar--icon (buffer)
-  "Return the status icon for BUFFER."
-  (pcase (agent-shell-vertico-sidebar--status-rank buffer)
-    (0 "▲")
-    (1 "◆")
-    (2 "✓")
-    (_ "○")))
+  "Return the status icon for BUFFER.
+
+A failed request gets its own icon so it is distinguishable from a session
+waiting for a permission response or holding unseen output."
+  (if (eq (plist-get (agent-shell-vertico-sidebar--attention buffer) :kind)
+          'error)
+      "✖"
+    (pcase (agent-shell-vertico-sidebar--status-rank buffer)
+      (0 "▲")
+      (1 "◆")
+      (2 "✓")
+      (_ "○"))))
 
 (defun agent-shell-vertico-sidebar--status-face (buffer)
   "Return the status face for BUFFER."
@@ -1046,11 +1052,11 @@ sessions just to decide whether an age timer is needed."
                   agent-shell-vertico-sidebar--attention)))
       ('input-submitted
        (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
-       (when (eq (plist-get (gethash buffer
-                                    agent-shell-vertico-sidebar--attention)
-                            :kind)
-                 'done)
-         (remhash buffer agent-shell-vertico-sidebar--attention)))
+       ;; Submitting a new prompt means the user has seen whatever the
+       ;; previous turn produced, so the new turn starts unmarked.  A
+       ;; permission request that is still pending is re-derived from the
+       ;; live status.
+       (remhash buffer agent-shell-vertico-sidebar--attention))
       ('permission-response
        (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
          (unless (eq status 'blocked)
