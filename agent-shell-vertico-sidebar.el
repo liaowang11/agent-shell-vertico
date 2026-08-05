@@ -115,6 +115,17 @@ latest submitted prompt and is omitted by default."
                          (const :tag "Last user message" last-user-message)))
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-follow-workspaces t
+  "Whether the sidebar reopens itself after a workspace switch.
+
+Workspace packages such as persp-mode, used by Doom Emacs, save one window
+layout per workspace and restore it on every switch.  A layout saved before
+the sidebar existed has no sidebar window, so switching into that workspace
+removes the sidebar.  When this is non-nil, a sidebar that was visible
+before the switch is reopened right after it."
+  :type 'boolean
+  :group 'agent-shell-vertico-sidebar)
+
 (defvar agent-shell-vertico-sidebar--attention (make-hash-table :test #'eq)
   "Buffer to attention metadata.
 
@@ -1617,6 +1628,55 @@ while normal and motion states get the same direct mnemonic commands."
         (agent-shell-vertico-sidebar--cancel-refresh)
         (agent-shell-vertico-sidebar--cancel-resize)
         (agent-shell-vertico-sidebar--cancel-age-refresh)))))
+
+(defvar agent-shell-vertico-sidebar--visible-before-workspace-switch nil
+  "Whether the sidebar was visible in the workspace being left.")
+
+(defun agent-shell-vertico-sidebar--selected-frame-window ()
+  "Return the sidebar window on the selected frame, or nil."
+  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (get-buffer-window sidebar)))
+
+(defun agent-shell-vertico-sidebar--save-workspace-visibility
+    (&optional scope)
+  "Record whether the sidebar is visible in the workspace being left.
+
+SCOPE is persp-mode's activation scope.  Only `frame' saves and restores a
+window layout, so only `frame' can lose the sidebar's side window."
+  (when (eq scope 'frame)
+    (setq agent-shell-vertico-sidebar--visible-before-workspace-switch
+          (and (agent-shell-vertico-sidebar--selected-frame-window) t))))
+
+(defun agent-shell-vertico-sidebar--restore-workspace-visibility
+    (&optional scope)
+  "Reopen the sidebar after switching into a workspace without one.
+
+SCOPE is persp-mode's activation scope, as for
+`agent-shell-vertico-sidebar--save-workspace-visibility'."
+  (when (and (eq scope 'frame)
+             agent-shell-vertico-sidebar-follow-workspaces
+             agent-shell-vertico-sidebar--visible-before-workspace-switch
+             (not (agent-shell-vertico-sidebar--selected-frame-window)))
+    (save-selected-window
+      (agent-shell-vertico-sidebar--display-buffer))))
+
+(defun agent-shell-vertico-sidebar--install-workspace-hooks ()
+  "Make the sidebar survive persp-mode workspace switches."
+  (add-hook 'persp-before-deactivate-functions
+            #'agent-shell-vertico-sidebar--save-workspace-visibility)
+  (add-hook 'persp-activated-functions
+            #'agent-shell-vertico-sidebar--restore-workspace-visibility))
+
+;; `window-state-get' and `window-state-put', which persp-mode uses to save
+;; and restore each workspace layout, only carry window parameters marked
+;; writable.  Without this, a restored sidebar window loses its no-delete
+;; parameter and `delete-other-windows' removes it.  `window-side' and
+;; `window-slot' are registered the same way by `display-buffer-in-side-window'.
+(add-to-list 'window-persistent-parameters
+             '(no-delete-other-windows . writable))
+
+(with-eval-after-load 'persp-mode
+  (agent-shell-vertico-sidebar--install-workspace-hooks))
 
 (add-hook 'agent-shell-mode-hook
           #'agent-shell-vertico-sidebar--watch-buffer-on-mode-hook)

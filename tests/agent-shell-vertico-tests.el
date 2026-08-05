@@ -34,6 +34,8 @@
 (defvar agent-shell-viewport-view-mode-hook)
 (defvar evil-local-mode)
 (defvar evil-state)
+(defvar persp-activated-functions)
+(defvar persp-before-deactivate-functions)
 
 (defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
   "Evaluate BODY in a freshly initialized named sidebar buffer."
@@ -853,6 +855,114 @@ Each element in BINDINGS is of the form:
                      (lambda () (cl-incf render-calls))))
             (agent-shell-vertico-sidebar--render)
             (should (= render-calls 1))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-reopens-sidebar ()
+  "A visible sidebar is reopened in the workspace being switched to."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces t)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch nil)
+        (display-calls 0))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () t)))
+      (agent-shell-vertico-sidebar--save-workspace-visibility 'frame))
+    (should agent-shell-vertico-sidebar--visible-before-workspace-switch)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () nil))
+              ((symbol-function
+                'agent-shell-vertico-sidebar--display-buffer)
+               (lambda () (cl-incf display-calls) nil)))
+      (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame))
+    (should (= display-calls 1))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-keeps-sidebar-closed ()
+  "A sidebar closed before the switch is not reopened after it."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces t)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch t)
+        (display-calls 0))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () nil))
+              ((symbol-function
+                'agent-shell-vertico-sidebar--display-buffer)
+               (lambda () (cl-incf display-calls) nil)))
+      (agent-shell-vertico-sidebar--save-workspace-visibility 'frame)
+      (should-not agent-shell-vertico-sidebar--visible-before-workspace-switch)
+      (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame))
+    (should (= display-calls 0))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-can-be-disabled ()
+  "Nil `agent-shell-vertico-sidebar-follow-workspaces' reopens nothing."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces nil)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch t)
+        (display-calls 0))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () nil))
+              ((symbol-function
+                'agent-shell-vertico-sidebar--display-buffer)
+               (lambda () (cl-incf display-calls) nil)))
+      (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame))
+    (should (= display-calls 0))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-keeps-visible-sidebar ()
+  "A sidebar restored by the workspace's own layout is left alone."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces t)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch t)
+        (display-calls 0))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () t))
+              ((symbol-function
+                'agent-shell-vertico-sidebar--display-buffer)
+               (lambda () (cl-incf display-calls) nil)))
+      (agent-shell-vertico-sidebar--restore-workspace-visibility 'frame))
+    (should (= display-calls 0))))
+
+(ert-deftest agent-shell-vertico-sidebar-workspace-switch-ignores-window-scope ()
+  "Per-window workspace activation does not save or restore visibility.
+Only frame activation restores a window configuration, so only frame
+activation can lose the sidebar's side window."
+  (let ((agent-shell-vertico-sidebar-follow-workspaces t)
+        (agent-shell-vertico-sidebar--visible-before-workspace-switch t)
+        (display-calls 0))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-sidebar--selected-frame-window)
+               (lambda () nil))
+              ((symbol-function
+                'agent-shell-vertico-sidebar--display-buffer)
+               (lambda () (cl-incf display-calls) nil)))
+      (agent-shell-vertico-sidebar--save-workspace-visibility 'window)
+      (should agent-shell-vertico-sidebar--visible-before-workspace-switch)
+      (agent-shell-vertico-sidebar--restore-workspace-visibility 'window))
+    (should (= display-calls 0))))
+
+(ert-deftest agent-shell-vertico-sidebar-loading-does-not-prebind-persp-hooks ()
+  "Loading the package must not bind persp-mode's own hook variables.
+A top-level `add-hook' would pre-bind them, clobbering the values
+persp-mode's `defcustom' forms install when persp-mode loads later."
+  (skip-unless (not (featurep 'persp-mode)))
+  (should-not (boundp 'persp-activated-functions))
+  (should-not (boundp 'persp-before-deactivate-functions)))
+
+(ert-deftest agent-shell-vertico-sidebar-installs-workspace-hooks ()
+  "Loading persp-mode installs the save and restore hooks."
+  (let ((persp-before-deactivate-functions nil)
+        (persp-activated-functions nil))
+    (agent-shell-vertico-sidebar--install-workspace-hooks)
+    (should (memq #'agent-shell-vertico-sidebar--save-workspace-visibility
+                  persp-before-deactivate-functions))
+    (should (memq #'agent-shell-vertico-sidebar--restore-workspace-visibility
+                  persp-activated-functions))))
+
+(ert-deftest agent-shell-vertico-sidebar-side-window-survives-maximize ()
+  "The sidebar's no-delete parameter survives a window state round-trip.
+persp-mode saves and restores workspace layouts with `window-state-get'
+and `window-state-put', which only carry parameters marked writable in
+`window-persistent-parameters'."
+  (should (eq (alist-get 'no-delete-other-windows
+                         window-persistent-parameters)
+              'writable)))
 
 (ert-deftest agent-shell-vertico-sidebar-render-uses-one-live-snapshot ()
   (agent-shell-vertico-tests--with-session-buffers

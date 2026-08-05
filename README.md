@@ -69,6 +69,15 @@ status counts using the row icons (`▲` attention, `◆` working, `✓` ready, 
 The sidebar hides the regular mode line and uses its compact header for these
 statistics instead.
 
+Workspace packages such as persp-mode, used by the Doom Emacs `:ui
+workspaces` module, save one window layout per workspace and restore it on
+every switch.  A layout saved before the sidebar existed has no sidebar
+window, so switching into that workspace would remove the sidebar.  When
+persp-mode is loaded, a sidebar that was visible before the switch is
+reopened right after it, so it stays put while you move between workspaces.
+Set `agent-shell-vertico-sidebar-follow-workspaces` to nil to leave each
+workspace with only the layout it saved.
+
 Metadata values carry both `help-echo` and `kbd-help`.  With point on a value,
 `M-x display-local-help` shows its activation hint in the Echo Area without a
 mouse event.  For automatic point help after an idle delay, enable Emacs's
@@ -94,7 +103,8 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-show-details nil)
   (agent-shell-vertico-sidebar-extra-info
    '(status project model mode activity))
-  (agent-shell-vertico-sidebar-sort-by 'priority))
+  (agent-shell-vertico-sidebar-sort-by 'priority)
+  (agent-shell-vertico-sidebar-follow-workspaces t))
 ```
 
 The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
