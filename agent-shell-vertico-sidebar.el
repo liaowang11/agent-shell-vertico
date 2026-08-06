@@ -1192,7 +1192,7 @@ sessions just to decide whether an age timer is needed."
                 agent-shell-vertico-sidebar--attention))
       ('turn-complete
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
-       (if (get-buffer-window buffer 'visible)
+       (if (agent-shell-vertico-sidebar--session-visible-p buffer)
            (remhash buffer agent-shell-vertico-sidebar--attention)
          (puthash buffer (list :kind 'done :time now)
                   agent-shell-vertico-sidebar--attention)))
@@ -1277,6 +1277,44 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
   (dolist (buffer (if buffers-supplied buffers (agent-shell-buffers)))
     (agent-shell-vertico-sidebar--watch-buffer buffer schedule)))
 
+(defun agent-shell-vertico-sidebar--viewport-buffer (buffer)
+  "Return the existing viewport buffer showing session BUFFER, or nil.
+
+Never creates one: a session the reader has not viewed this way should
+not gain a viewport because the sidebar asked about it."
+  (when (fboundp 'agent-shell-viewport--buffer)
+    (when-let ((viewport (ignore-errors
+                           (agent-shell-viewport--buffer
+                            :shell-buffer buffer :existing-only t))))
+      (and (buffer-live-p viewport)
+           (not (eq viewport buffer))
+           viewport))))
+
+(defun agent-shell-vertico-sidebar--session-visible-p (buffer)
+  "Return non-nil when session BUFFER is on screen.
+
+A session is on screen when its own buffer is, and equally when the
+viewport showing it is: readers who set
+`agent-shell-prefer-viewport-interaction' never display the shell buffer
+itself, and for them every finished turn would otherwise be unread."
+  (or (get-buffer-window buffer 'visible)
+      (when-let ((viewport
+                  (agent-shell-vertico-sidebar--viewport-buffer buffer)))
+        (get-buffer-window viewport 'visible))))
+
+(defun agent-shell-vertico-sidebar--session-for-buffer (buffer)
+  "Return the session BUFFER belongs to, or nil.
+
+A session buffer stands for itself; a viewport stands for the session it
+shows."
+  (when (buffer-live-p buffer)
+    (if (with-current-buffer buffer (derived-mode-p 'agent-shell-mode))
+        buffer
+      (seq-find (lambda (session)
+                  (eq buffer
+                      (agent-shell-vertico-sidebar--viewport-buffer session)))
+                (seq-filter #'buffer-live-p (agent-shell-buffers))))))
+
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
   "Mark completed output in BUFFER as seen."
   (when (eq (plist-get (gethash buffer agent-shell-vertico-sidebar--attention)
@@ -1287,14 +1325,14 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
 
 (defun agent-shell-vertico-sidebar--window-selection-change
     (&optional _frame window)
-  "Mark an agent-shell buffer seen when its window is selected."
+  "Mark a session seen when its window, or its viewport's, is selected."
   (let ((buffer (if (window-live-p window)
                     (window-buffer window)
                   (current-buffer))))
-    (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        (when (derived-mode-p 'agent-shell-mode)
-          (agent-shell-vertico-sidebar--mark-seen buffer))))))
+    (when-let ((session (and (buffer-live-p buffer)
+                             (agent-shell-vertico-sidebar--session-for-buffer
+                              buffer))))
+      (agent-shell-vertico-sidebar--mark-seen session))))
 
 (defun agent-shell-vertico-sidebar--session-at-point ()
   "Return the live session buffer at point, or signal a user error."

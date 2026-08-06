@@ -1123,6 +1123,48 @@ and `window-state-put', which only carry parameters marked writable in
                            :kind)
                 'done))))
 
+(ert-deftest agent-shell-vertico-sidebar-visible-viewport-counts-as-seen ()
+  "A turn finishing in front of the reader leaves no unread mark.
+
+Users who interact through viewports never have the shell buffer itself
+on screen, so asking whether that buffer is visible marked every finished
+turn unread."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport)
+                (agent-shell-vertico-sidebar--attention
+                 (make-hash-table :test #'eq)))
+            (save-window-excursion
+              (set-window-buffer (selected-window) viewport)
+              (agent-shell-vertico-sidebar--handle-event
+               alpha '((:event . turn-complete)))
+              (should-not (gethash alpha
+                                   agent-shell-vertico-sidebar--attention))))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-sidebar-selecting-viewport-marks-seen ()
+  "Selecting a session's viewport clears its unread mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport)
+                (agent-shell-vertico-sidebar--attention
+                 (make-hash-table :test #'eq)))
+            (puthash alpha (list :kind 'done :time 10.0)
+                     agent-shell-vertico-sidebar--attention)
+            (with-current-buffer viewport
+              (agent-shell-vertico-sidebar--window-selection-change))
+            (should-not (gethash alpha
+                                 agent-shell-vertico-sidebar--attention)))
+        (kill-buffer viewport)))))
+
 (ert-deftest agent-shell-vertico-sidebar-new-turn-clears-attention ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
