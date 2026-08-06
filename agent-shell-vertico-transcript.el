@@ -21,6 +21,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'map)
+(require 'mule-util)
 (require 'project)
 (require 'seq)
 (require 'subr-x)
@@ -478,7 +479,7 @@ shows the title alone."
     (propertize key 'invisible t)))
 
 (defconst agent-shell-vertico-transcript--annotation-columns
-  '((project . 0.2)
+  '((project . 0.3)
     (agent . 0.14)
     (status . 16)
     (changed . 12)
@@ -487,14 +488,61 @@ shows the title alone."
 
 A float is a fraction of `marginalia-field-width', which marginalia
 resolves against the window width, so those columns shrink on a narrow
-frame.  The two time columns are fixed, because a timestamp cut in half
-tells the reader nothing.  `--record-annotation' renders these columns
+frame.  The project takes the widest fraction, because repository names
+run to about twenty characters and it is the column readers scan first.
+The two time columns are fixed, because a timestamp cut in half tells the
+reader nothing.  `--record-annotation' renders these columns
 and `--candidate-width' subtracts them from the window, so the two stay
 in step.")
 
 (defun agent-shell-vertico-transcript--column-width (name)
   "Return the truncation width of the annotation column NAME."
   (alist-get name agent-shell-vertico-transcript--annotation-columns))
+
+(defun agent-shell-vertico-transcript--resolve-width (width)
+  "Return WIDTH in columns, resolving a fraction against the field width."
+  (if (floatp width)
+      (round (* width marginalia-field-width))
+    width))
+
+(defun agent-shell-vertico-transcript--field (value column face)
+  "Return VALUE as annotation COLUMN, padded to its width and drawn in FACE.
+
+The columns are padded here rather than by `marginalia--fields'.  That
+macro expands where this file is compiled, so building the package
+against the marginalia test stub would freeze the stub's plain
+concatenation into the compiled file, and every annotation would lose its
+padding, its faces and the marker marginalia aligns by."
+  (let* ((width (agent-shell-vertico-transcript--resolve-width
+                 (agent-shell-vertico-transcript--column-width column)))
+         (text (truncate-string-to-width (or value "") width 0 ?\s
+                                         (truncate-string-ellipsis))))
+    (unless (string-prefix-p (or value "") text)
+      (put-text-property 0 (length text) 'help-echo value text))
+    (put-text-property 0 (length text) 'face face text)
+    text))
+
+(defconst agent-shell-vertico-transcript--align-marker
+  (propertize " " 'marginalia--align t)
+  "Space marking where marginalia may pad to align annotations.
+
+`marginalia--align' looks for this property to decide how far to indent
+every annotation in the list.")
+
+(defun agent-shell-vertico-transcript--fields (fields)
+  "Return FIELDS as one annotation string.
+
+Each entry in FIELDS is a value, a column name, and a face.  Columns are
+separated by `marginalia-separator', as marginalia's own annotations are."
+  (concat
+   agent-shell-vertico-transcript--align-marker
+   (mapconcat
+    (lambda (field)
+      (pcase-let ((`(,value ,column ,face) field))
+        (concat marginalia-separator
+                (agent-shell-vertico-transcript--field value column face))))
+    fields
+    "")))
 
 (defun agent-shell-vertico-transcript--annotation-width (window-width)
   "Return the widest annotation the columns produce in WINDOW-WIDTH.
@@ -631,23 +679,19 @@ two weeks, which is what made them hard to tell apart."
   (when-let* ((record
                (agent-shell-vertico-transcript--record-from-candidate
                 candidate)))
-    (marginalia--fields
-     ((or (agent-shell-vertico-transcript-record-project-name record) "-")
-      :truncate (agent-shell-vertico-transcript--column-width 'project)
-      :face 'marginalia-value)
-     ((or (agent-shell-vertico-transcript-record-agent record) "-")
-      :truncate (agent-shell-vertico-transcript--column-width 'agent)
-      :face 'marginalia-value)
-     ((agent-shell-vertico-transcript--record-status record)
-      :truncate (agent-shell-vertico-transcript--column-width 'status)
-      :face 'marginalia-type)
-     ((marginalia--time-relative
-       (agent-shell-vertico-transcript-record-modified-time record))
-      :truncate (agent-shell-vertico-transcript--column-width 'changed)
-      :face 'marginalia-date)
-     ((agent-shell-vertico-transcript--record-created record)
-      :truncate (agent-shell-vertico-transcript--column-width 'created)
-      :face 'shadow))))
+    (agent-shell-vertico-transcript--fields
+     (list
+      (list (or (agent-shell-vertico-transcript-record-project-name record) "-")
+            'project 'marginalia-value)
+      (list (or (agent-shell-vertico-transcript-record-agent record) "-")
+            'agent 'marginalia-value)
+      (list (agent-shell-vertico-transcript--record-status record)
+            'status 'marginalia-type)
+      (list (marginalia--time-relative
+             (agent-shell-vertico-transcript-record-modified-time record))
+            'changed 'marginalia-date)
+      (list (agent-shell-vertico-transcript--record-created record)
+            'created 'shadow)))))
 
 (add-to-list 'marginalia-annotators
              '(agent-shell-transcript

@@ -2263,18 +2263,21 @@ agent gave the same summary would leave one of them unreachable."
          (annotation
           (substring-no-properties
            (agent-shell-vertico-transcript--record-annotation candidate))))
-    ;; Stubbed `marginalia--fields' joins the columns with a space, so the
-    ;; column values appear in order.
-    (should
-     (equal
-      annotation
-      (string-join
-       (list "agent-shell-vertico"
-             "Claude"
-             "Resumable"
-             (marginalia--time-relative (encode-time 30 45 19 4 8 2026))
-             "2026-08-04 10:43")
-       " ")))))
+    ;; Assert the order the values appear in, not the padding between
+    ;; them: an earlier version of this test pinned the exact string the
+    ;; marginalia stub produced, which is what let the compiled package
+    ;; lose its padding and faces unnoticed.
+    (let ((positions
+           (mapcar (lambda (value) (string-match-p (regexp-quote value)
+                                                   annotation))
+                   (list "agent-shell-vertico"
+                         "Claude"
+                         "Resumable"
+                         (marginalia--time-relative
+                          (encode-time 30 45 19 4 8 2026))
+                         "2026-08-04 10:43"))))
+      (should (seq-every-p #'identity positions))
+      (should (equal positions (sort (copy-sequence positions) #'<))))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-omits-first-message ()
   "The first user message is not a column.
@@ -2298,6 +2301,52 @@ whenever a transcript has no title, and the reader shows it in full."
            (agent-shell-vertico-transcript--record-annotation candidate))))
     (should-not
      (string-match-p "In agent-shell-vertico-transcript" annotation))))
+
+(defun agent-shell-vertico-tests--annotation-for (project-name)
+  "Return the annotation of a record named PROJECT-NAME."
+  (agent-shell-vertico-transcript--record-annotation
+   (agent-shell-vertico-transcript--record-candidate
+    (agent-shell-vertico-transcript-record-create
+     :file "/tmp/transcripts/session.md"
+     :project-name project-name
+     :agent "Claude"
+     :session-id "abc-123"
+     :title "Bootstrap the eval harness"
+     :started "2025-04-11 09:03:22"
+     :modified-time (encode-time 30 45 19 4 8 2026))
+    0)))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-columns-line-up ()
+  "Every column starts at the same offset whatever the project is called.
+
+The columns are padded here rather than by `marginalia--fields', which is
+a macro: compiling this package against the marginalia test stub would
+otherwise freeze the stub's plain concatenation into the compiled file,
+and every annotation would lose its padding, faces and alignment."
+  (let* ((short (substring-no-properties
+                 (agent-shell-vertico-tests--annotation-for "lyra")))
+         (long (substring-no-properties
+                (agent-shell-vertico-tests--annotation-for
+                 "agent-shell-vertico"))))
+    (should (equal (string-match-p "Claude" short)
+                   (string-match-p "Claude" long)))
+    (should (equal (string-match-p "Resumable" short)
+                   (string-match-p "Resumable" long)))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-carries-faces ()
+  "Each column keeps the face that tells it apart from its neighbours."
+  (let ((annotation (agent-shell-vertico-tests--annotation-for "lyra")))
+    (should (eq (get-text-property (string-match-p "lyra" annotation)
+                                   'face annotation)
+                'marginalia-value))
+    (should (eq (get-text-property (string-match-p "Resumable" annotation)
+                                   'face annotation)
+                'marginalia-type))))
+
+(ert-deftest agent-shell-vertico-transcript-annotation-marks-alignment ()
+  "The annotation carries the marker marginalia aligns candidates by."
+  (let ((annotation (agent-shell-vertico-tests--annotation-for "lyra")))
+    (should (get-text-property 0 'marginalia--align annotation))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-keeps-change-relative ()
   "The last change stays a relative age however old the transcript is.
@@ -2337,6 +2386,17 @@ unbounded title left every column off screen."
       ;; character counts toward the candidate width.
       (should (zerop (% (1+ width) 10)))
       (should (<= (+ width 1 annotation) window)))))
+
+(ert-deftest agent-shell-vertico-transcript-project-column-fits-a-name ()
+  "The project column shows an ordinary repository name whole.
+
+Names of about twenty characters are the common case, and the column
+used to cut them at sixteen on a wide frame."
+  (let* ((field (min (/ 236 2) marginalia-field-width))
+         (columns
+          (round (* (agent-shell-vertico-transcript--column-width 'project)
+                    field))))
+    (should (>= columns 20))))
 
 (ert-deftest agent-shell-vertico-transcript-candidate-width-has-a-floor ()
   "A window too narrow for both keeps the candidate readable.
