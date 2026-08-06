@@ -478,7 +478,7 @@ Each element in BINDINGS is of the form:
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "  ↳ Find the failing test")))))))
+                 '("✓ Review alpha" "↳ Find the failing test")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -500,7 +500,7 @@ Each element in BINDINGS is of the form:
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "  Plan · Ready" "  GPT-5")))))))
+                 '("✓ Review alpha" "Plan · Ready" "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1191,7 +1191,7 @@ and `window-state-put', which only carry parameters marked writable in
     (dolist (slot '((error . "✖") (blocked . "▲") (done . "●")
                     (working . "◆") (ready . "✓") (starting . "○")
                     (project . "⌂") (message . "↳")
-                    (expanded . "▾") (collapsed . "▸")))
+                    (expanded . "▼") (collapsed . "▶")))
       (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
                      (cdr slot))))))
 
@@ -1220,9 +1220,41 @@ and `window-state-put', which only carry parameters marked writable in
       (should (equal (agent-shell-vertico-sidebar--slot-icon 'working)
                      "<md:nf-md-dots_circle>"))
       ;; Folds keep their text characters whatever the icon setting.
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'expanded) "▾"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'expanded) "▼"))
       (should (equal (agent-shell-vertico-sidebar--slot-icon 'collapsed)
-                     "▸")))))
+                     "▶")))))
+
+(ert-deftest agent-shell-vertico-sidebar-indents-with-line-prefix ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(project)))
+      ;; Flat rows own column zero; their detail lines are indented for
+      ;; display only, so copied text carries no leading spaces.
+      (let ((agent-shell-vertico-sidebar-group-by nil))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (goto-char (point-min))
+          (should-not (get-text-property (point) 'line-prefix))
+          (forward-line 1)
+          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (should (string-prefix-p "⌂" (buffer-substring-no-properties
+                                        (point) (line-end-position))))))
+      ;; Sessions under a project header reserve the fold columns.
+      (let ((agent-shell-vertico-sidebar-group-by 'project)
+            (agent-shell-vertico-sidebar-expand-by-default t))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (goto-char (point-min))
+          (should (string-prefix-p "▼ " (buffer-substring-no-properties
+                                         (point) (line-end-position))))
+          (should-not (get-text-property (point) 'line-prefix))
+          (forward-line 1)
+          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (forward-line 1)
+          (should (equal (get-text-property (point) 'line-prefix) "    ")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-icon-gap-widens-for-nerd-icons ()
   (cl-letf (((symbol-function 'nerd-icons-codicon)

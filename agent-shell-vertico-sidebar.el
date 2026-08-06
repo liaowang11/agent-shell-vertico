@@ -648,13 +648,14 @@ default in `agent-shell-vertico-sidebar-show-details'."
     (starting  "nf-cod-dash"                "○")
     (project   "nf-cod-root_folder"         "⌂")
     (message   "nf-cod-arrow_small_right"   "↳")
-    (expanded  nil                          "▾")
-    (collapsed nil                          "▸"))
+    (expanded  nil                          "▼")
+    (collapsed nil                          "▶"))
   "Slot, nerd-icons name, and plain character for each sidebar mark.
 
 Slots with no nerd-icons name always draw their character.  Done and ready
 are the filled and hollow circle of one family, because a done session is a
-ready session whose output nobody has read yet.")
+ready session whose output nobody has read yet.  The fold triangles match
+the ones `agent-shell' uses for its own collapsible fragments.")
 
 (defconst agent-shell-vertico-sidebar--icon-order
   '(error blocked done working ready starting)
@@ -919,17 +920,27 @@ session holding unseen output each get their own mark."
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
   "Insert session LINES with KIND and NODE text properties.
 
-NESTED adds the visual indentation used for sessions below a project
-header; flat rows keep their status icon at column zero."
+NESTED reserves the two columns a project header spends on its fold
+triangle, so a session icon lines up under the project name; flat rows
+keep their status icon at column zero.
+
+Indentation is a `line-prefix' display property rather than inserted
+spaces, as `agent-shell' does for its own fragments: the columns are
+visual only, so copied rows carry no leading whitespace and point at the
+beginning of a line is already on the row's first real character."
   (let ((start (point))
-        (first-prefix (if nested "  " ""))
+        (first-prefix (and nested "  "))
         (continuation-prefix (if nested "    " "  "))
         (title-end nil)
         (first t))
     (dolist (line lines)
-      (insert (if first first-prefix continuation-prefix))
-      (let ((line-start (line-beginning-position)))
+      (let ((line-start (line-beginning-position))
+            (prefix (if first first-prefix continuation-prefix)))
         (insert (car line))
+        (when prefix
+          (add-text-properties line-start (point)
+                               (list 'line-prefix prefix
+                                     'wrap-prefix prefix)))
         (when (cdr line)
           ;; Merge rather than set: an icon carries its own font family in
           ;; its face, and replacing that face would leave the glyph with

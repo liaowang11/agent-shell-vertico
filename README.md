@@ -64,7 +64,13 @@ transcript operations as the Vertico Embark map.
 Marks are drawn with [nerd-icons](https://github.com/rainstormstudio/nerd-icons.el)
 when that package is available, and with plain characters otherwise.  Set
 `agent-shell-vertico-sidebar-use-nerd-icons` to `t` or nil to force one or the
-other.  Project folds keep their `▾` and `▸` characters either way.
+other.  Project folds keep their `▼` and `▶` characters either way, the
+same triangles `agent-shell` uses for its own collapsible fragments.
+
+Sessions under a project header are indented by a `line-prefix` display
+property rather than by inserted spaces, so the indentation is visual only:
+copying a row yields no leading whitespace, and the two reserved columns
+line a session icon up under the project name.
 
 | Meaning | Icon | Character |
 | --- | --- | --- |
