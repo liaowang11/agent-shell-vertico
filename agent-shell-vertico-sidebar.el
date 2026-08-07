@@ -984,38 +984,42 @@ beginning of a line is already on the row's first real character."
      start (1- (point)))))
 
 (defun agent-shell-vertico-sidebar--project-summary (buffers)
-  "Return the counts shown at the right of a project header for BUFFERS.
+  "Return the count shown at the right of a project header for BUFFERS.
 
-The total is followed by the most urgent attention count present, if any.
-Only one is shown: the session holding each other kind carries its own mark
-one line below, and a narrow header has room for one count."
-  (let ((urgent (seq-find
-                 (lambda (entry) (memq (car entry) '(error blocked done)))
-                 (agent-shell-vertico-sidebar--icon-counts
-                  (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers)))))
-    (string-join
-     (cons (agent-shell-vertico-sidebar--count-text
-            'sessions (length buffers))
-           (when urgent
-             (list (agent-shell-vertico-sidebar--count-text
-                    (car urgent) (cdr urgent)))))
-     " ")))
+Only the most urgent attention kind present is counted, and a project with
+nothing waiting on the reader gets no count at all.  The session total is
+the whole sidebar's header, and every other status is on the session row
+that has it, so a project header states only what asks for a reply."
+  (when-let ((urgent
+              (seq-find
+               (lambda (entry) (memq (car entry) '(error blocked done)))
+               (agent-shell-vertico-sidebar--icon-counts
+                (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers)))))
+    (agent-shell-vertico-sidebar--count-text (car urgent) (cdr urgent))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
     (indicator name summary width)
   "Return a project header of WIDTH holding INDICATOR, NAME, and SUMMARY.
 
-SUMMARY keeps the right edge of the row, so a NAME too long for the
-remaining columns is the part that gets shortened.  A drawn glyph is wider
-than the one column it counts as, so a row using icons keeps a column of
-slack rather than pushing its last count past the window edge."
-  (let* ((slack (if (agent-shell-vertico-sidebar--nerd-icons-p) 1 0))
-         (fixed (+ (string-width indicator) 1 2 (string-width summary) slack))
-         (name (agent-shell-vertico-sidebar--fit name (max 1 (- width fixed))))
-         (padding (max 2 (- width (string-width indicator) 1
-                            (string-width name) (string-width summary)
-                            slack))))
-    (concat indicator " " name (make-string padding ?\s) summary)))
+SUMMARY, when there is one, keeps the right edge of the row, so a NAME too
+long for the remaining columns is the part that gets shortened.  A drawn
+glyph is wider than the one column it counts as, so a row using icons keeps
+a column of slack rather than pushing its count past the window edge."
+  (let* ((slack (if (and summary (agent-shell-vertico-sidebar--nerd-icons-p))
+                    1
+                  0))
+         (reserved (if summary (+ 2 (string-width summary) slack) 0))
+         (name (agent-shell-vertico-sidebar--fit
+                name
+                (max 1 (- width (string-width indicator) 1 reserved)))))
+    (concat indicator " " name
+            (when summary
+              (concat (make-string
+                       (max 2 (- width (string-width indicator) 1
+                                 (string-width name) (string-width summary)
+                                 slack))
+                       ?\s)
+                      summary)))))
 
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
   "Insert project header ROOT and its BUFFERS at WIDTH."
