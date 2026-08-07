@@ -3154,6 +3154,94 @@ The annotation is cut there rather than the title shrinking to nothing."
             "\\[gr\\] Resume"
             (agent-shell-vertico-transcript--header-line))))))))
 
+(defconst agent-shell-vertico-tests--resume-configs
+  '(((:identifier . claude-code)
+     (:mode-line-name . "Claude")
+     (:buffer-name . "Claude Code"))
+    ((:identifier . pi)
+     (:mode-line-name . "Pi")
+     (:buffer-name . "Pi")))
+  "Agent configurations used by the resume tests.")
+
+(ert-deftest agent-shell-vertico-transcript-resume-starts-transcript-agent ()
+  "Resume with the agent that wrote the transcript, not the preferred one.
+
+A session ID only means something to the agent that issued it, so
+resuming a Pi transcript with Claude Code makes the session load fail."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :agent "Pi"
+           :session-id "past-session"
+           :working-directory "/work/project/"))
+         (shell-buffer (generate-new-buffer " *agent-shell-vertico-resume*"))
+         (agent-shell-agent-configs agent-shell-vertico-tests--resume-configs)
+         (agent-shell-prefer-viewport-interaction t)
+         started-arguments)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-shell--auto-preferred-config)
+                   (lambda () (car agent-shell-agent-configs)))
+                  ((symbol-function 'agent-shell--start)
+                   (lambda (&rest arguments)
+                     (setq started-arguments arguments)
+                     shell-buffer))
+                  ((symbol-function
+                    'agent-shell--display-viewport-when-ready)
+                   (lambda (&rest _arguments) nil)))
+          (agent-shell-vertico-transcript--resume-record record)
+          (should (eq (plist-get started-arguments :config)
+                      (nth 1 agent-shell-vertico-tests--resume-configs))))
+      (kill-buffer shell-buffer))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-prefers-configured-agent ()
+  "Fall back to the preferred agent when the transcript agent is unknown."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :agent "Retired agent"
+           :session-id "past-session"
+           :working-directory "/work/project/"))
+         (shell-buffer (generate-new-buffer " *agent-shell-vertico-resume*"))
+         (agent-shell-agent-configs agent-shell-vertico-tests--resume-configs)
+         (agent-shell-prefer-viewport-interaction t)
+         started-arguments)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-shell--auto-preferred-config)
+                   (lambda () (car agent-shell-agent-configs)))
+                  ((symbol-function 'agent-shell--start)
+                   (lambda (&rest arguments)
+                     (setq started-arguments arguments)
+                     shell-buffer))
+                  ((symbol-function
+                    'agent-shell--display-viewport-when-ready)
+                   (lambda (&rest _arguments) nil)))
+          (agent-shell-vertico-transcript--resume-record record)
+          (should (eq (plist-get started-arguments :config)
+                      (car agent-shell-vertico-tests--resume-configs))))
+      (kill-buffer shell-buffer))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-session-prefers-agent ()
+  "`agent-shell-resume-session' picks the agent from the preference.
+Bind the transcript's own agent over it so the shell it starts is the
+one that issued the session ID."
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :agent "Pi"
+          :session-id "past-session"
+          :working-directory "/work/project/"))
+        (agent-shell-agent-configs agent-shell-vertico-tests--resume-configs)
+        (agent-shell-prefer-viewport-interaction nil)
+        preferred)
+    (cl-letf (((symbol-function 'agent-shell-resume-session)
+               (lambda (_session-id)
+                 (setq preferred
+                       (symbol-value
+                        'agent-shell-preferred-agent-config)))))
+      (agent-shell-vertico-transcript--resume-record record)
+      (should (eq preferred
+                  (nth 1 agent-shell-vertico-tests--resume-configs))))))
+
 (ert-deftest agent-shell-vertico-transcript-resume-uses-resume-session ()
   "Without viewport interaction, resume through `agent-shell-resume-session'."
   (let ((record

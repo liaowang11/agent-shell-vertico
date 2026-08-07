@@ -27,6 +27,7 @@
 (require 'subr-x)
 
 (defvar agent-shell-dot-subdir-function)
+(defvar agent-shell-preferred-agent-config)
 (defvar agent-shell-transcript-file-path-function)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
@@ -919,9 +920,28 @@ that is how they are reached in Evil states."
     (agent-shell-vertico-transcript--unbind-evil-keys)
     (read-only-mode -1)))
 
-(defun agent-shell-vertico-transcript--resume-session (session-id)
-  "Resume SESSION-ID, respecting `agent-shell-prefer-viewport-interaction'.
+(defun agent-shell-vertico-transcript--config-for-agent (agent)
+  "Return the `agent-shell' configuration named AGENT, or nil.
 
+Transcript headers record the agent's `:mode-line-name', falling back
+to its `:buffer-name' when the configuration sets no mode line name."
+  (when agent
+    (seq-find
+     (lambda (config)
+       (member agent
+               (list (map-elt config :mode-line-name)
+                     (map-elt config :buffer-name))))
+     agent-shell-agent-configs)))
+
+(defun agent-shell-vertico-transcript--resume-session (session-id config)
+  "Resume SESSION-ID with CONFIG, the agent that issued it.
+
+A session ID only means something to the agent that created it, so a
+transcript has to be resumed with its own agent rather than with the
+preferred one.  CONFIG is nil when the transcript names an agent that is
+no longer configured; the preferred agent is then used, as before.
+
+Also respects `agent-shell-prefer-viewport-interaction'.
 `agent-shell-resume-session' displays the shell buffer itself, so a
 resumed session lands in `agent-shell-mode' even for users who interact
 through viewports.  When viewport interaction is preferred, start the
@@ -929,10 +949,16 @@ shell without focus and let `agent-shell' display the viewport once the
 session is selected, which is what `agent-shell' does when it starts a
 shell for a viewport."
   (if (not agent-shell-prefer-viewport-interaction)
-      (agent-shell-resume-session session-id)
+      ;; `agent-shell-resume-session' takes no configuration and reads the
+      ;; preference itself, so pass CONFIG by binding the preference.
+      (let ((agent-shell-preferred-agent-config
+             (or config
+                 (bound-and-true-p agent-shell-preferred-agent-config))))
+        (agent-shell-resume-session session-id))
     (let ((shell-buffer
            (agent-shell--start
-            :config (or (agent-shell--auto-preferred-config)
+            :config (or config
+                        (agent-shell--auto-preferred-config)
                         (agent-shell-select-config
                          :prompt "Resume with agent: ")
                         (error "No agent config found"))
@@ -957,7 +983,10 @@ shell for a viewport."
             default-directory))
           (agent-shell-transcript-file-path-function
            (lambda () file)))
-      (agent-shell-vertico-transcript--resume-session session-id))))
+      (agent-shell-vertico-transcript--resume-session
+       session-id
+       (agent-shell-vertico-transcript--config-for-agent
+        (agent-shell-vertico-transcript-record-agent record))))))
 
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)
