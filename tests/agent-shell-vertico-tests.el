@@ -553,16 +553,22 @@ Each element in BINDINGS is of the form:
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (let ((header (agent-shell-vertico-sidebar--header-line)))
+          ;; The total is a mark too, so no count is spelled out in words,
+          ;; and a colon reads as "of which" before the statuses.
           (should
            (equal (substring-no-properties header)
-                  " 4 sessions · ▲1 · ◆1 · ✓1 · ○1"))
+                  " ⧉ 4 : ▲ 1 · ◆ 1 · ✓ 1 · ○ 1"))
           (should (<= (string-width header) 34))
           (let ((position (string-match
-                           "▲1" (substring-no-properties header))))
+                           "▲ 1" (substring-no-properties header))))
             (should position)
             ;; Counts are per attention kind now, so each names its own.
             (should (equal (get-text-property position 'help-echo header)
-                           "waiting"))))))))
+                           "waiting")))
+          (should (equal (get-text-property
+                          (string-match "⧉" (substring-no-properties header))
+                          'help-echo header)
+                         "sessions")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-expands-projects-by-default ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1299,7 +1305,7 @@ turn unread."
     (should-not (agent-shell-vertico-sidebar--nerd-icons-p))
     (dolist (slot '((error . "✖") (blocked . "▲") (done . "●")
                     (working . "◆") (ready . "✓") (starting . "○")
-                    (project . "⌂") (message . "↳")
+                    (project . "⌂") (message . "↳") (sessions . "⧉")
                     (expanded . "▼") (collapsed . "▶")))
       (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
                      (cdr slot))))))
@@ -1325,6 +1331,8 @@ turn unread."
                      "<cod:nf-cod-root_folder>"))
       (should (equal (agent-shell-vertico-sidebar--slot-icon 'message)
                      "<cod:nf-cod-arrow_small_right>"))
+      (should (equal (agent-shell-vertico-sidebar--slot-icon 'sessions)
+                     "<cod:nf-cod-layers>"))
       ;; The working icon is the one slot drawn from the Material set.
       (should (equal (agent-shell-vertico-sidebar--slot-icon 'working)
                      "<md:nf-md-dots_circle>"))
@@ -1423,10 +1431,113 @@ turn unread."
         ;; Every count uses the icon its own rows use.
         (should (equal (substring-no-properties
                         (agent-shell-vertico-sidebar--header-line))
-                       " 3 sessions · ✖1 · ▲1 · ●1"))
+                       " ⧉ 3 : ✖ 1 · ▲ 1 · ● 1"))
         (agent-shell-vertico-sidebar--render)
         (should (equal (substring-no-properties header-line-format)
-                       " 3 sessions · ✖1 · ▲1 · ●1"))))))
+                       " ⧉ 3 : ✖ 1 · ▲ 1 · ● 1"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-header-counts-keep-icon-gap ()
+  "A drawn glyph fills its cell, so its count needs the wider gap."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-use-nerd-icons t))
+      (cl-letf (((symbol-function 'nerd-icons-codicon)
+                 (lambda (name &rest _) (format "<cod:%s>" name)))
+                ((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (should (equal (substring-no-properties
+                          (agent-shell-vertico-sidebar--header-line))
+                         (concat " <cod:nf-cod-layers>  1"
+                                 " : <cod:nf-cod-circle_large>  1"))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-header-counts-with-marks ()
+  "A project header states its session counts as marks, not words."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ alpha" "/work/alpha/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (ready "Claude Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "r") (:title . "Ready"))))))
+    (let ((agent-shell-test-buffers (list waiting ready))
+          (agent-shell-test-statuses (list (cons waiting 'ready)
+                                           (cons ready 'ready)))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq))
+          (agent-shell-vertico-sidebar-use-nerd-icons nil)
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (puthash waiting (list :kind 'blocked :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (let ((line (buffer-substring-no-properties
+                     (point) (line-end-position))))
+          (should (string-prefix-p "▶ alpha " line))
+          ;; The counts hold the right edge of the row.
+          (should (string-suffix-p "⧉ 2 ▲ 1" line))
+          (should (= (string-width line)
+                     agent-shell-vertico-sidebar-width)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-header-truncates-name ()
+  "A project name too long for its row loses columns, the counts do not."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ long"
+              "/work/a-very-long-project-directory-name-indeed/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-use-nerd-icons nil)
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (let ((line (buffer-substring-no-properties
+                     (point) (line-end-position))))
+          (should (string-suffix-p "⧉ 1" line))
+          (should (string-match-p "…" line))
+          (should (= (string-width line)
+                     agent-shell-vertico-sidebar-width)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-header-shows-one-attention ()
+  "A project header names its most urgent attention kind and no other.
+
+Every other kind is one line below on the session that has it, and the
+header has room for one count."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((failed "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "f") (:title . "Failed")))))
+       (waiting "Claude Agent @ alpha" "/work/alpha/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (finished "Codex Agent @ alpha" "/work/alpha/"
+                 '((:session . ((:id . "d") (:title . "Finished"))))))
+    (let ((agent-shell-test-buffers (list failed waiting finished))
+          (agent-shell-test-statuses (list (cons failed 'ready)
+                                           (cons waiting 'ready)
+                                           (cons finished 'ready)))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq))
+          (agent-shell-vertico-sidebar-use-nerd-icons nil)
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (puthash failed (list :kind 'error :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash waiting (list :kind 'blocked :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash finished (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (let ((line (buffer-substring-no-properties
+                     (point) (line-end-position))))
+          (should (string-suffix-p "⧉ 3 ✖ 1" line))
+          (should-not (string-match-p "▲" line))
+          (should-not (string-match-p "●" line)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers

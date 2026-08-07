@@ -656,14 +656,16 @@ default in `agent-shell-vertico-sidebar-show-details'."
     (starting  "nf-cod-dash"                "○")
     (project   "nf-cod-root_folder"         "⌂")
     (message   "nf-cod-arrow_small_right"   "↳")
+    (sessions  "nf-cod-layers"             "⧉")
     (expanded  nil                          "▼")
     (collapsed nil                          "▶"))
   "Slot, nerd-icons name, and plain character for each sidebar mark.
 
 Slots with no nerd-icons name always draw their character.  Done and ready
 are the filled and hollow circle of one family, because a done session is a
-ready session whose output nobody has read yet.  The fold triangles match
-the ones `agent-shell' uses for its own collapsible fragments.")
+ready session whose output nobody has read yet.  The `sessions' layers mark
+stands for the total count in a header.  The fold triangles match the ones
+`agent-shell' uses for its own collapsible fragments.")
 
 (defconst agent-shell-vertico-sidebar--icon-order
   '(error blocked done working ready starting)
@@ -720,6 +722,16 @@ graphical frame takes a fraction of one instead."
    ((display-graphic-p (agent-shell-vertico-sidebar--icon-frame))
     (concat " " (propertize " " 'display '(space :width 0.5))))
    (t "  ")))
+
+(defun agent-shell-vertico-sidebar--count-text (slot count &optional face)
+  "Return COUNT preceded by SLOT's mark, both drawn in FACE.
+
+The mark and the number are separated the same way a mark and a title are,
+so a glyph that fills its cell does not touch the digits after it."
+  (concat (agent-shell-vertico-sidebar--slot-icon slot face)
+          (agent-shell-vertico-sidebar--icon-gap)
+          (let ((count (number-to-string count)))
+            (if face (propertize count 'face face) count))))
 
 (defun agent-shell-vertico-sidebar--content-width (width nested)
   "Return the columns left for text on a session row of WIDTH.
@@ -971,29 +983,52 @@ beginning of a line is already on the row's first real character."
     (agent-shell-vertico-sidebar--restore-field-properties
      start (1- (point)))))
 
+(defun agent-shell-vertico-sidebar--project-summary (buffers)
+  "Return the counts shown at the right of a project header for BUFFERS.
+
+The total is followed by the most urgent attention count present, if any.
+Only one is shown: the session holding each other kind carries its own mark
+one line below, and a narrow header has room for one count."
+  (let ((urgent (seq-find
+                 (lambda (entry) (memq (car entry) '(error blocked done)))
+                 (agent-shell-vertico-sidebar--icon-counts
+                  (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers)))))
+    (string-join
+     (cons (agent-shell-vertico-sidebar--count-text
+            'sessions (length buffers))
+           (when urgent
+             (list (agent-shell-vertico-sidebar--count-text
+                    (car urgent) (cdr urgent)))))
+     " ")))
+
+(defun agent-shell-vertico-sidebar--project-header-line
+    (indicator name summary width)
+  "Return a project header of WIDTH holding INDICATOR, NAME, and SUMMARY.
+
+SUMMARY keeps the right edge of the row, so a NAME too long for the
+remaining columns is the part that gets shortened.  A drawn glyph is wider
+than the one column it counts as, so a row using icons keeps a column of
+slack rather than pushing its last count past the window edge."
+  (let* ((slack (if (agent-shell-vertico-sidebar--nerd-icons-p) 1 0))
+         (fixed (+ (string-width indicator) 1 2 (string-width summary) slack))
+         (name (agent-shell-vertico-sidebar--fit name (max 1 (- width fixed))))
+         (padding (max 2 (- width (string-width indicator) 1
+                            (string-width name) (string-width summary)
+                            slack))))
+    (concat indicator " " name (make-string padding ?\s) summary)))
+
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
   "Insert project header ROOT and its BUFFERS at WIDTH."
   (let* ((expanded
           (agent-shell-vertico-sidebar--project-expanded-p root))
-         (attention
-          (seq-filter
-           (lambda (entry) (memq (car entry) '(error blocked done)))
-           (agent-shell-vertico-sidebar--icon-counts
-            (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers))))
          (indicator (agent-shell-vertico-sidebar--slot-icon
                      (if expanded 'expanded 'collapsed)))
-         (summary (format "%d%s" (length buffers)
-                          (mapconcat
-                           (lambda (entry)
-                             (format " %s%d"
-                                     (agent-shell-vertico-sidebar--slot-icon
-                                      (car entry))
-                                     (cdr entry)))
-                           attention "")))
-         (line (format "%s %s  %s" indicator
-                       (agent-shell-vertico-sidebar--project-name
-                        root (car buffers))
-                       summary))
+         (line (agent-shell-vertico-sidebar--project-header-line
+                indicator
+                (agent-shell-vertico-sidebar--project-name
+                 root (car buffers))
+                (agent-shell-vertico-sidebar--project-summary buffers)
+                width))
          (start (point)))
     (insert (agent-shell-vertico-sidebar--fit line width) "\n")
     ;; Merged, so the summary icons keep the font family in their own face.
@@ -1586,21 +1621,24 @@ in that order."
                      (agent-shell-vertico-sidebar--status-rank buffer))))
     counts))
 
-(defun agent-shell-vertico-sidebar--header-stat (count icon label face)
-  "Return compact COUNT status text using ICON, LABEL, and FACE."
+(defun agent-shell-vertico-sidebar--header-stat (count slot label)
+  "Return compact COUNT status text marked with SLOT and named by LABEL."
   (when (> count 0)
-    (propertize (format "%s%d" icon count)
-                'face face
+    (propertize (agent-shell-vertico-sidebar--count-text
+                 slot count (agent-shell-vertico-sidebar--slot-face slot))
                 'help-echo label)))
 
 (defconst agent-shell-vertico-sidebar--slot-labels
-  '((error . "error")
+  '((sessions . "sessions")
+    (error . "error")
     (blocked . "waiting")
     (done . "done")
     (working . "working")
     (ready . "ready")
     (starting . "starting"))
-  "Tooltip wording for each status count in the header.")
+  "Tooltip wording for each count in a header.
+
+The marks replace the words, so the wording moves to the tooltip.")
 
 (defun agent-shell-vertico-sidebar--slot-face (slot)
   "Return the face SLOT is drawn in."
@@ -1611,20 +1649,27 @@ in that order."
     (_ 'agent-shell-vertico-sidebar-detail)))
 
 (defun agent-shell-vertico-sidebar--header-line-for (slots)
-  "Return the header line counting SLOTS, one segment per occupied slot."
-  (let ((parts (list (format "%d session%s"
-                             (length slots)
-                             (if (= (length slots) 1) "" "s")))))
+  "Return the header line counting SLOTS, one segment per occupied slot.
+
+A colon separates the total from the statuses it breaks down into; the
+statuses themselves are separated by the lighter middle dot."
+  (let ((total (propertize
+                (agent-shell-vertico-sidebar--count-text
+                 'sessions (length slots))
+                'help-echo
+                (alist-get 'sessions
+                           agent-shell-vertico-sidebar--slot-labels)))
+        parts)
     (dolist (entry (agent-shell-vertico-sidebar--icon-counts slots))
       (pcase-let ((`(,slot . ,count) entry))
         (when-let ((text (agent-shell-vertico-sidebar--header-stat
-                          count
-                          (agent-shell-vertico-sidebar--slot-icon slot)
+                          count slot
                           (alist-get slot
-                                     agent-shell-vertico-sidebar--slot-labels)
-                          (agent-shell-vertico-sidebar--slot-face slot))))
-          (setq parts (append parts (list text))))))
-    (concat " " (string-join parts " · "))))
+                                     agent-shell-vertico-sidebar--slot-labels))))
+          (push text parts))))
+    (concat " " total
+            (when parts
+              (concat " : " (string-join (nreverse parts) " · "))))))
 
 (defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
   "Return a cached header string for SNAPSHOTS."
