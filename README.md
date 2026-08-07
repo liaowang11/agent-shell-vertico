@@ -35,8 +35,12 @@ working directory.
 session at point.  `RET`/mouse-1 activates the selected row or metadata field;
 the model and mode values open their selectors, while a project value opens
 that directory in another window.  Groups are collapsed by default, and
-session metadata is hidden by default.  `S-TAB` toggles that default for all
-sessions, following Org's global-cycle convention.  Each title can wrap within
+session metadata is hidden by default.  `S-TAB` cycles the whole sidebar
+through its fold levels, following Org's global-cycle convention: project
+headers alone, then their session rows, then each session's metadata, then
+back to the headers.  It discards the individual folds made with `TAB`.  A
+flat list has no project level, so there `S-TAB` alternates between hiding and
+showing metadata for every session.  Each title can wrap within
 the narrow sidebar, up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
 The layout measures the current sidebar body width and reflows titles when the
@@ -147,7 +151,7 @@ built-in `help-at-pt` support:
 ```
 
 The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
-`S-TAB` (all details),
+`S-TAB` (cycle all fold levels),
 `=` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
 (traffic/transcript), `?` (show the key reference), and `q` (close the side
@@ -156,7 +160,7 @@ window).
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `RET` activates the current row or metadata field, `o` opens the session,
 `O` opens it in another window, `TAB` toggles the current row, and `S-TAB`
-toggles details for all sessions.  `gr` refreshes, `D`
+cycles every row through the fold levels.  `gr` refreshes, `D`
 kills, `R` restarts, and `I` interrupts the current session; `t` opens its
 transcript and `T` shows traffic.  `q` closes the sidebar, while `=`, `s`,
 `c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains

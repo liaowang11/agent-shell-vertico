@@ -633,6 +633,73 @@ Each element in BINDINGS is of the form:
         (should (string-match-p "⌂ alpha" (buffer-string)))
         (should-not (string-match-p "Ready.*beta" (buffer-string)))))))
 
+(ert-deftest agent-shell-vertico-sidebar-cycles-project-grouped-levels ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (string-match-p "alpha" (buffer-string)))
+        (should-not (string-match-p "Review alpha" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should-not (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should-not (string-match-p "Review alpha" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-cycle-overrides-per-node-folds ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t
+                 agent-shell-vertico-sidebar--expanded-projects)
+        (puthash alpha t agent-shell-vertico-sidebar--expanded-sessions)
+        (agent-shell-vertico-sidebar--render)
+        ;; One project is expanded and one session shows details, so the
+        ;; sidebar is already at its last level and cycles back to projects.
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should-not (string-match-p "Review alpha" (buffer-string)))
+        (should-not (string-match-p "Review beta" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should (string-match-p "Review beta" (buffer-string)))
+        (should-not (string-match-p "Ready" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-cycles-details-in-flat-view ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should-not (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should (string-match-p "Ready" (buffer-string)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (string-match-p "Review alpha" (buffer-string)))
+        (should-not (string-match-p "Ready" (buffer-string)))
+        ;; A flat list has no project level, so the default never changes.
+        (should-not agent-shell-vertico-sidebar-expand-by-default)))))
+
 (ert-deftest agent-shell-vertico-sidebar-binds-both-tab-events ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB"))
               #'agent-shell-vertico-sidebar-toggle-at-point))
@@ -643,10 +710,10 @@ Each element in BINDINGS is of the form:
 (ert-deftest agent-shell-vertico-sidebar-binds-both-shift-tab-events ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
                            (kbd "S-TAB"))
-              #'agent-shell-vertico-sidebar-toggle-details))
+              #'agent-shell-vertico-sidebar-cycle-global-view))
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map
                            (kbd "<backtab>"))
-              #'agent-shell-vertico-sidebar-toggle-details))
+              #'agent-shell-vertico-sidebar-cycle-global-view))
   (should-not (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "v"))))
 
 (ert-deftest agent-shell-vertico-sidebar-action-prefix-preserves-k-navigation ()
@@ -725,10 +792,10 @@ Each element in BINDINGS is of the form:
               #'agent-shell-vertico-sidebar-toggle-at-point))
   (should (eq (cdr (assoc "S-TAB"
                           agent-shell-vertico-sidebar--evil-bindings))
-              #'agent-shell-vertico-sidebar-toggle-details))
+              #'agent-shell-vertico-sidebar-cycle-global-view))
   (should (eq (cdr (assoc "<backtab>"
                           agent-shell-vertico-sidebar--evil-bindings))
-              #'agent-shell-vertico-sidebar-toggle-details))
+              #'agent-shell-vertico-sidebar-cycle-global-view))
   (should-not (assoc "v" agent-shell-vertico-sidebar--evil-bindings)))
 
 (ert-deftest agent-shell-vertico-sidebar-evil-bindings-install-gr-prefix ()

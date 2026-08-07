@@ -94,7 +94,8 @@ event, `recency' uses the last display time, `status' uses only status, and
 
 The fields themselves are selected with
 `agent-shell-vertico-sidebar-extra-info'.  `TAB' overrides this default for
-the session at point; `S-TAB' toggles the default for all sessions."
+the session at point; `S-TAB' cycles every row through the sidebar's fold
+levels and sets this default to the level it reaches."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
@@ -597,6 +598,13 @@ default in `agent-shell-vertico-sidebar-show-details'."
   (seq-some #'agent-shell-vertico-sidebar--session-details-expanded-p
             (seq-filter #'buffer-live-p
                         (or buffers (agent-shell-buffers)))))
+
+(defun agent-shell-vertico-sidebar--any-project-expanded-p ()
+  "Return non-nil when any project with live sessions shows them."
+  (seq-some (lambda (buffer)
+              (agent-shell-vertico-sidebar--project-expanded-p
+               (agent-shell-vertico-sidebar--project-root buffer)))
+            (seq-filter #'buffer-live-p (agent-shell-buffers))))
 
 (defun agent-shell-vertico-sidebar--join (fields)
   "Join non-empty strings in FIELDS with a middle dot."
@@ -1497,6 +1505,48 @@ default."
     (clrhash agent-shell-vertico-sidebar--expanded-sessions))
   (agent-shell-vertico-sidebar-refresh))
 
+(defun agent-shell-vertico-sidebar--view-level ()
+  "Return the fold level the whole sidebar currently shows.
+
+`projects' shows project headers only, `sessions' adds their session rows,
+and `details' adds each session's metadata lines.  A flat list has no
+project level, so it never returns `projects'."
+  (cond
+   ((and agent-shell-vertico-sidebar-group-by
+         (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
+    'projects)
+   ((agent-shell-vertico-sidebar--any-session-details-visible-p) 'details)
+   (t 'sessions)))
+
+(defun agent-shell-vertico-sidebar--set-view-level (level)
+  "Show every row at fold LEVEL, discarding per-row fold overrides."
+  (when agent-shell-vertico-sidebar-group-by
+    (setq agent-shell-vertico-sidebar-expand-by-default
+          (not (eq level 'projects)))
+    (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
+      (clrhash agent-shell-vertico-sidebar--expanded-projects)))
+  (setq agent-shell-vertico-sidebar-show-details (eq level 'details))
+  (when (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)
+    (clrhash agent-shell-vertico-sidebar--expanded-sessions)))
+
+(defun agent-shell-vertico-sidebar-cycle-global-view ()
+  "Cycle the whole sidebar to its next fold level.
+
+With project grouping the levels are project headers alone, then their
+session rows, then each session's metadata lines, then back to the headers.
+A flat list has no project level, so it alternates between hiding and
+showing the metadata lines.
+
+Every per-project and per-session fold made with `TAB' is discarded, so the
+sidebar reaches the chosen level as a whole."
+  (interactive)
+  (agent-shell-vertico-sidebar--set-view-level
+   (pcase (agent-shell-vertico-sidebar--view-level)
+     ('projects 'sessions)
+     ('sessions 'details)
+     (_ (if agent-shell-vertico-sidebar-group-by 'projects 'sessions))))
+  (agent-shell-vertico-sidebar--render))
+
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
   "Toggle metadata lines for the session at point."
   (interactive)
@@ -1601,7 +1651,7 @@ in that order."
    "  RET         Activate the row or metadata field\n"
    "  mouse-1     Activate at the clicked position\n"
    "  TAB         Toggle a project or current session details\n"
-   "  S-TAB       Toggle the details default for all sessions\n\n"
+   "  S-TAB       Cycle all rows: projects, sessions, details\n\n"
    "Actions\n"
    "  o / O       Open here / open in another window\n"
    "  =           Toggle flat or project-grouped view\n"
@@ -1654,9 +1704,10 @@ in that order."
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
     (define-key map (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
-    (define-key map (kbd "S-TAB") #'agent-shell-vertico-sidebar-toggle-details)
+    (define-key map (kbd "S-TAB")
+                #'agent-shell-vertico-sidebar-cycle-global-view)
     (define-key map (kbd "<backtab>")
-                #'agent-shell-vertico-sidebar-toggle-details)
+                #'agent-shell-vertico-sidebar-cycle-global-view)
     (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
@@ -1691,8 +1742,8 @@ in that order."
     ("<mouse-1>" . agent-shell-vertico-sidebar-activate)
     ("o" . agent-shell-vertico-sidebar-open)
     ("O" . agent-shell-vertico-sidebar-open-other-window)
-    ("S-TAB" . agent-shell-vertico-sidebar-toggle-details)
-    ("<backtab>" . agent-shell-vertico-sidebar-toggle-details)
+    ("S-TAB" . agent-shell-vertico-sidebar-cycle-global-view)
+    ("<backtab>" . agent-shell-vertico-sidebar-cycle-global-view)
     ("=" . agent-shell-vertico-sidebar-toggle-grouping)
     ("s" . agent-shell-vertico-sidebar-set-sort)
     ("gr" . agent-shell-vertico-sidebar-refresh)
@@ -1768,8 +1819,10 @@ while normal and motion states get the same direct mnemonic commands."
             #'agent-shell-vertico-sidebar--cancel-resize nil t)
   (local-set-key (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
-  (local-set-key (kbd "S-TAB") #'agent-shell-vertico-sidebar-toggle-details)
-  (local-set-key (kbd "<backtab>") #'agent-shell-vertico-sidebar-toggle-details)
+  (local-set-key (kbd "S-TAB")
+                 #'agent-shell-vertico-sidebar-cycle-global-view)
+  (local-set-key (kbd "<backtab>")
+                 #'agent-shell-vertico-sidebar-cycle-global-view)
   (local-set-key (kbd "C-c") agent-shell-vertico-sidebar-action-map)
   (agent-shell-vertico-sidebar--bind-evil-keys)
   (agent-shell-vertico-sidebar--render))
