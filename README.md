@@ -169,15 +169,18 @@ prefix remains available as a fallback (for example, `C-c k` kills).
 
 ## Transcript recall
 
-Browsing is project-first. The `-project` variants operate on the current
-project without asking for one.
+Browsing spans every known project. A prefix argument narrows it to one
+selected project, and the `-project` variants operate on the current project
+without asking for one.
 
 - `M-x agent-shell-vertico-transcript-browse`
-  Select and open a transcript in a selected known project.
+  Select and open a transcript from every known project. With a prefix
+  argument, select a known project first.
 - `M-x agent-shell-vertico-transcript-browse-project`
   Select and open a transcript in the current project.
 - `M-x agent-shell-vertico-transcript-resume`
-  Select and resume a session in a selected project.
+  Select and resume a session from every known project. With a prefix
+  argument, select a known project first.
 - `M-x agent-shell-vertico-transcript-resume-project`
   Select and resume a session in the current project.
 - `M-x agent-shell-vertico-transcript-search`
@@ -201,6 +204,11 @@ from most to least identifying: project, first user message, agent,
 availability, last change, and start time. They are rendered by a Marginalia
 annotator registered for the `agent-shell-transcript` category, so
 `marginalia-cycle` turns them off.
+
+`agent-shell-vertico-transcript-candidate-limit` caps how many transcripts a
+list offers, 10000 by default, or nil for no cap. The list is newest first, so
+the cap drops the oldest, and the prompt then reads `(newest 10000 of 12345)`
+rather than presenting the shortened list as everything.
 
 The transcript reader provides:
 

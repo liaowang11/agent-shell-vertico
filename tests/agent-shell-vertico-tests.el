@@ -2835,6 +2835,156 @@ The annotation is cut there rather than the title shrinking to nothing."
       (should (eq activated record))
       (should-not opened))))
 
+(defun agent-shell-vertico-tests--transcript-records (count)
+  "Return COUNT transcript records, each with a session ID."
+  (mapcar
+   (lambda (index)
+     (agent-shell-vertico-transcript-record-create
+      :file (format "/tmp/transcript-%d.md" index)
+      :session-id (format "session-%d" index)))
+   (number-sequence 1 count)))
+
+(ert-deftest agent-shell-vertico-transcript-read-records-keeps-newest-within-limit ()
+  (let* ((records (agent-shell-vertico-tests--transcript-records 5))
+         (agent-shell-vertico-transcript-candidate-limit 2)
+         offered
+         prompt)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (read-prompt read-records)
+                 (setq prompt read-prompt
+                       offered read-records)
+                 (car read-records))))
+      (agent-shell-vertico-transcript--read-records "Transcript: " records)
+      (should (equal offered (seq-take records 2)))
+      (should (equal prompt "Transcript (newest 2 of 5): ")))))
+
+(ert-deftest agent-shell-vertico-transcript-read-records-keeps-prompt-under-limit ()
+  (let* ((records (agent-shell-vertico-tests--transcript-records 5))
+         (agent-shell-vertico-transcript-candidate-limit 10)
+         offered
+         prompt)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (read-prompt read-records)
+                 (setq prompt read-prompt
+                       offered read-records)
+                 (car read-records))))
+      (agent-shell-vertico-transcript--read-records "Transcript: " records)
+      (should (equal offered records))
+      (should (equal prompt "Transcript: ")))))
+
+(ert-deftest agent-shell-vertico-transcript-read-records-offers-all-without-limit ()
+  (let* ((records (agent-shell-vertico-tests--transcript-records 5))
+         (agent-shell-vertico-transcript-candidate-limit nil)
+         offered)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt read-records)
+                 (setq offered read-records)
+                 (car read-records))))
+      (agent-shell-vertico-transcript--read-records "Transcript: " records)
+      (should (equal offered records)))))
+
+(ert-deftest agent-shell-vertico-transcript-read-records-omits-unresumable ()
+  (let* ((resumable
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/resumable.md" :session-id "past"))
+         (transcript-only
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript-only.md"))
+         offered)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt read-records)
+                 (setq offered read-records)
+                 (car read-records))))
+      (agent-shell-vertico-transcript--read-records
+       "Resume session: " (list resumable transcript-only) t)
+      (should (equal offered (list resumable))))))
+
+(ert-deftest agent-shell-vertico-transcript-browse-lists-every-known-project ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"))
+        opened
+        read-project)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--all-records)
+               (lambda (&optional _roots) (list record)))
+              ((symbol-function 'agent-shell-vertico-transcript--read-project)
+               (lambda () (setq read-project t) "/work/project/"))
+              ((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt records) (car records)))
+              ((symbol-function 'agent-shell-vertico-transcript--open-record)
+               (lambda (selected &optional _other-window)
+                 (setq opened selected))))
+      (agent-shell-vertico-transcript-browse)
+      (should (eq opened record))
+      (should-not read-project))))
+
+(ert-deftest agent-shell-vertico-transcript-browse-prefix-reads-project ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"))
+        opened
+        requested-root)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--all-records)
+               (lambda (&optional _roots) (error "Should not list all records")))
+              ((symbol-function 'agent-shell-vertico-transcript--read-project)
+               (lambda () "/work/project/"))
+              ((symbol-function
+                'agent-shell-vertico-transcript--records-for-project)
+               (lambda (root)
+                 (setq requested-root root)
+                 (list record)))
+              ((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt records) (car records)))
+              ((symbol-function 'agent-shell-vertico-transcript--open-record)
+               (lambda (selected &optional _other-window)
+                 (setq opened selected))))
+      (agent-shell-vertico-transcript-browse t)
+      (should (eq opened record))
+      (should (equal requested-root "/work/project/")))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-lists-every-known-project ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :session-id "session"))
+        activated
+        read-project)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--all-records)
+               (lambda (&optional _roots) (list record)))
+              ((symbol-function 'agent-shell-vertico-transcript--read-project)
+               (lambda () (setq read-project t) "/work/project/"))
+              ((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt records) (car records)))
+              ((symbol-function 'agent-shell-vertico-transcript--activate)
+               (lambda (selected) (setq activated selected))))
+      (agent-shell-vertico-transcript-resume)
+      (should (eq activated record))
+      (should-not read-project))))
+
+(ert-deftest agent-shell-vertico-transcript-resume-prefix-reads-project ()
+  (let ((record
+         (agent-shell-vertico-transcript-record-create
+          :file "/tmp/transcript.md"
+          :session-id "session"))
+        activated
+        requested-root)
+    (cl-letf (((symbol-function 'agent-shell-vertico-transcript--all-records)
+               (lambda (&optional _roots) (error "Should not list all records")))
+              ((symbol-function 'agent-shell-vertico-transcript--read-project)
+               (lambda () "/work/project/"))
+              ((symbol-function
+                'agent-shell-vertico-transcript--records-for-project)
+               (lambda (root)
+                 (setq requested-root root)
+                 (list record)))
+              ((symbol-function 'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt records) (car records)))
+              ((symbol-function 'agent-shell-vertico-transcript--activate)
+               (lambda (selected) (setq activated selected))))
+      (agent-shell-vertico-transcript-resume t)
+      (should (eq activated record))
+      (should (equal requested-root "/work/project/")))))
+
 (ert-deftest agent-shell-vertico-transcript-search-aggregates-by-transcript ()
   (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
          (directory (expand-file-name ".agent-shell/transcripts" root))

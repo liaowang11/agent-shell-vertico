@@ -47,6 +47,23 @@
 (declare-function projectile-project-root "projectile" (&optional dir))
 (declare-function projectile-relevant-known-projects "projectile" ())
 
+(defgroup agent-shell-vertico-transcript nil
+  "Transcript recall for `agent-shell'."
+  :group 'agent-shell-vertico)
+
+(defcustom agent-shell-vertico-transcript-candidate-limit 10000
+  "Most transcripts offered at once, or nil to offer every one.
+
+Transcripts are listed newest first, so the limit drops the oldest.
+Whenever it drops any, the prompt says how many of the total are being
+offered, rather than presenting a shortened list as the whole of it.
+
+Every transcript still has to be read from disk before the list can be
+ordered, so the limit bounds what the completion UI holds, not the time
+it takes to open."
+  :type '(choice (const :tag "No limit" nil) integer)
+  :group 'agent-shell-vertico-transcript)
+
 (cl-defstruct
     (agent-shell-vertico-transcript-record
      (:constructor agent-shell-vertico-transcript-record-create))
@@ -1502,38 +1519,67 @@ When PROJECT-ROOTS is nil, use all known local projects."
         (special-mode)))
     (pop-to-buffer buffer)))
 
-(defun agent-shell-vertico-transcript--read-project-record
-    (project-root &optional resumable-only)
-  "Read one transcript record for PROJECT-ROOT.
-When RESUMABLE-ONLY is non-nil, omit records without session IDs."
-  (let ((records
-         (agent-shell-vertico-transcript--records-for-project
-          project-root)))
-    (when resumable-only
-      (setq records
-            (seq-filter
-             #'agent-shell-vertico-transcript-record-session-id
-             records)))
-    (agent-shell-vertico-transcript--read-record
-     (if resumable-only "Resume session: " "Transcript: ")
-     records)))
+(defun agent-shell-vertico-transcript--limited-prompt (prompt shown total)
+  "Return PROMPT saying that SHOWN of TOTAL transcripts are offered."
+  (format "%s (newest %d of %d): "
+          (string-trim-right prompt "[ :]+")
+          shown total))
+
+(defun agent-shell-vertico-transcript--read-records
+    (prompt records &optional resumable-only)
+  "Read one transcript from RECORDS with PROMPT.
+
+When RESUMABLE-ONLY is non-nil, omit records without session IDs.
+RECORDS past `agent-shell-vertico-transcript-candidate-limit' are
+dropped, and PROMPT then reports how many of the total remain."
+  (when resumable-only
+    (setq records
+          (seq-filter
+           #'agent-shell-vertico-transcript-record-session-id
+           records)))
+  (let ((limit agent-shell-vertico-transcript-candidate-limit)
+        (total (length records)))
+    (when (and limit (> total limit))
+      (setq records (seq-take records limit)
+            prompt
+            (agent-shell-vertico-transcript--limited-prompt
+             prompt limit total)))
+    (agent-shell-vertico-transcript--read-record prompt records)))
+
+(defun agent-shell-vertico-transcript--browse-records (records)
+  "Select and open one transcript from RECORDS."
+  (agent-shell-vertico-transcript--open-record
+   (agent-shell-vertico-transcript--read-records
+    "Transcript: " records)))
+
+(defun agent-shell-vertico-transcript--resume-records (records)
+  "Select and resume one transcript session from RECORDS."
+  (agent-shell-vertico-transcript--activate
+   (agent-shell-vertico-transcript--read-records
+    "Resume session: " records t)))
 
 (defun agent-shell-vertico-transcript--browse-project-root (project-root)
   "Select and open a transcript for PROJECT-ROOT."
-  (agent-shell-vertico-transcript--open-record
-   (agent-shell-vertico-transcript--read-project-record project-root)))
+  (agent-shell-vertico-transcript--browse-records
+   (agent-shell-vertico-transcript--records-for-project project-root)))
 
 (defun agent-shell-vertico-transcript--resume-project-root (project-root)
   "Select and resume a transcript session for PROJECT-ROOT."
-  (agent-shell-vertico-transcript--activate
-   (agent-shell-vertico-transcript--read-project-record project-root t)))
+  (agent-shell-vertico-transcript--resume-records
+   (agent-shell-vertico-transcript--records-for-project project-root)))
 
 ;;;###autoload
-(defun agent-shell-vertico-transcript-browse ()
-  "Select a known project, then browse its transcripts."
-  (interactive)
-  (agent-shell-vertico-transcript--browse-project-root
-   (agent-shell-vertico-transcript--read-project)))
+(defun agent-shell-vertico-transcript-browse (&optional select-project)
+  "Browse transcripts from every known project.
+
+With prefix argument SELECT-PROJECT, select one known project first and
+browse only its transcripts."
+  (interactive "P")
+  (if select-project
+      (agent-shell-vertico-transcript--browse-project-root
+       (agent-shell-vertico-transcript--read-project))
+    (agent-shell-vertico-transcript--browse-records
+     (agent-shell-vertico-transcript--all-records))))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-browse-project ()
@@ -1543,11 +1589,17 @@ When RESUMABLE-ONLY is non-nil, omit records without session IDs."
    (agent-shell-vertico-transcript--current-project-or-error)))
 
 ;;;###autoload
-(defun agent-shell-vertico-transcript-resume ()
-  "Select a known project, then resume one of its sessions."
-  (interactive)
-  (agent-shell-vertico-transcript--resume-project-root
-   (agent-shell-vertico-transcript--read-project)))
+(defun agent-shell-vertico-transcript-resume (&optional select-project)
+  "Resume a session from every known project's transcripts.
+
+With prefix argument SELECT-PROJECT, select one known project first and
+resume only from its transcripts."
+  (interactive "P")
+  (if select-project
+      (agent-shell-vertico-transcript--resume-project-root
+       (agent-shell-vertico-transcript--read-project))
+    (agent-shell-vertico-transcript--resume-records
+     (agent-shell-vertico-transcript--all-records))))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-resume-project ()
