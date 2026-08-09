@@ -2724,6 +2724,65 @@ The annotation is cut there rather than the title shrinking to nothing."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-rg-match-decodes-byte-lines ()
+  "rg reports a line it cannot decode as UTF-8 as base64 bytes.
+A transcript holding binary tool output would otherwise stop the search
+at the first such match."
+  (let* ((line (json-encode
+                '((type . "match")
+                  (data . ((path . ((text . "/tmp/one.md")))
+                           (line_number . 3)
+                           (lines . ((bytes . "aGVsbG8gYnl0ZXMK"))))))))
+         (entry (agent-shell-vertico-transcript--rg-match-from-json line)))
+    (should (equal (car entry) "/tmp/one.md"))
+    (should (equal (plist-get (cdr entry) :line) 3))
+    (should (equal (plist-get (cdr entry) :text) "hello bytes"))))
+
+(ert-deftest agent-shell-vertico-transcript-rg-match-skips-byte-paths ()
+  "A match whose path is not valid UTF-8 is decoded rather than dropped."
+  (let* ((line (json-encode
+                '((type . "match")
+                  (data . ((path . ((bytes . "L3RtcC90d28ubWQ=")))
+                           (line_number . 1)
+                           (lines . ((text . "hello\n"))))))))
+         (entry (agent-shell-vertico-transcript--rg-match-from-json line)))
+    (should (equal (car entry) "/tmp/two.md"))
+    (should (equal (plist-get (cdr entry) :text) "hello"))))
+
+(ert-deftest agent-shell-vertico-transcript-diagnostics-count-unlisted-files ()
+  "The doctor counts transcripts the project filter drops.
+A stale or subdirectory Working Directory header hides a transcript from
+browse, search and resume alike, and those are exactly the files the
+doctor exists to report, so it cannot read them through the same filter."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-store-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "listed.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** listed\n\n---\n\n"
+                    "## User\n\nListed transcript\n"))
+          (with-temp-file (expand-file-name "stale.md" transcript-dir)
+            (insert "**Working Directory:** /gone/old-machine\n"
+                    "**Session ID:** stale\n\n---\n\n"
+                    "## User\n\nStale transcript\n"))
+          (let* ((roots (list root))
+                 (records
+                  (agent-shell-vertico-transcript--all-records roots)))
+            (should (= (length records) 1))
+            (should (= (agent-shell-vertico-transcript--unlisted-file-count
+                        roots records)
+                       1))
+            (should
+             (seq-find
+              (lambda (issue) (string-match-p "not listed" issue))
+              (agent-shell-vertico-transcript--diagnostic-issues
+               records roots)))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-records-find-nested-files ()
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
          (transcript-dir (make-temp-file "agent-shell-vertico-nested-" t))

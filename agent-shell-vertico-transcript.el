@@ -281,6 +281,17 @@ directory header."
      (list query)
      directories)))
 
+(defun agent-shell-vertico-transcript--rg-field (data field)
+  "Return FIELD of rg match DATA as a string, or nil when absent.
+
+rg reports a path or a matched line that is not valid UTF-8 as base64
+under `bytes' instead of as `text', so a transcript holding binary tool
+output would otherwise stop the search at its first match."
+  (let ((value (map-elt data field)))
+    (or (map-elt value 'text)
+        (when-let* ((bytes (map-elt value 'bytes)))
+          (decode-coding-string (base64-decode-string bytes) 'utf-8)))))
+
 (defun agent-shell-vertico-transcript--rg-match-from-json (line)
   "Return a transcript match entry parsed from rg JSON LINE."
   (unless (string-empty-p line)
@@ -291,14 +302,18 @@ directory header."
             :null-object nil
             :false-object nil)))
       (when (equal (map-elt event 'type) "match")
-        (cons
-         (map-nested-elt event '(data path text))
-         (list
-          :count 1
-          :line (map-nested-elt event '(data line_number))
-          :text
-          (string-trim-right
-           (map-nested-elt event '(data lines text)))))))))
+        (when-let* ((data (map-elt event 'data))
+                    (path
+                     (agent-shell-vertico-transcript--rg-field data 'path)))
+          (cons
+           path
+           (list
+            :count 1
+            :line (map-elt data 'line_number)
+            :text
+            (string-trim-right
+             (or (agent-shell-vertico-transcript--rg-field data 'lines)
+                 "")))))))))
 
 (defun agent-shell-vertico-transcript--rg-matches
     (directories query)
@@ -1413,11 +1428,42 @@ When PROJECT-ROOTS is nil, use all known local projects."
           :transcript-only transcript-only
           :bytes bytes)))
 
-(defun agent-shell-vertico-transcript--diagnostic-issues (records)
-  "Return metadata issue descriptions for transcript RECORDS."
+(defun agent-shell-vertico-transcript--unlisted-file-count
+    (project-roots records)
+  "Return how many transcripts under PROJECT-ROOTS are absent from RECORDS.
+
+A transcript is listed only when its Working Directory header names its
+project root, so one written on another machine, or from a subdirectory,
+is dropped by browse, search and resume alike.  Counting files rather
+than records is what makes those transcripts visible at all: reading
+them through the same filter that hides them would always report none."
+  (let ((listed (make-hash-table :test #'equal))
+        (count 0))
+    (dolist (record records)
+      (puthash (agent-shell-vertico-transcript-record-file record) t listed))
+    (dolist (root project-roots)
+      (let ((directory
+             (agent-shell-vertico-transcript--directory root)))
+        (when (file-directory-p directory)
+          (dolist (file (directory-files-recursively directory "\\.md\\'"))
+            (unless (gethash file listed)
+              (puthash file t listed)
+              (cl-incf count))))))
+    count))
+
+(defun agent-shell-vertico-transcript--diagnostic-issues
+    (records &optional project-roots)
+  "Return metadata issue descriptions for transcript RECORDS.
+
+With PROJECT-ROOTS, also report transcripts stored under those projects
+that RECORDS omits."
   (let ((missing-session-id 0)
         (missing-working-directory 0)
         (invalid-working-directory 0)
+        (unlisted
+         (and project-roots
+              (agent-shell-vertico-transcript--unlisted-file-count
+               project-roots records)))
         (session-counts (make-hash-table :test #'equal))
         issues)
     (dolist (record records)
@@ -1453,6 +1499,16 @@ When PROJECT-ROOTS is nil, use all known local projects."
                invalid-working-directory
                (if (= invalid-working-directory 1) "y" "ies")
                (if (= invalid-working-directory 1) "s" ""))
+       issues))
+    (when (and unlisted (> unlisted 0))
+      (push
+       (format
+        (concat "%d transcript%s stored under a known project but not "
+                "listed; %s Working Directory header names another "
+                "directory")
+        unlisted
+        (if (= unlisted 1) " is" "s are")
+        (if (= unlisted 1) "its" "their"))
        issues))
     (maphash
      (lambda (session-id count)
@@ -1508,7 +1564,8 @@ When PROJECT-ROOTS is nil, use all known local projects."
          (records
           (agent-shell-vertico-transcript--all-records project-roots))
          (issues
-          (agent-shell-vertico-transcript--diagnostic-issues records))
+          (agent-shell-vertico-transcript--diagnostic-issues
+           records project-roots))
          (buffer
           (get-buffer-create "*Agent transcript doctor*")))
     (unless (executable-find "rg")
