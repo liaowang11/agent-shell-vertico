@@ -243,13 +243,19 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
       (agent-shell-vertico-sidebar--fallback-project-name root)))
 
 (defun agent-shell-vertico-sidebar--project-expanded-p (root)
-  "Return non-nil when project ROOT should show its sessions."
-  (let* ((unset (make-symbol "unset"))
-         (value (gethash root agent-shell-vertico-sidebar--expanded-projects
-                         unset)))
-    (if (eq value unset)
-        agent-shell-vertico-sidebar-expand-by-default
-      value)))
+  "Return non-nil when project ROOT should show its sessions.
+
+The override table is buffer-local to the sidebar, so outside it there
+are no overrides and the customizable default decides."
+  (let ((unset (make-symbol "unset")))
+    (if (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
+        (let ((value (gethash root
+                              agent-shell-vertico-sidebar--expanded-projects
+                              unset)))
+          (if (eq value unset)
+              agent-shell-vertico-sidebar-expand-by-default
+            value))
+      agent-shell-vertico-sidebar-expand-by-default)))
 
 (defun agent-shell-vertico-sidebar--group-buffers (buffers)
   "Group BUFFERS by normalized project root.
@@ -882,17 +888,28 @@ session holding unseen output each get their own mark."
         (agent-shell-vertico-sidebar--node-at-point)))
 
 (defun agent-shell-vertico-sidebar--goto-node (node)
-  "Move point to NODE, returning non-nil when found."
+  "Move point to NODE, returning non-nil when found.
+
+Point does not move when NODE is absent: the search walks to the end of
+the buffer, and leaving point on the empty last line would make the next
+key report that there is no session at point."
   (when (cdr node)
-    (goto-char (point-min))
-    (let (found)
-      (while (and (not found) (not (eobp)))
-        (if (and
-             (eq (car node) (agent-shell-vertico-sidebar--node-kind-at-point))
-             (equal (cdr node) (agent-shell-vertico-sidebar--node-at-point)))
-            (setq found t)
-          (forward-line 1)))
-      found)))
+    (let ((position
+           (save-excursion
+             (goto-char (point-min))
+             (let (found)
+               (while (and (not found) (not (eobp)))
+                 (if (and
+                      (eq (car node)
+                          (agent-shell-vertico-sidebar--node-kind-at-point))
+                      (equal (cdr node)
+                             (agent-shell-vertico-sidebar--node-at-point)))
+                     (setq found (point))
+                   (forward-line 1)))
+               found))))
+      (when position
+        (goto-char position))
+      position)))
 
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
   "Return rendered session lines for BUFFER at WIDTH under ROOT."
@@ -975,8 +992,10 @@ beginning of a line is already on the row's first real character."
      (list 'agent-shell-vertico-sidebar-node node
            'agent-shell-vertico-sidebar-node-kind kind))
     (when title-end
+      ;; `title-end' is already before the newline, unlike the node span
+      ;; below, which ends after the row's last one.
       (add-text-properties
-       start (1- title-end)
+       start title-end
        (list 'mouse-face 'highlight
              'help-echo (buffer-name node)
              'kbd-help "RET/mouse-1: open session")))
@@ -1057,7 +1076,11 @@ a column of slack rather than pushing its count past the window edge."
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
          (snapshot-table (make-hash-table :test #'eq))
-         (width (or (when-let ((window (get-buffer-window (current-buffer))))
+         ;; Any visible frame, matching the check that lets an event-driven
+         ;; refresh through: looking only at the selected frame would render
+         ;; a sidebar on another frame at the fallback width.
+         (width (or (when-let ((window (get-buffer-window (current-buffer)
+                                                          'visible)))
                       (window-body-width window))
                     agent-shell-vertico-sidebar-width))
          (point-node (agent-shell-vertico-sidebar--point-node))
@@ -1577,14 +1600,22 @@ A flat list has no project level, so it alternates between hiding and
 showing the metadata lines.
 
 Every per-project and per-session fold made with `TAB' is discarded, so the
-sidebar reaches the chosen level as a whole."
+sidebar reaches the chosen level as a whole.
+
+The fold state and the rendering are both the sidebar buffer's own, so
+the whole command runs there however it was called."
   (interactive)
-  (agent-shell-vertico-sidebar--set-view-level
-   (pcase (agent-shell-vertico-sidebar--view-level)
-     ('projects 'sessions)
-     ('sessions 'details)
-     (_ (if agent-shell-vertico-sidebar-group-by 'projects 'sessions))))
-  (agent-shell-vertico-sidebar--render))
+  (let ((sidebar (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                     (current-buffer)
+                   (or (get-buffer "*Agent Shell Sessions*")
+                       (user-error "The agent-shell sidebar is not open")))))
+    (with-current-buffer sidebar
+      (agent-shell-vertico-sidebar--set-view-level
+       (pcase (agent-shell-vertico-sidebar--view-level)
+         ('projects 'sessions)
+         ('sessions 'details)
+         (_ (if agent-shell-vertico-sidebar-group-by 'projects 'sessions))))
+      (agent-shell-vertico-sidebar--render))))
 
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
   "Toggle metadata lines for the session at point."

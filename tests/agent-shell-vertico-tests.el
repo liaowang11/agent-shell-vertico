@@ -889,6 +889,81 @@ Each element in BINDINGS is of the form:
           (should (= (length callbacks) 1))
           (should agent-shell-vertico-sidebar--dirty))))))
 
+(ert-deftest agent-shell-vertico-sidebar-render-keeps-point-on-a-row ()
+  "Point stays on a session row when the row it was on disappears.
+Searching for the remembered row walks to the end of the buffer, and
+point left there reports no session at point for the next key pressed."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (goto-char (point-min))
+        (should (agent-shell-vertico-sidebar--goto-node (cons 'session beta)))
+        ;; Beta goes away, as when its session is killed from the sidebar.
+        (setq agent-shell-test-buffers (list alpha))
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-sidebar--node-at-point))
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-title-is-hoverable-to-its-last-character ()
+  "The whole session title carries the hover highlight and its tooltip."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (goto-char (point-min))
+        (let ((last (1- (line-end-position))))
+          (should (eq (get-text-property last 'mouse-face) 'highlight))
+          (should (equal (get-text-property last 'help-echo)
+                         (buffer-name alpha))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-cycle-global-view-spares-other-buffers ()
+  "Cycling the fold level from M-x must not render into the current buffer.
+Rendering erases the buffer it runs in, so the command has to reach the
+sidebar buffer rather than whatever buffer the user called it from."
+  (let ((other (generate-new-buffer " *agent-shell-vertico-other*")))
+    (when-let ((stale (get-buffer "*Agent Shell Sessions*")))
+      (kill-buffer stale))
+    (unwind-protect
+        (with-current-buffer other
+          (insert "user content")
+          (should-error (agent-shell-vertico-sidebar-cycle-global-view)
+                        :type 'user-error)
+          (should (equal (buffer-string) "user content")))
+      (kill-buffer other))))
+
+(ert-deftest agent-shell-vertico-sidebar-cycle-global-view-renders-the-sidebar ()
+  "Cycling from another buffer folds and renders the sidebar itself."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-sidebar
+            (let ((agent-shell-vertico-sidebar-group-by nil)
+                  (agent-shell-vertico-sidebar-show-details nil))
+              (with-current-buffer other
+                (insert "user content")
+                (agent-shell-vertico-sidebar-cycle-global-view)
+                (should (equal (buffer-string) "user content")))
+              (should agent-shell-vertico-sidebar-show-details)
+              (should (string-match-p
+                       "Review alpha"
+                       (with-current-buffer "*Agent Shell Sessions*"
+                         (buffer-string))))))
+        (kill-buffer other)))))
+
 (ert-deftest agent-shell-vertico-sidebar-hidden-events-do-not-schedule-refresh ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
