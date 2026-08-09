@@ -4,16 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A single-file Emacs Lisp package (`agent-shell-vertico.el`) that adds a
-Vertico/`completing-read`-friendly session switcher for [`agent-shell`](https://github.com/xenodium/agent-shell)
-buffers, plus an Embark action map for controlling the selected session. The
-package itself ships no UI — it leans on the user's existing
-Vertico/Marginalia/Embark stack.
+An Emacs Lisp package that adds a Vertico/`completing-read`-friendly session
+switcher for [`agent-shell`](https://github.com/xenodium/agent-shell) buffers,
+plus an Embark action map for controlling the selected session. The package
+itself ships no UI — it leans on the user's existing Vertico/Marginalia/Embark
+stack.
+
+Four modules, each requiring the ones above it:
+
+- `agent-shell-vertico.el` — session completion table, annotations, Embark
+  actions, and the conversation imenu index.
+- `agent-shell-vertico-sidebar.el` — a persistent side window listing live
+  sessions, driven by `agent-shell` event subscriptions.
+- `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
+  Markdown transcripts `agent-shell` writes.
+- `agent-shell-vertico-consult.el` — Consult sources over the transcript store.
 
 ## Commands
 
 ```sh
-make compile   # byte-compile agent-shell-vertico.el (warnings matter — CI builds clean)
+make compile   # byte-compile every module (warnings matter — CI builds clean)
 make test      # run the full ERT suite in batch
 make check     # compile + test (what CI runs)
 ```
@@ -70,10 +80,10 @@ the session's `:models`/`:modes` list (`--lookup-name`).
 `metadata` form declaring category `agent-shell-session` plus affixation and
 sort functions, and otherwise completes against live buffer names. `scope` is
 `'all` (→ `agent-shell-buffers`) or `'project` (→ `agent-shell-project-buffers`).
-Annotations are rendered two ways that must stay in sync: `--affixate` (the
-`affixation-function` in the table) and `--annotate` (the Marginalia annotator
-registered for the category). Both emit the same `marginalia--fields` columns:
-status, model, mode, title, path.
+Annotations reach the user two ways — `--affixate` (the `affixation-function`
+in the table) and `--annotate` (the Marginalia annotator registered for the
+category) — and both render through `--suffix`, so they cannot drift. The
+columns are status, model, mode, title, path.
 
 **Sorting** is user-configurable via `agent-shell-vertico-sort-by`
 (`recency`/`creation`/`status`), implemented in `--sort-candidates` and wired
@@ -95,6 +105,28 @@ value** (lines ~29–33). A `defvar` *with* a value would pre-bind the variable 
 installing its real default when it loads later. There is a regression test for
 this (`...loading-does-not-prebind-embark-keymap-alist`) and a dedicated commit
 that fixed it. Never give these `declare`/`defvar` forms a default value.
+
+## Critical constraint: test stubs of macros must match upstream
+
+`make compile` puts `tests/support` on the load path, because the real
+`agent-shell` and `marginalia` are not in this repo. Anything a stub defines as
+a **macro** therefore expands into the compiled output and ships to users.
+`tests/support/marginalia.el` defines `marginalia--fields` and
+`marginalia--field` exactly as marginalia does for this reason; a simplified
+stand-in silently stripped every annotation's truncation, faces, and align
+marker from the compiled files. Keep them in step with upstream, and prefer
+plain functions in stubs wherever a macro is not required.
+
+`agent-shell-vertico-transcript.el` sidesteps the same trap differently, by
+building its annotation columns itself (`--field`/`--fields`) instead of using
+the macro.
+
+## Beware stale `.elc` files when running a focused test
+
+`emacs -Q --batch -L .` loads `agent-shell-vertico.elc` in preference to the
+`.el` when both exist, so a focused ERT run after an edit can test the previous
+build and report a fix as failing. Run `make compile` first, or `make check`,
+which compiles before testing.
 
 ## Conventions
 
