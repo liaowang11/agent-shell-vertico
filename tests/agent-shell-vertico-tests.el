@@ -106,9 +106,25 @@ Each element in BINDINGS is of the form:
                     ((symbol-value
                       'agent-shell-vertico-sidebar--busy-since-times)
                      (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--attention)
+                     (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--activity)
+                     (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value 'agent-shell-agent-configs) nil)
+                    ;; Render assertions name the plain marks, so they must
+                    ;; not depend on whether nerd-icons happens to be
+                    ;; installed where the suite runs.  Tests about icons
+                    ;; bind these themselves.
+                    ((symbol-value
+                      'agent-shell-vertico-sidebar-use-nerd-icons)
+                     nil)
+                    ((symbol-value
+                      'agent-shell-vertico-sidebar--nerd-icons-available)
+                     'unknown)
                     ((symbol-value 'agent-shell-mode-hook) nil))
            (let ,(mapcar
                   (lambda (binding)
@@ -123,7 +139,10 @@ Each element in BINDINGS is of the form:
                           buffer))))
                   bindings)
              ,@body))
-       (mapc #'kill-buffer created))))
+       (mapc (lambda (buffer)
+               (when (buffer-live-p buffer)
+                 (kill-buffer buffer)))
+             created))))
 
 (ert-deftest agent-shell-vertico-sidebar-groups-by-project-root ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -889,6 +908,205 @@ Each element in BINDINGS is of the form:
           (should (= (length callbacks) 1))
           (should agent-shell-vertico-sidebar--dirty))))))
 
+(ert-deftest agent-shell-vertico-sidebar-toggle-opens-then-closes ()
+  "Toggling opens the sidebar window, and toggling again deletes it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (original (selected-window)))
+      (unwind-protect
+          (progn
+            (agent-shell-vertico-sidebar-toggle)
+            (let* ((sidebar (get-buffer "*Agent Shell Sessions*"))
+                   (window (get-buffer-window sidebar)))
+              (should (window-live-p window))
+              (should (eq (selected-window) window))
+              (should (string-match-p
+                       "Review alpha"
+                       (with-current-buffer sidebar (buffer-string))))
+              (agent-shell-vertico-sidebar-toggle)
+              (should-not (get-buffer-window sidebar))))
+        (when (window-live-p original)
+          (select-window original))
+        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focus-opens-and-selects ()
+  "Focusing opens the sidebar when it is closed and selects its window."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (original (selected-window)))
+      (unwind-protect
+          (progn
+            (agent-shell-vertico-sidebar-focus)
+            (let ((window (get-buffer-window "*Agent Shell Sessions*")))
+              (should (window-live-p window))
+              (should (eq (selected-window) window))
+              ;; Focusing again keeps the same window rather than opening one.
+              (agent-shell-vertico-sidebar-focus)
+              (should (eq (get-buffer-window "*Agent Shell Sessions*")
+                          window))))
+        (when (window-live-p original)
+          (select-window original))
+        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-permission-request-marks-blocked ()
+  "A permission request marks the session blocked and stops its busy clock."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (float-time)
+                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-request)))
+        (should (eq (plist-get (gethash alpha
+                                        agent-shell-vertico-sidebar--attention)
+                               :kind)
+                    'blocked))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))))))
+
+(ert-deftest agent-shell-vertico-sidebar-error-event-marks-error ()
+  "An error marks the session and stops its busy clock."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (float-time)
+                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . error)))
+        (should (eq (plist-get (gethash alpha
+                                        agent-shell-vertico-sidebar--attention)
+                               :kind)
+                    'error))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))))))
+
+(ert-deftest agent-shell-vertico-sidebar-permission-response-keeps-blocked-mark ()
+  "Answering one request leaves the mark while another is still pending.
+The mark follows the live status, not the arrival of the response, so a
+session that is blocked again must keep asking for a reply."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'blocked))))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (list :kind 'blocked :time (float-time))
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-response)))
+        (should (gethash alpha agent-shell-vertico-sidebar--attention))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))))))
+
+(ert-deftest agent-shell-vertico-sidebar-permission-response-restarts-busy-clock ()
+  "A granted permission that resumes work clears the mark and times the turn."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy))))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (list :kind 'blocked :time (float-time))
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-response)))
+        (should-not (gethash alpha agent-shell-vertico-sidebar--attention))
+        (should (gethash alpha
+                         agent-shell-vertico-sidebar--busy-since-times))))))
+
+(ert-deftest agent-shell-vertico-sidebar-idle-event-stops-busy-clock ()
+  "An idle event ends the turn without marking the session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (float-time)
+                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . idle)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-clean-up-event-forgets-the-session ()
+  "Cleaning up drops every record the sidebar keeps for the session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (float-time)
+                 agent-shell-vertico-sidebar--busy-since-times)
+        (puthash alpha (list :kind 'done :time (float-time))
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . clean-up)))
+        (should-not (gethash alpha agent-shell-vertico-sidebar--attention))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--activity))))))
+
+(ert-deftest agent-shell-vertico-sidebar-watches-each-session-once ()
+  "Every live session is subscribed to exactly once."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--watch-existing)
+        (agent-shell-vertico-sidebar--watch-existing)
+        (should (= (length agent-shell-test-subscriptions) 2))
+        (should (gethash alpha agent-shell-vertico-sidebar--subscriptions))
+        (should (gethash beta agent-shell-vertico-sidebar--subscriptions))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unwatches-a-killed-session ()
+  "Killing a session unsubscribes it and forgets its metadata."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--watch-existing)
+        (puthash alpha (list :kind 'done :time (float-time))
+                 agent-shell-vertico-sidebar--attention)
+        (should (= (length agent-shell-test-subscriptions) 1))
+        (kill-buffer alpha)
+        (should-not agent-shell-test-subscriptions)
+        (should (zerop (hash-table-count
+                        agent-shell-vertico-sidebar--subscriptions)))
+        (should (zerop (hash-table-count
+                        agent-shell-vertico-sidebar--attention)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-prunes-dead-subscriptions ()
+  "A session killed without running its hook is pruned on the next pass."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (let ((orphan (generate-new-buffer " *agent-shell-vertico-orphan*")))
+          (puthash orphan 'stale agent-shell-vertico-sidebar--subscriptions)
+          (puthash orphan (float-time) agent-shell-vertico-sidebar--activity)
+          (kill-buffer orphan)
+          (agent-shell-vertico-sidebar--watch-existing)
+          (should-not (gethash orphan
+                               agent-shell-vertico-sidebar--subscriptions))
+          (should-not (gethash orphan
+                               agent-shell-vertico-sidebar--activity)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-render-keeps-point-on-a-row ()
   "Point stays on a session row when the row it was on disappears.
 Searching for the remembered row walks to the end of the buffer, and
@@ -985,25 +1203,38 @@ sidebar buffer rather than whatever buffer the user called it from."
           (should-not (timerp agent-shell-vertico-sidebar--refresh-timer)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-dirty-state-renders-on-reopen ()
+  "An event arriving while the sidebar is hidden renders once it is shown.
+Nothing renders while there is no window, so the pending update has to
+survive as the dirty flag until the next scheduled refresh runs."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (render-calls 0))
+          (visible nil)
+          (callbacks nil))
       (agent-shell-vertico-tests--with-sidebar
         (cl-letf (((symbol-function
                     'agent-shell-vertico-sidebar--sidebar-visible-p)
-                   (lambda (&optional _buffer) nil)))
+                   (lambda (&optional _buffer) visible))
+                  ((symbol-function 'run-with-idle-timer)
+                   (lambda (_delay _repeat function &rest _args)
+                     (push function callbacks)
+                     (timer-create))))
+          (let ((inhibit-read-only t))
+            (erase-buffer))
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . chunk)))
-          (cl-letf (((symbol-function
-                      'agent-shell-vertico-sidebar--sidebar-visible-p)
-                     (lambda (&optional _buffer) t))
-                    ((symbol-function
-                     'agent-shell-vertico-sidebar--render)
-                     (lambda () (cl-incf render-calls))))
-            (agent-shell-vertico-sidebar--render)
-            (should (= render-calls 1))))))))
+          ;; Hidden: the update is recorded but nothing is scheduled.
+          (should agent-shell-vertico-sidebar--dirty)
+          (should-not callbacks)
+          (should (string-empty-p (buffer-string)))
+          ;; The window comes back and the next event schedules the refresh.
+          (setq visible t)
+          (agent-shell-vertico-sidebar--schedule-refresh)
+          (should (= (length callbacks) 1))
+          (funcall (car callbacks))
+          (should-not agent-shell-vertico-sidebar--dirty)
+          (should (string-match-p "Review alpha" (buffer-string))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-workspace-switch-reopens-sidebar ()
   "A visible sidebar is reopened in the workspace being switched to."
@@ -1169,7 +1400,7 @@ and `window-state-put', which only carry parameters marked writable in
       (should (= agent-shell-test-buffer-query-count 1))
       (should (= agent-shell-test-status-query-count 0)))))
 
-(ert-deftest agent-shell-vertico-sidebar-age-refresh-uses-minute-idle ()
+(ert-deftest agent-shell-vertico-sidebar-age-refresh-repeats-every-minute ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
@@ -1800,6 +2031,25 @@ the agent also sends a `current_mode_update' notification."
                    'agent-shell-session))
     (should (functionp (cdr (assq 'affixation-function (cdr metadata)))))))
 
+(ert-deftest agent-shell-vertico-status-reports-working-while-busy ()
+  "A shell with work in flight reports Working and sorts before the rest."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (let ((busy (list alpha)))
+      (cl-letf (((symbol-function 'shell-maker-busy)
+                 (lambda (&rest _) (memq (current-buffer) busy))))
+        (should (equal (agent-shell-vertico--status alpha) "Working"))
+        (should (equal (agent-shell-vertico--status beta) "Ready"))
+        ;; Ready sorts ahead of Working, which sorts ahead of the rest.
+        (let ((agent-shell-vertico-sort-by 'status))
+          (should (equal (agent-shell-vertico--sort-candidates
+                          (list (buffer-name alpha) (buffer-name beta)))
+                         (list (buffer-name beta) (buffer-name alpha)))))))
+    (should (equal (agent-shell-vertico--status alpha) "Ready"))))
+
 (ert-deftest agent-shell-vertico-annotator-registered-for-the-category ()
   "The session annotator is registered against its completion category."
   (should (equal (assq 'agent-shell-session marginalia-annotators)
@@ -1917,17 +2167,34 @@ type to keymap mappings when embark loads later."
     (should (eq agent-shell-test-last-buffer alpha))))
 
 (ert-deftest agent-shell-vertico-kill-session-sends-eof-for-target-buffer ()
+  "EOF is sent from the session's own buffer, and the buffer is killed.
+`comint-send-eof' takes no argument and acts on the current buffer, so
+which buffer it runs in is the whole of its behaviour."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
-              '((:client . ((:process . fake-proc)))))) 
-    (let (called)
+              '((:client . ((:process . fake-proc))))))
+    (let ((eof-buffers nil))
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
                 ((symbol-function 'process-live-p) (lambda (_process) t))
                 ((symbol-function 'comint-send-eof)
-                 (lambda (&optional process)
-                   (setq called process))))
+                 (lambda () (push (current-buffer) eof-buffers))))
         (agent-shell-vertico-kill-session (buffer-name alpha))
-        (should (eq called nil))))))
+        (should (equal eof-buffers (list alpha)))
+        (should-not (buffer-live-p alpha))))))
+
+(ert-deftest agent-shell-vertico-kill-session-declined-keeps-the-buffer ()
+  "Declining the confirmation leaves the session running."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:client . ((:process . fake-proc))))))
+    (let ((eof-buffers nil))
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil))
+                ((symbol-function 'process-live-p) (lambda (_process) t))
+                ((symbol-function 'comint-send-eof)
+                 (lambda () (push (current-buffer) eof-buffers))))
+        (agent-shell-vertico-kill-session (buffer-name alpha))
+        (should-not eof-buffers)
+        (should (buffer-live-p alpha))))))
 
 (ert-deftest agent-shell-vertico-restart-session-dispatches-in-target-buffer ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -2852,6 +3119,74 @@ The annotation is cut there rather than the title shrinking to nothing."
       (delete-directory root t)
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-current-record-parses-visited-file ()
+  "A visited transcript with no record parses itself and takes its project.
+The working directory in the header is the project the transcript
+belongs to, whatever directory the file happens to be stored in."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n"
+                    "**Working Directory:** /work/project\n"
+                    "**Session ID:** visited\n\n---\n\n"
+                    "## User\n\nhello\n"))
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (let ((record (agent-shell-vertico-transcript--current-record)))
+              (should (equal (agent-shell-vertico-transcript-record-session-id
+                              record)
+                             "visited"))
+              (should (equal (agent-shell-vertico-transcript-record-project-name
+                              record)
+                             "project")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-current-record-requires-transcript ()
+  "A buffer visiting no file is not a transcript."
+  (with-temp-buffer
+    (should-error (agent-shell-vertico-transcript--current-record)
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-transcript-move-to-speaker-reports-the-end ()
+  "Running out of headings says so rather than moving point."
+  (with-temp-buffer
+    (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n")
+    (goto-char (point-max))
+    (should-error (agent-shell-vertico-transcript--move-to-speaker
+                   '("User") 1)
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-transcript-resume-current-uses-the-record ()
+  "Resuming the current transcript resumes the record that buffer holds."
+  (let ((shell-buffer (generate-new-buffer " *agent-shell-vertico-resume*"))
+        (agent-shell-prefer-viewport-interaction t)
+        (started-arguments nil))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local agent-shell-vertico-transcript--record
+                      (agent-shell-vertico-transcript-record-create
+                       :file "/tmp/transcript.md"
+                       :agent "Codex"
+                       :session-id "current-session"
+                       :working-directory "/work/project/"))
+          (cl-letf (((symbol-function 'agent-shell--auto-preferred-config)
+                     (lambda () '((:buffer-name . "Codex Agent"))))
+                    ((symbol-function 'agent-shell--start)
+                     (lambda (&rest arguments)
+                       (setq started-arguments arguments)
+                       shell-buffer))
+                    ((symbol-function
+                      'agent-shell--display-viewport-when-ready)
+                     (lambda (&rest _arguments) nil)))
+            (agent-shell-vertico-transcript-force-resume-current)
+            (should (equal (plist-get started-arguments :session-id)
+                           "current-session"))))
+      (kill-buffer shell-buffer))))
 
 (ert-deftest agent-shell-vertico-transcript-rg-match-decodes-byte-lines ()
   "rg reports a line it cannot decode as UTF-8 as base64 bytes.
