@@ -1800,6 +1800,44 @@ the agent also sends a `current_mode_update' notification."
                    'agent-shell-session))
     (should (functionp (cdr (assq 'affixation-function (cdr metadata)))))))
 
+(ert-deftest agent-shell-vertico-annotator-registered-for-the-category ()
+  "The session annotator is registered against its completion category."
+  (should (equal (assq 'agent-shell-session marginalia-annotators)
+                 '(agent-shell-session agent-shell-vertico--annotate none))))
+
+(ert-deftest agent-shell-vertico-annotator-matches-the-affixation ()
+  "The Marginalia annotator renders exactly what the table's affixation does.
+They are the two ways the same session columns reach the user, and a
+difference between them shows up only in one completion framework."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))])
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))]))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (name (buffer-name alpha))
+           (affixated (caddr (car (agent-shell-vertico--affixate (list name))))))
+      (should (equal (agent-shell-vertico--annotate name) affixated))
+      (should (string-match-p "Review alpha" affixated))))
+  (should-not (agent-shell-vertico--annotate "No such session buffer")))
+
+(ert-deftest agent-shell-vertico-annotation-keeps-marginalia-formatting ()
+  "Annotations carry marginalia's align marker and per-column faces.
+`marginalia--fields' expands where this package is compiled, so a test
+stand-in that dropped either would be frozen into the compiled package
+and every annotation would lose its columns for real users too."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((suffix (agent-shell-vertico--suffix alpha)))
+      (should (text-property-any 0 (length suffix)
+                                 'marginalia--align t suffix))
+      (should (text-property-not-all 0 (length suffix) 'face nil suffix)))))
+
 (ert-deftest agent-shell-vertico-all-scope-uses-agent-shell-buffers ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
@@ -2185,7 +2223,11 @@ keyed on the shell buffer must be cleared."
       (should (member "second request" requests)))))
 
 (ert-deftest agent-shell-vertico-imenu-annotation-only-for-our-candidates ()
-  (should-not (agent-shell-vertico--imenu-annotation "plain imenu item"))
+  "Foreign candidates fall through to marginalia's own imenu annotator.
+Marginalia consults only the first annotator registered for a category,
+so returning nil here would leave every other mode's imenu unannotated."
+  (should (equal (agent-shell-vertico--imenu-annotation "plain imenu item")
+                 (marginalia-annotate-imenu "plain imenu item")))
   (with-temp-buffer
     (agent-shell-vertico-tests--insert-block
      :qid "1-call_abc" :label-left "completed read"
@@ -2226,6 +2268,18 @@ keyed on the shell buffer must be cleared."
       ;; the original (we cut at a word boundary) and has no trailing space.
       (should (string-prefix-p (concat head " ") long))
       (should-not (string-suffix-p " " head)))))
+
+(ert-deftest agent-shell-vertico-imenu-truncate-counts-display-columns ()
+  "Wide characters count as the columns they occupy, not one each.
+`agent-shell-vertico-imenu-name-width' exists to keep names clear of the
+annotations, which a title of CJK text would otherwise overrun twice
+over."
+  (let* ((agent-shell-vertico-imenu-name-width 10)
+         (wide (make-string 8 ?漢))
+         (out (agent-shell-vertico--imenu-truncate wide)))
+    (should (< (string-width out) (string-width wide)))
+    (should (<= (string-width out) 10))
+    (should (string-suffix-p "…" out))))
 
 ;;; Markdown links
 

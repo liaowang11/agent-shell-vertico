@@ -21,6 +21,7 @@
 (require 'imenu)
 (require 'map)
 (require 'marginalia)
+(require 'mule-util)
 (require 'seq)
 (require 'subr-x)
 (require 'text-property-search)
@@ -194,14 +195,12 @@ so the ellipsis stays visible and item annotations are not crowded."
           candidates))
 
 (defun agent-shell-vertico--annotate (cand)
-  "Marginalia annotator for CAND in category `agent-shell-session'."
+  "Marginalia annotator for CAND in category `agent-shell-session'.
+
+Renders through `agent-shell-vertico--suffix', which the completion
+table's affixation function also uses, so the two cannot drift apart."
   (when-let ((buf (get-buffer cand)))
-    (marginalia--fields
-     ((agent-shell-vertico--status buf) :truncate 10 :face 'marginalia-type)
-     ((agent-shell-vertico--model-name buf) :truncate 20 :face 'marginalia-value)
-     ((agent-shell-vertico--mode-name buf) :truncate 15 :face 'marginalia-mode)
-     ((agent-shell-vertico--title buf) :truncate 30 :face 'marginalia-documentation)
-     ((agent-shell-vertico--path buf) :truncate -0.5 :face 'marginalia-file-name))))
+    (agent-shell-vertico--suffix buf)))
 
 (with-eval-after-load 'nerd-icons-completion
   (cl-defmethod nerd-icons-completion-get-icon (cand (_cat (eql agent-shell-session)))
@@ -560,14 +559,17 @@ SECTION is an `agent-shell-ui-section' value such as `label-left',
 Break on a word boundary where possible, marking truncation with a
 trailing ellipsis; fall back to a hard cut for a single long word."
   (let ((width agent-shell-vertico-imenu-name-width))
-    (if (<= (length string) width)
+    (if (<= (string-width string) width)
         string
-      (let* ((cut (substring string 0 width))
+      ;; Measured in columns, not characters: a title of CJK text occupies
+      ;; two columns per character and would otherwise be left at twice the
+      ;; width the option promises.
+      (let* ((cut (truncate-string-to-width string width 0 nil "…"))
              (space (string-match "[ \t][^ \t]*\\'" cut)))
-        (concat (string-trim-right (if (and space (> space (/ width 2)))
-                                       (substring cut 0 space)
-                                     cut))
-                "…")))))
+        (if (and space
+                 (> (string-width (substring cut 0 space)) (/ width 2)))
+            (concat (string-trim-right (substring cut 0 space)) "…")
+          cut)))))
 
 (defun agent-shell-vertico--imenu-candidate (name status)
   "Return NAME, truncated and stamped with its STATUS for annotation.
@@ -699,17 +701,21 @@ plans), and Response (the agent's messages).  Suitable as an
 
 (defun agent-shell-vertico--imenu-annotation (candidate)
   "Marginalia annotator for an `imenu' CANDIDATE created by this package.
-Shows the item's status label (e.g. a tool's completion state).  Returns
-nil for imenu candidates from other modes, so the annotator can be
-registered against the shared `imenu' category without affecting
-unrelated buffers."
-  (when-let* ((pos (text-property-not-all 0 (length candidate)
-                                          'agent-shell-vertico--imenu nil
-                                          candidate))
-              (status (get-text-property pos 'agent-shell-vertico--imenu
-                                         candidate)))
-    (marginalia--fields
-     (status :truncate 30 :face 'marginalia-type))))
+Shows the item's status label (e.g. a tool's completion state).
+
+This annotator is registered against the shared `imenu' category, and
+marginalia consults only the first annotator registered for a category.
+Candidates from other modes are therefore passed to
+`marginalia-annotate-imenu', which would otherwise be shadowed and every
+other mode's imenu would lose its annotations."
+  (if-let* ((pos (text-property-not-all 0 (length candidate)
+                                        'agent-shell-vertico--imenu nil
+                                        candidate))
+            (status (get-text-property pos 'agent-shell-vertico--imenu
+                                       candidate)))
+      (marginalia--fields
+       (status :truncate 30 :face 'marginalia-type))
+    (marginalia-annotate-imenu candidate)))
 
 (defun agent-shell-vertico--imenu-setup ()
   "Install the agent-shell imenu index in the current buffer."
