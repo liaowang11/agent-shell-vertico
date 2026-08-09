@@ -3483,6 +3483,30 @@ resuming a Pi transcript with Claude Code makes the session load fail."
                       (nth 1 agent-shell-vertico-tests--resume-configs))))
       (kill-buffer shell-buffer))))
 
+(ert-deftest agent-shell-vertico-transcript-config-for-agent-resolves-makers ()
+  "Entries of `agent-shell-agent-configs' may be config-making functions.
+That is agent-shell's own default value, so a transcript naming an agent
+has to resolve entries before reading their fields."
+  (let ((agent-shell-agent-configs
+         (list (lambda ()
+                 '((:mode-line-name . "Claude Code")
+                   (:buffer-name . "Claude Agent"))))))
+    (should (equal (map-elt (agent-shell-vertico-transcript--config-for-agent
+                             "Claude Code")
+                            :buffer-name)
+                   "Claude Agent"))))
+
+(ert-deftest agent-shell-vertico-transcript-config-for-agent-resolves-function ()
+  "`agent-shell-agent-configs' may itself be a function returning the list."
+  (let ((agent-shell-agent-configs
+         (lambda ()
+           (list '((:mode-line-name . "Codex")
+                   (:buffer-name . "Codex Agent"))))))
+    (should (equal (map-elt (agent-shell-vertico-transcript--config-for-agent
+                             "Codex")
+                            :buffer-name)
+                   "Codex Agent"))))
+
 (ert-deftest agent-shell-vertico-transcript-resume-prefers-configured-agent ()
   "Fall back to the preferred agent when the transcript agent is unknown."
   (let* ((record
@@ -3741,6 +3765,71 @@ Polymode Markdown buffer unable to fontify."
      "**Agent:** Codex\n\n---\n"
      "new-id")
     "**Agent:** Codex\n\n**Session ID:** new-id\n---\n")))
+
+(defun agent-shell-vertico-tests--header-value (text label)
+  "Return LABEL's header value as the parser reads it from transcript TEXT."
+  (with-temp-buffer
+    (insert text)
+    (agent-shell-vertico-transcript--header-value label)))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-ignores-quoted-header ()
+  "A body that quotes a session header must not be rewritten.
+Agents echo transcripts and files verbatim, so the quoted line is not
+the header and rewriting it would leave the real header unset."
+  (let* ((text (concat
+                "**Agent:** Codex\n\n---\n\n"
+                "## Agent\n\n"
+                "```\n"
+                "**Session ID:** quoted-id\n"
+                "```\n"))
+         (result (agent-shell-vertico-transcript--set-session-id-in-text
+                  text "new-id")))
+    (should (string-match-p "\\*\\*Session ID:\\*\\* quoted-id" result))
+    (should (equal (agent-shell-vertico-tests--header-value result "Session ID")
+                   "new-id"))))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-without-separator ()
+  "Transcripts with no `---' separator keep the ID inside their header.
+The header ends at the first speaker heading, and an ID written past it
+could never be read back."
+  (let* ((text (concat
+                "**Agent:** Codex\n"
+                "**Working Directory:** /work/project\n\n"
+                "## User\n\nhello\n"))
+         (result (agent-shell-vertico-transcript--set-session-id-in-text
+                  text "new-id")))
+    (should (equal (agent-shell-vertico-tests--header-value result "Session ID")
+                   "new-id"))))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-saves-whole-file ()
+  "The command writes the whole transcript even from a narrowed buffer.
+`erase-buffer' ignores the restriction, so reading the text narrowed
+would save the accessible region alone and drop the rest of the file."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (text (concat
+               "**Agent:** Codex\n"
+               "**Working Directory:** /work/project\n\n"
+               "---\n\n"
+               "## User\n\nhello\n"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert text))
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (narrow-to-region (point-min) (point-min))
+            (agent-shell-vertico-transcript-set-session-id "new-id"))
+          (let ((saved (with-temp-buffer
+                         (insert-file-contents file)
+                         (buffer-string))))
+            (should (string-match-p "^## User$" saved))
+            (should (equal (agent-shell-vertico-tests--header-value
+                            saved "Session ID")
+                           "new-id"))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
 
 (ert-deftest agent-shell-vertico-transcript-diagnostics-find-metadata-issues ()
   (let ((records

@@ -113,9 +113,21 @@
         agent-shell-test-last-args args)
   (or agent-shell-test-start-buffer (current-buffer)))
 
+(defun agent-shell--resolved-agent-configs ()
+  "Return `agent-shell-agent-configs' with maker entries realized.
+Mirrors the real accessor: the variable may be a function returning the
+list, and each entry may be a function returning a configuration."
+  (mapcar (lambda (entry)
+            (if (functionp entry)
+                (funcall entry)
+              entry))
+          (if (functionp agent-shell-agent-configs)
+              (funcall agent-shell-agent-configs)
+            agent-shell-agent-configs)))
+
 (defun agent-shell--auto-preferred-config ()
   "Return the stubbed preferred config."
-  (car agent-shell-agent-configs))
+  (car (agent-shell--resolved-agent-configs)))
 
 (cl-defun agent-shell-select-config (&key _prompt)
   "Return the stubbed selected config."

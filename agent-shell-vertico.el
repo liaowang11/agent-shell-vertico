@@ -30,6 +30,7 @@
 (declare-function agent-shell--current-model-id "agent-shell-config")
 (declare-function agent-shell--get-available-models "agent-shell-config")
 (declare-function agent-shell--get-available-modes "agent-shell")
+(declare-function agent-shell--resolved-agent-configs "agent-shell" ())
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-attention--clear-buffer "agent-shell-attention")
@@ -290,7 +291,7 @@ BUFFER unchanged."
            (replace-regexp-in-string " Agent @ .*$" "" (buffer-name))))
       (seq-find (lambda (config)
                   (string= buffer-name-prefix (map-elt config :buffer-name)))
-                agent-shell-agent-configs))))
+                (agent-shell--resolved-agent-configs)))))
 
 (defun agent-shell-vertico--clear-attention (shell-buffer)
   "Clear `agent-shell-attention' pending state for SHELL-BUFFER.

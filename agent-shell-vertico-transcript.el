@@ -37,6 +37,7 @@
 (defvar projectile-mode)
 
 (declare-function agent-shell--auto-preferred-config "agent-shell" ())
+(declare-function agent-shell--resolved-agent-configs "agent-shell" ())
 (declare-function agent-shell--display-viewport-when-ready
                   "agent-shell" (&rest arguments))
 (declare-function agent-shell--start "agent-shell" (&rest arguments))
@@ -941,14 +942,18 @@ that is how they are reached in Evil states."
   "Return the `agent-shell' configuration named AGENT, or nil.
 
 Transcript headers record the agent's `:mode-line-name', falling back
-to its `:buffer-name' when the configuration sets no mode line name."
+to its `:buffer-name' when the configuration sets no mode line name.
+
+Entries are read through `agent-shell--resolved-agent-configs' because
+`agent-shell-agent-configs' holds config-making functions by default,
+and may itself be a function returning the list."
   (when agent
     (seq-find
      (lambda (config)
        (member agent
                (list (map-elt config :mode-line-name)
                      (map-elt config :buffer-name))))
-     agent-shell-agent-configs)))
+     (agent-shell--resolved-agent-configs))))
 
 (defun agent-shell-vertico-transcript--resume-session (session-id config)
   "Resume SESSION-ID with CONFIG, the agent that issued it.
@@ -1174,23 +1179,23 @@ SPEAKERS is a list of heading names such as (\"User\")."
 
 (defun agent-shell-vertico-transcript--set-session-id-in-text
     (text session-id)
-  "Return TEXT with its transcript header set to SESSION-ID."
+  "Return TEXT with its transcript header set to SESSION-ID.
+
+Both the search and the insertion stop at `--header-end', as reading a
+header field does.  A body quotes header fields verbatim whenever an
+agent echoes a file or an older transcript, and a field written past the
+header is one the parser can never read back."
   (with-temp-buffer
     (insert text)
-    (goto-char (point-min))
-    (if
-        (re-search-forward
-         "^\\*\\*Session\\(?: ID\\)?:\\*\\*[ \t]+.*$"
-         nil t)
-        (replace-match
-         (format "**Session ID:** %s" session-id)
-         t t)
+    (let ((header-end (agent-shell-vertico-transcript--header-end)))
       (goto-char (point-min))
-      (if (re-search-forward "^---[ \t]*$" nil t)
-          (progn
-            (beginning-of-line)
-            (insert (format "**Session ID:** %s\n" session-id)))
-        (goto-char (point-max))
+      (if (re-search-forward
+           "^\\*\\*Session\\(?: ID\\)?:\\*\\*[ \t]+.*$"
+           header-end t)
+          (replace-match
+           (format "**Session ID:** %s" session-id)
+           t t)
+        (goto-char header-end)
         (unless (bolp)
           (insert "\n"))
         (insert (format "**Session ID:** %s\n" session-id))))
@@ -1221,18 +1226,23 @@ SPEAKERS is a list of heading names such as (\"User\")."
           (or (find-buffer-visiting file)
               (find-file-noselect file))))
     (with-current-buffer buffer
-      (let ((inhibit-read-only t)
-            (point (point))
-            (text
-             (buffer-substring-no-properties
-              (point-min) (point-max))))
-        (erase-buffer)
-        (insert
-         (agent-shell-vertico-transcript--set-session-id-in-text
-          text
-          session-id))
-        (goto-char (min point (point-max)))
-        (save-buffer))
+      ;; `erase-buffer' empties the whole buffer whatever the restriction,
+      ;; so a narrowed transcript would be saved as its accessible region
+      ;; alone unless the text is read and written widened.
+      (save-restriction
+        (widen)
+        (let ((inhibit-read-only t)
+              (point (point))
+              (text
+               (buffer-substring-no-properties
+                (point-min) (point-max))))
+          (erase-buffer)
+          (insert
+           (agent-shell-vertico-transcript--set-session-id-in-text
+            text
+            session-id))
+          (goto-char (min point (point-max)))
+          (save-buffer)))
       (when agent-shell-vertico-transcript--record
         (setf
          (agent-shell-vertico-transcript-record-session-id
