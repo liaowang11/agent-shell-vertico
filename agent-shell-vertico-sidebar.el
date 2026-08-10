@@ -927,7 +927,10 @@ key report that there is no session at point."
 (defun agent-shell-vertico-sidebar--view-anchor
     (position node-positions &optional window)
   "Capture a simple view anchor at POSITION among NODE-POSITIONS.
-When WINDOW is non-nil, also record point's visual row relative to its start."
+When WINDOW is non-nil, also record the visual row of POSITION's line
+relative to its start.  The row measures to the line beginning because
+restoring resolves the anchor to a line beginning; a mid-line POSITION
+would count its partial line as one extra row."
   (save-excursion
     (goto-char position)
     (let* ((node (agent-shell-vertico-sidebar--point-node))
@@ -939,7 +942,9 @@ When WINDOW is non-nil, also record point's visual row relative to its start."
             :index index
             :screen-row
             (when window
-              (count-screen-lines (window-start window) position nil window))))))
+              (count-screen-lines (window-start window)
+                                  (line-beginning-position)
+                                  nil window))))))
 
 (defun agent-shell-vertico-sidebar--anchor-position (anchor node-positions)
   "Resolve ANCHOR against NODE-POSITIONS after a render."

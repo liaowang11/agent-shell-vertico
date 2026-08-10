@@ -1309,6 +1309,59 @@ sidebar buffer rather than whatever buffer the user called it from."
                       screen-row))))))
         (kill-buffer other)))))
 
+(ert-deftest agent-shell-vertico-sidebar-refresh-anchors-mid-line-window-point ()
+  "A window point in the middle of a line keeps its visual row on refresh.
+The captured row must measure to the line beginning, or the partial last
+line counts as one extra row and every refresh scrolls the window up."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((aardvark "Codex Agent @ aardvark" "/work/aardvark/"
+                 '((:session . ((:id . "aa") (:title . "Aardvark")))))
+       (alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-right)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                ;; Scroll aardvark above the window start so a one-line
+                ;; drift has room to move the start upward.
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session alpha)))
+                (set-window-start sidebar-window (point) t)
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session gamma)))
+                (let ((screen-row
+                       (count-screen-lines
+                        (window-start sidebar-window) (point)
+                        nil sidebar-window)))
+                  (set-window-point sidebar-window (+ (point) 3))
+                  (agent-shell-vertico-sidebar--render)
+                  (should
+                   (eq (with-selected-window sidebar-window
+                         (agent-shell-vertico-sidebar--node-at-point))
+                       gamma))
+                  (should
+                   (= (count-screen-lines
+                       (window-start sidebar-window)
+                       (window-point sidebar-window)
+                       nil sidebar-window)
+                      screen-row))))))
+        (kill-buffer other)))))
+
 (ert-deftest agent-shell-vertico-sidebar-refresh-falls-back-to-row-index ()
   "Removing the selected session keeps selection at its former list index."
   (agent-shell-vertico-tests--with-session-buffers
