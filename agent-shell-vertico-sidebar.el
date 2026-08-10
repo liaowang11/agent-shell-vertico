@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.60.2"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -911,6 +911,63 @@ key report that there is no session at point."
         (goto-char position))
       position)))
 
+(defun agent-shell-vertico-sidebar--node-positions ()
+  "Return selectable nodes and their first buffer positions in display order."
+  (save-excursion
+    (goto-char (point-min))
+    (let (last-node positions)
+      (while (not (eobp))
+        (let ((node (agent-shell-vertico-sidebar--point-node)))
+          (when (and (cdr node) (not (equal node last-node)))
+            (push (cons node (point)) positions))
+          (setq last-node node))
+        (forward-line 1))
+      (nreverse positions))))
+
+(defun agent-shell-vertico-sidebar--view-anchor
+    (position node-positions &optional window)
+  "Capture a simple view anchor at POSITION among NODE-POSITIONS.
+When WINDOW is non-nil, also record point's visual row relative to its start."
+  (save-excursion
+    (goto-char position)
+    (let* ((node (agent-shell-vertico-sidebar--point-node))
+           (index (or (cl-position node node-positions
+                                   :key #'car :test #'equal)
+                      0)))
+      (list :window window
+            :node node
+            :index index
+            :screen-row
+            (when window
+              (count-screen-lines (window-start window) position nil window))))))
+
+(defun agent-shell-vertico-sidebar--anchor-position (anchor node-positions)
+  "Resolve ANCHOR against NODE-POSITIONS after a render."
+  (or (cdr (assoc (plist-get anchor :node) node-positions))
+      (when node-positions
+        (cdr (nth (min (plist-get anchor :index)
+                       (1- (length node-positions)))
+                  node-positions)))
+      (point-min)))
+
+(defun agent-shell-vertico-sidebar--restore-window-anchor
+    (anchor node-positions)
+  "Restore one displayed window from ANCHOR using NODE-POSITIONS."
+  (let ((window (plist-get anchor :window)))
+    (when (and (window-live-p window)
+               (eq (window-buffer window) (current-buffer)))
+      (let* ((position
+              (agent-shell-vertico-sidebar--anchor-position
+               anchor node-positions))
+             (screen-row (or (plist-get anchor :screen-row) 0))
+             (start
+              (save-excursion
+                (goto-char position)
+                (vertical-motion (- screen-row) window)
+                (point))))
+        (set-window-start window start t)
+        (set-window-point window position)))))
+
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
   "Return rendered session lines for BUFFER at WIDTH under ROOT."
   (let* ((content-width
@@ -1072,6 +1129,8 @@ a column of slack rather than pushing its count past the window edge."
 
 (defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
+  (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+    (user-error "The named sidebar buffer is not an agent-shell sidebar"))
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
@@ -1083,7 +1142,17 @@ a column of slack rather than pushing its count past the window edge."
                                                           'visible)))
                       (window-body-width window))
                     agent-shell-vertico-sidebar-width))
-         (point-node (agent-shell-vertico-sidebar--point-node))
+         ;; `erase-buffer' invalidates raw positions.  Keep only the stable
+         ;; node, its ordinal fallback, and each window's relative screen row.
+         (node-positions (agent-shell-vertico-sidebar--node-positions))
+         (point-anchor
+          (agent-shell-vertico-sidebar--view-anchor (point) node-positions))
+         (window-anchors
+          (mapcar
+           (lambda (window)
+             (agent-shell-vertico-sidebar--view-anchor
+              (window-point window) node-positions window))
+           (get-buffer-window-list (current-buffer) nil t)))
          (inhibit-read-only t))
     (dolist (snapshot snapshots)
       (puthash (plist-get snapshot :buffer) snapshot snapshot-table))
@@ -1117,10 +1186,14 @@ a column of slack rather than pushing its count past the window edge."
                   buffer (agent-shell-vertico-sidebar--project-root buffer)
                   width)
                  'session buffer))))
-          (goto-char (point-min))
-          (when (and point-node
-                     (agent-shell-vertico-sidebar--goto-node point-node))
-            (beginning-of-line))
+          (let ((node-positions
+                 (agent-shell-vertico-sidebar--node-positions)))
+            (goto-char
+             (agent-shell-vertico-sidebar--anchor-position
+              point-anchor node-positions))
+            (dolist (anchor window-anchors)
+              (agent-shell-vertico-sidebar--restore-window-anchor
+               anchor node-positions)))
           (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
       (setq agent-shell-vertico-sidebar--render-snapshots nil))))
 
@@ -1155,7 +1228,12 @@ a column of slack rather than pushing its count past the window edge."
 
 (defun agent-shell-vertico-sidebar--sidebar-buffer ()
   "Return the sidebar buffer, creating it when necessary."
-  (get-buffer-create "*Agent Shell Sessions*"))
+  (if-let ((buffer (get-buffer "*Agent Shell Sessions*")))
+      (if (with-current-buffer buffer
+            (derived-mode-p 'agent-shell-vertico-sidebar-mode))
+          buffer
+        (user-error "The named sidebar buffer is not an agent-shell sidebar"))
+    (get-buffer-create "*Agent Shell Sessions*")))
 
 (defun agent-shell-vertico-sidebar--sidebar-visible-p (&optional buffer)
   "Return non-nil when BUFFER, or the named sidebar, is visible."

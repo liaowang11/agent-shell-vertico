@@ -37,6 +37,33 @@
 (defvar persp-activated-functions)
 (defvar persp-before-deactivate-functions)
 
+(defun agent-shell-vertico-tests--package-requirement (file dependency)
+  "Return DEPENDENCY's declared version from FILE's package header."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward
+           (format "(%s \"\\([^\"]+\\)\")" (regexp-quote dependency))
+           nil t)
+      (match-string 1))))
+
+(ert-deftest agent-shell-vertico-package-headers-require-supported-apis ()
+  "Package metadata must not promise dependency versions that fail to load."
+  (dolist (spec '(("agent-shell-vertico.el" . "0.60.2")
+                  ("agent-shell-vertico-sidebar.el" . "0.60.2")
+                  ("agent-shell-vertico-transcript.el" . "0.63.5")
+                  ("agent-shell-vertico-consult.el" . "0.63.5")))
+    (should
+     (equal
+      (agent-shell-vertico-tests--package-requirement (car spec) "agent-shell")
+      (cdr spec))))
+  (dolist (file '("agent-shell-vertico.el"
+                  "agent-shell-vertico-transcript.el"
+                  "agent-shell-vertico-consult.el"))
+    (should (equal
+             (agent-shell-vertico-tests--package-requirement file "marginalia")
+             "2.1"))))
+
 (defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
   "Evaluate BODY in a freshly initialized named sidebar buffer."
   (declare (indent 0) (debug t))
@@ -1160,6 +1187,26 @@ sidebar buffer rather than whatever buffer the user called it from."
           (should (equal (buffer-string) "user content")))
       (kill-buffer other))))
 
+(ert-deftest agent-shell-vertico-sidebar-cycle-rejects-name-collision ()
+  "A foreign buffer with the sidebar name must never be erased."
+  (let ((other (generate-new-buffer " *agent-shell-vertico-other*"))
+        (collision (get-buffer-create "*Agent Shell Sessions*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer collision
+            (fundamental-mode)
+            (insert "draft content"))
+          (with-current-buffer other
+            (should-error (agent-shell-vertico-sidebar-cycle-global-view)
+                          :type 'user-error)
+            (should-error (agent-shell-vertico-sidebar-toggle)
+                          :type 'user-error))
+          (with-current-buffer collision
+            (should (derived-mode-p 'fundamental-mode))
+            (should (equal (buffer-string) "draft content"))))
+      (kill-buffer other)
+      (kill-buffer collision))))
+
 (ert-deftest agent-shell-vertico-sidebar-cycle-global-view-renders-the-sidebar ()
   "Cycling from another buffer folds and renders the sidebar itself."
   (agent-shell-vertico-tests--with-session-buffers
@@ -1180,6 +1227,120 @@ sidebar buffer rather than whatever buffer the user called it from."
                        "Review alpha"
                        (with-current-buffer "*Agent Shell Sessions*"
                          (buffer-string))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-cycle-preserves-window-point ()
+  "Cycling elsewhere keeps the visible sidebar window on the same session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((other-window (selected-window))
+                  (sidebar-window (split-window-right)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session beta)))
+                (set-window-buffer sidebar-window (current-buffer))
+                (set-window-point sidebar-window (point))
+                (select-window other-window)
+                (agent-shell-vertico-sidebar-cycle-global-view)
+                (with-selected-window sidebar-window
+                  (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                              beta))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-refresh-preserves-relative-screen-row ()
+  "A session remains at the same visual row when another sorts above it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((aardvark "Codex Agent @ aardvark" "/work/aardvark/"
+                 '((:session . ((:id . "aa") (:title . "Aardvark")))))
+       (alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-below -4)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session beta)))
+                (set-window-start sidebar-window (point-min) t)
+                (set-window-point sidebar-window (point))
+                (let ((screen-row
+                       (count-screen-lines
+                        (window-start sidebar-window)
+                        (window-point sidebar-window)
+                        nil sidebar-window)))
+                  (setq agent-shell-test-buffers
+                        (list aardvark alpha beta gamma))
+                  (agent-shell-vertico-sidebar--render)
+                  (should
+                   (eq (with-selected-window sidebar-window
+                         (agent-shell-vertico-sidebar--node-at-point))
+                       beta))
+                  (should
+                   (= (count-screen-lines
+                       (window-start sidebar-window)
+                       (window-point sidebar-window)
+                       nil sidebar-window)
+                      screen-row))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-refresh-falls-back-to-row-index ()
+  "Removing the selected session keeps selection at its former list index."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-right)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session beta)))
+                (set-window-point sidebar-window (point))
+                (setq agent-shell-test-buffers (list alpha gamma))
+                (agent-shell-vertico-sidebar--render)
+                (should
+                 (eq (with-selected-window sidebar-window
+                       (agent-shell-vertico-sidebar--node-at-point))
+                     gamma)))))
         (kill-buffer other)))))
 
 (ert-deftest agent-shell-vertico-sidebar-hidden-events-do-not-schedule-refresh ()
@@ -2505,6 +2666,25 @@ so returning nil here would leave every other mode's imenu unannotated."
       (should (stringp annotation))
       (should (string-match-p "completed read" annotation)))))
 
+(ert-deftest agent-shell-vertico-imenu-preserves-configured-annotator ()
+  "Foreign imenu candidates retain the annotator active before setup."
+  (let ((marginalia-annotators
+         '((imenu agent-shell-vertico-tests--custom-imenu builtin none)))
+        (agent-shell-vertico--imenu-fallback-annotator nil))
+    (cl-letf (((symbol-function 'agent-shell-vertico-tests--custom-imenu)
+               (lambda (candidate) (concat " custom:" candidate))))
+      ;; Repeated setup must neither duplicate the category nor capture the
+      ;; wrapper itself as its fallback.
+      (agent-shell-vertico-setup-imenu)
+      (agent-shell-vertico-setup-imenu)
+      (should (= 1 (length (seq-filter
+                            (lambda (entry) (eq (car entry) 'imenu))
+                            marginalia-annotators))))
+      (should (eq (cadr (assq 'imenu marginalia-annotators))
+                  #'agent-shell-vertico--imenu-annotation))
+      (should (equal (agent-shell-vertico--imenu-annotation "foreign")
+                     " custom:foreign")))))
+
 (ert-deftest agent-shell-vertico-imenu-setup-installs-index-function ()
   (with-temp-buffer
     (agent-shell-vertico--imenu-setup)
@@ -3120,6 +3300,59 @@ The annotation is cut there rather than the title shrinking to nothing."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-records-keep-local-stale-and-subdir ()
+  "A project-local store identifies its project despite header path drift."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (expand-file-name ".agent-shell/transcripts" root))
+         (subdir (expand-file-name "packages/api" root))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (make-directory transcript-dir t)
+          (dolist (spec `(("stale.md" "/gone/old-machine" "stale")
+                          ("subdir.md" ,subdir "subdir")))
+            (with-temp-file (expand-file-name (car spec) transcript-dir)
+              (insert (format "**Working Directory:** %s\n" (cadr spec))
+                      (format "**Session ID:** %s\n\n---\n\n" (caddr spec))
+                      "## User\n\nhello\n")))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should (= (length records) 2))
+            (should (equal
+                     (sort (mapcar
+                            #'agent-shell-vertico-transcript-record-session-id
+                            records)
+                           #'string<)
+                     '("stale" "subdir")))))
+      (delete-directory root t))))
+
+(ert-deftest agent-shell-vertico-transcript-search-maps-project-subdirectory ()
+  "Search assigns a shared-store transcript to its most specific project."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (nested-root (expand-file-name "packages/api" root))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (file (expand-file-name "subdir.md" transcript-dir))
+         (working-directory (expand-file-name "services/auth" nested-root))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (make-directory nested-root t)
+          (with-temp-file file
+            (insert (format "**Working Directory:** %s\n" working-directory)
+                    "**Session ID:** subdir\n\n---\n\n"
+                    "## User\n\nneedle\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--record-for-match
+                  file '(:count 1 :line 6 :text "needle")
+                  (list root nested-root))))
+            (should record)
+            (should
+             (agent-shell-vertico-transcript--same-directory-p
+              (agent-shell-vertico-transcript-record-project-root record)
+              nested-root))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-current-record-parses-visited-file ()
   "A visited transcript with no record parses itself and takes its project.
 The working directory in the header is the project the transcript
@@ -3215,9 +3448,9 @@ at the first such match."
 
 (ert-deftest agent-shell-vertico-transcript-diagnostics-count-unlisted-files ()
   "The doctor counts transcripts the project filter drops.
-A stale or subdirectory Working Directory header hides a transcript from
-browse, search and resume alike, and those are exactly the files the
-doctor exists to report, so it cannot read them through the same filter."
+A shared store cannot assign a stale Working Directory header to a known
+project, and the doctor cannot read those files through the same filter
+that omits them."
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
          (transcript-dir (make-temp-file "agent-shell-vertico-store-" t))
          (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
@@ -3244,6 +3477,32 @@ doctor exists to report, so it cannot read them through the same filter."
               (lambda (issue) (string-match-p "not listed" issue))
               (agent-shell-vertico-transcript--diagnostic-issues
                records roots)))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-diagnostics-describe-missing-header ()
+  "An unlisted shared-store file need not have a mismatched header."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-store-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "missing.md" transcript-dir)
+            (insert "**Session ID:** missing-working-directory\n\n---\n\n"
+                    "## User\n\nhello\n"))
+          (let ((issues
+                 (agent-shell-vertico-transcript--diagnostic-issues
+                  nil (list root))))
+            (should
+             (seq-find
+              (lambda (issue)
+                (string-match-p "missing or names another directory" issue))
+              issues))
+            (should-not
+             (seq-find
+              (lambda (issue)
+                (string-match-p "header names another directory" issue))
+              issues))))
       (delete-directory root t)
       (delete-directory transcript-dir t))))
 
@@ -4323,6 +4582,21 @@ could never be read back."
                   text "new-id")))
     (should (equal (agent-shell-vertico-tests--header-value result "Session ID")
                    "new-id"))))
+
+(ert-deftest agent-shell-vertico-transcript-header-stops-before-body-separator ()
+  "A body horizontal rule must not extend a separator-less header."
+  (let* ((text (concat
+                "**Agent:** Codex\n\n"
+                "## User\n\n"
+                "Quoted field:\n"
+                "**Session ID:** body-id\n\n"
+                "---\n\nMore body\n"))
+         (result (agent-shell-vertico-transcript--set-session-id-in-text
+                  text "new-id")))
+    (should (equal (agent-shell-vertico-tests--header-value result "Session ID")
+                   "new-id"))
+    (should (string-match-p
+             "^\\*\\*Session ID:\\*\\* body-id$" result))))
 
 (ert-deftest agent-shell-vertico-transcript-set-session-id-saves-whole-file ()
   "The command writes the whole transcript even from a narrowed buffer.

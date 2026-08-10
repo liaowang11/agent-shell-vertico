@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0") (consult "2.0") (marginalia "1.0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.63.5") (consult "2.0") (marginalia "2.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 

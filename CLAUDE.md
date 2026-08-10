@@ -6,19 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An Emacs Lisp package that adds a Vertico/`completing-read`-friendly session
 switcher for [`agent-shell`](https://github.com/xenodium/agent-shell) buffers,
-plus an Embark action map for controlling the selected session. The package
-itself ships no UI — it leans on the user's existing Vertico/Marginalia/Embark
-stack.
+an Embark action map for controlling the selected session, a persistent
+sidebar, and transcript browsing/search interfaces. The completion commands
+lean on the user's existing Vertico/Marginalia/Embark stack.
 
-Four modules, each requiring the ones above it:
+Four modules form a small dependency graph:
 
 - `agent-shell-vertico.el` — session completion table, annotations, Embark
   actions, and the conversation imenu index.
 - `agent-shell-vertico-sidebar.el` — a persistent side window listing live
-  sessions, driven by `agent-shell` event subscriptions.
+  sessions, driven by `agent-shell` event subscriptions; requires the core.
 - `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
-  Markdown transcripts `agent-shell` writes.
-- `agent-shell-vertico-consult.el` — Consult sources over the transcript store.
+  Markdown transcripts `agent-shell` writes; requires the core independently
+  of the sidebar.
+- `agent-shell-vertico-consult.el` — Consult sources over the transcript store;
+  requires the transcript module, not the sidebar.
 
 ## Commands
 
@@ -60,14 +62,15 @@ real package is already loaded. Session-buffer fixtures also suppress
 
 ## Architecture
 
-**External dependency, stubbed in tests.** The real `agent-shell`,
-`agent-shell-viewport`, and `nerd-icons-completion` are not present in this
-repo. `tests/support/agent-shell.el` and `tests/support/marginalia.el` are
-hand-written stubs that record the last command/buffer/args into
-`agent-shell-test-*` dynamic variables. Tests assert against those globals
-rather than real side effects. When you add a feature that calls a new
-`agent-shell-*` function, you must add a matching stub to the support file or
-the test load will fail.
+**External dependencies, stubbed in tests.** The real `agent-shell`,
+`agent-shell-viewport`, Marginalia, and Consult packages are not loaded by the
+test suite. `tests/support/agent-shell.el`, `tests/support/marginalia.el`, and
+`tests/support/consult.el` are hand-written stubs. The agent-shell stub records
+the last command/buffer/args into `agent-shell-test-*` dynamic variables, and
+tests assert against those globals rather than real side effects. When you add
+a feature that calls a new dependency API, add a matching realistic stub or
+the test load or compilation will fail. Optional `nerd-icons-completion`
+integration is exercised only when that package is present.
 
 **Reading session state.** Each live `agent-shell` buffer holds a buffer-local
 `agent-shell--state` — a nested alist accessed with `map`/`map-nested-elt`. The

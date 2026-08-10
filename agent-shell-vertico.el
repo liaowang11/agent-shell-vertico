@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0") (marginalia "1.0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.60.2") (marginalia "2.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -75,6 +75,10 @@ so the ellipsis stays visible and item annotations are not crowded."
 
 (defvar agent-shell-vertico-history nil
   "Minibuffer history for `agent-shell-vertico' commands.")
+
+(defvar agent-shell-vertico--imenu-fallback-annotator
+  #'marginalia-annotate-imenu
+  "Annotator used for imenu candidates not created by this package.")
 
 (defvar-keymap agent-shell-vertico-embark-map
   :doc "Embark actions for `agent-shell-vertico' sessions."
@@ -715,7 +719,11 @@ other mode's imenu would lose its annotations."
                                        candidate)))
       (marginalia--fields
        (status :truncate 30 :face 'marginalia-type))
-    (marginalia-annotate-imenu candidate)))
+    (pcase agent-shell-vertico--imenu-fallback-annotator
+      ('builtin (marginalia-annotate-imenu candidate))
+      ('none nil)
+      ((and annotator (pred functionp)) (funcall annotator candidate))
+      (_ (marginalia-annotate-imenu candidate)))))
 
 (defun agent-shell-vertico--imenu-setup ()
   "Install the agent-shell imenu index in the current buffer."
@@ -738,8 +746,19 @@ effect for buffers created afterwards."
   (add-hook 'agent-shell-mode-hook #'agent-shell-vertico--imenu-setup)
   (add-hook 'agent-shell-viewport-view-mode-hook
             #'agent-shell-vertico--imenu-setup)
-  (add-to-list 'marginalia-annotators
-               '(imenu agent-shell-vertico--imenu-annotation builtin none))
+  (if-let ((entry (assq 'imenu marginalia-annotators)))
+      (unless (eq (cadr entry) #'agent-shell-vertico--imenu-annotation)
+        (setq agent-shell-vertico--imenu-fallback-annotator (cadr entry))
+        (setq marginalia-annotators
+              (cons
+               (cons 'imenu
+                     (cons #'agent-shell-vertico--imenu-annotation
+                           (cdr entry)))
+               (seq-remove (lambda (item) (eq (car item) 'imenu))
+                           marginalia-annotators))))
+    (setq agent-shell-vertico--imenu-fallback-annotator 'builtin)
+    (push '(imenu agent-shell-vertico--imenu-annotation builtin none)
+          marginalia-annotators))
   (with-eval-after-load 'consult-imenu
     (dolist (mode '(agent-shell-mode agent-shell-viewport-view-mode))
       (add-to-list 'consult-imenu-config

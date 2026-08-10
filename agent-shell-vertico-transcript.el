@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0") (marginalia "1.0"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.63.5") (marginalia "2.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -144,15 +144,15 @@ when a transcript has none.  Bodies quote header fields verbatim
 whenever an agent echoes a file or an older transcript, so a search for
 a field has to stop here rather than pick a quoted line up."
   (save-excursion
-    (goto-char (point-min))
-    (cond
-     ((re-search-forward "^---[ \t]*$" nil t)
-      (match-beginning 0))
-     ((progn
-        (goto-char (point-min))
-        (re-search-forward "^## " nil t))
-      (match-beginning 0))
-     (t (point-max)))))
+    (let (separator speaker)
+      (goto-char (point-min))
+      (when (re-search-forward "^---[ \t]*$" nil t)
+        (setq separator (match-beginning 0)))
+      (goto-char (point-min))
+      (when (re-search-forward "^## " nil t)
+        (setq speaker (match-beginning 0)))
+      (min (or separator (point-max))
+           (or speaker (point-max))))))
 
 (defun agent-shell-vertico-transcript--header-value (label)
   "Return the current buffer's Markdown header value for LABEL."
@@ -226,14 +226,23 @@ a field has to stop here rather than pick a quoted line up."
 (defun agent-shell-vertico-transcript--record-in-project-p
     (record project-root transcript-directory)
   "Return non-nil when RECORD belongs to PROJECT-ROOT.
-TRANSCRIPT-DIRECTORY is used for old records without a working
-directory header."
-  (if-let* ((working-directory
-             (agent-shell-vertico-transcript-record-working-directory
-              record)))
-      (agent-shell-vertico-transcript--same-directory-p
-       working-directory project-root)
-    (file-in-directory-p transcript-directory project-root)))
+TRANSCRIPT-DIRECTORY identifies project-local stores.  Shared stores use
+the record's working directory to distinguish projects."
+  (let ((working-directory
+         (agent-shell-vertico-transcript-record-working-directory record)))
+    (or
+     ;; A project-local store is authoritative even when a transcript was
+     ;; written from a subdirectory or carries a path from another machine.
+     (agent-shell-vertico-transcript--same-directory-p
+      transcript-directory project-root)
+     (file-in-directory-p transcript-directory project-root)
+     ;; A shared store needs the header to disambiguate projects, but a
+     ;; working directory anywhere under the root still belongs to it.
+     (and working-directory
+          (or
+           (agent-shell-vertico-transcript--same-directory-p
+            working-directory project-root)
+           (file-in-directory-p working-directory project-root))))))
 
 (defun agent-shell-vertico-transcript--records-for-project (project-root)
   "Return transcript records belonging to PROJECT-ROOT, newest first."
@@ -367,11 +376,18 @@ Each value is a plist containing `:count', `:line', and `:text'."
    (when-let* ((working-directory
                 (agent-shell-vertico-transcript-record-working-directory
                  record)))
-     (seq-find
-      (lambda (root)
-        (agent-shell-vertico-transcript--same-directory-p
-         working-directory root))
-      project-roots))
+     (car
+      (seq-sort-by
+       (lambda (root)
+         (length (agent-shell-vertico-transcript--normalize-directory root)))
+       #'>
+       (seq-filter
+        (lambda (root)
+          (or
+           (agent-shell-vertico-transcript--same-directory-p
+            working-directory root)
+           (file-in-directory-p working-directory root)))
+        project-roots))))
    (seq-find
     (lambda (root)
       (file-in-directory-p
@@ -1432,11 +1448,11 @@ When PROJECT-ROOTS is nil, use all known local projects."
     (project-roots records)
   "Return how many transcripts under PROJECT-ROOTS are absent from RECORDS.
 
-A transcript is listed only when its Working Directory header names its
-project root, so one written on another machine, or from a subdirectory,
-is dropped by browse, search and resume alike.  Counting files rather
-than records is what makes those transcripts visible at all: reading
-them through the same filter that hides them would always report none."
+A transcript can remain unlisted when a shared store cannot map its
+missing or stale Working Directory header to a known project.  Counting
+files rather than records makes those transcripts visible to the doctor:
+reading them through the same filter that omits them would always report
+none."
   (let ((listed (make-hash-table :test #'equal))
         (count 0))
     (dolist (record records)
@@ -1504,8 +1520,8 @@ that RECORDS omits."
       (push
        (format
         (concat "%d transcript%s stored under a known project but not "
-                "listed; %s Working Directory header names another "
-                "directory")
+                "listed; %s Working Directory header is missing or "
+                "names another directory")
         unlisted
         (if (= unlisted 1) " is" "s are")
         (if (= unlisted 1) "its" "their"))
