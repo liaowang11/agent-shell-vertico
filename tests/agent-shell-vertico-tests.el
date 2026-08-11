@@ -1362,6 +1362,79 @@ line counts as one extra row and every refresh scrolls the window up."
                       screen-row))))))
         (kill-buffer other)))))
 
+(ert-deftest agent-shell-vertico-sidebar-toggle-details-preserves-subline ()
+  "Toggling details leaves point on a surviving line within the session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status project))
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-right)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (select-window sidebar-window)
+                (search-forward "⌂ beta")
+                (beginning-of-line)
+                (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+                (should (eq (agent-shell-vertico-sidebar--field-at-point)
+                            'project))
+                (set-window-start sidebar-window (point-min) t)
+                (let ((screen-row
+                       (count-screen-lines
+                        (window-start sidebar-window) (point)
+                        nil sidebar-window)))
+                  (agent-shell-vertico-sidebar-toggle-at-point)
+                  (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                              beta))
+                  (should (eq (agent-shell-vertico-sidebar--field-at-point)
+                              'project))
+                  (should
+                   (= (count-screen-lines
+                       (window-start sidebar-window) (point)
+                       nil sidebar-window)
+                      screen-row))
+                  (agent-shell-vertico-sidebar-toggle-at-point)
+                  (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                              beta))
+                  (should (eq (agent-shell-vertico-sidebar--field-at-point)
+                              'project))
+                  (should
+                   (= (count-screen-lines
+                       (window-start sidebar-window) (point)
+                       nil sidebar-window)
+                      screen-row))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-toggle-details-falls-back-to-title ()
+  "Collapsing a removed detail line leaves point on its session title."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Ready")
+        (beginning-of-line)
+        (agent-shell-vertico-sidebar-toggle-at-point)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        (should (looking-at-p ".*Alpha"))))))
+
 (ert-deftest agent-shell-vertico-sidebar-refresh-falls-back-to-row-index ()
   "Removing the selected session keeps selection at its former list index."
   (agent-shell-vertico-tests--with-session-buffers
