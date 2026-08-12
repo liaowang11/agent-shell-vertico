@@ -53,6 +53,18 @@
   :type 'integer
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-max-width-fraction 0.3
+  "Largest share of the frame's columns the sidebar may take.
+
+`agent-shell-vertico-sidebar-width' is what the sidebar asks for; on a
+frame too narrow for that many columns, this fraction caps it, down to a
+floor of 16 columns.  The cap also shrinks an already-open sidebar when
+its frame narrows, and never widens one, so a sidebar dragged narrower
+than the cap stays narrow.  Nil disables the cap."
+  :type '(choice (const :tag "No cap" nil)
+                 (float :tag "Fraction of the frame width"))
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-title-max-length 80
   "Maximum number of characters shown for a session title.
 
@@ -1221,15 +1233,57 @@ a column of slack rather than pushing its count past the window edge."
           (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
       (setq agent-shell-vertico-sidebar--render-snapshots nil))))
 
+(defun agent-shell-vertico-sidebar--clamp-width (width frame-width)
+  "Cap WIDTH to the configured share of FRAME-WIDTH's columns.
+The cap stops at 16 columns, below which the list is unreadable, and
+never returns more than WIDTH.  A nil
+`agent-shell-vertico-sidebar-max-width-fraction' returns WIDTH as is."
+  (if agent-shell-vertico-sidebar-max-width-fraction
+      (min width
+           (max 16
+                (floor (* agent-shell-vertico-sidebar-max-width-fraction
+                          frame-width))))
+    width))
+
+(defun agent-shell-vertico-sidebar--overwide-window-p (window)
+  "Return non-nil when side WINDOW exceeds its frame's column share.
+Only side windows count: the cap must never try to resize a normal
+window that happens to show the sidebar buffer."
+  (when (and agent-shell-vertico-sidebar-max-width-fraction
+             (window-parameter window 'window-side))
+    (> (window-total-width window)
+       (agent-shell-vertico-sidebar--clamp-width
+        (window-total-width window)
+        (frame-width (window-frame window))))))
+
+(defun agent-shell-vertico-sidebar--cap-window-width (window)
+  "Shrink side WINDOW to its frame's column share when it exceeds it.
+Width preservation is released around the resize and restored after it,
+so the pinned width follows the cap instead of fighting it."
+  (when (agent-shell-vertico-sidebar--overwide-window-p window)
+    (let ((cap (agent-shell-vertico-sidebar--clamp-width
+                (window-total-width window)
+                (frame-width (window-frame window)))))
+      (window-preserve-size window t nil)
+      (ignore-errors
+        (window-resize window (- cap (window-total-width window)) t))
+      (window-preserve-size window t t))))
+
 (defun agent-shell-vertico-sidebar--window-size-change (&optional frame)
-  "Coalesce a visible sidebar re-render after FRAME's windows resize."
+  "Coalesce a visible sidebar re-render after FRAME's windows resize.
+The idle callback also shrinks a sidebar left wider than its frame's
+column share, which happens when the frame narrows around a sidebar
+whose width is preserved."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (when-let ((window (get-buffer-window sidebar frame)))
       (with-current-buffer sidebar
         (let ((width (window-body-width window)))
           (when (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
-                     (not (equal width
-                                 agent-shell-vertico-sidebar--last-rendered-width))
+                     (or (not (equal
+                               width
+                               agent-shell-vertico-sidebar--last-rendered-width))
+                         (agent-shell-vertico-sidebar--overwide-window-p
+                          window))
                      (not (timerp agent-shell-vertico-sidebar--resize-timer)))
             (setq agent-shell-vertico-sidebar--resize-timer
                   (run-with-idle-timer
@@ -1239,6 +1293,8 @@ a column of slack rather than pushing its count past the window edge."
                        (with-current-buffer sidebar
                          (setq agent-shell-vertico-sidebar--resize-timer nil)
                          (when-let ((window (get-buffer-window sidebar frame)))
+                           (agent-shell-vertico-sidebar--cap-window-width
+                            window)
                            (let ((width (window-body-width window)))
                              (when (and
                                     (derived-mode-p
@@ -2009,11 +2065,6 @@ while normal and motion states get the same direct mnemonic commands."
   (agent-shell-vertico-sidebar--bind-evil-keys)
   (agent-shell-vertico-sidebar--render))
 
-(defun agent-shell-vertico-sidebar--display-width (&optional frame-width)
-  "Return the initial sidebar width for FRAME-WIDTH columns."
-  (min agent-shell-vertico-sidebar-width
-       (max 16 (/ (or frame-width (frame-width)) 3))))
-
 (defun agent-shell-vertico-sidebar--display-buffer ()
   "Display and return the sidebar window."
   (let* ((buffer (agent-shell-vertico-sidebar--sidebar-buffer))
@@ -2021,8 +2072,9 @@ while normal and motion states get the same direct mnemonic commands."
                   buffer
                   `((side . ,agent-shell-vertico-sidebar-side)
                     (slot . 0)
-                    (window-width
-                     . ,(agent-shell-vertico-sidebar--display-width))
+                    (window-width . ,(agent-shell-vertico-sidebar--clamp-width
+                                      agent-shell-vertico-sidebar-width
+                                      (frame-width)))
                     (preserve-size . (t . nil))
                     (window-parameters
                      . ((no-delete-other-windows . t)

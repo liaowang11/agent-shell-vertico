@@ -44,9 +44,11 @@ showing metadata for every session.  Each title can wrap within
 the narrow sidebar, up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
 The layout measures the current sidebar body width and reflows titles when the
-window is resized.  The configured sidebar width is a maximum.  On narrow
-frames the initial sidebar uses one third of the frame, with a 16-column
-minimum unless the configured maximum is lower.
+window is resized.  The configured sidebar width is a maximum: the window asks
+for `agent-shell-vertico-sidebar-width` columns but never takes more than the
+`agent-shell-vertico-sidebar-max-width-fraction` share of the frame, down to a
+floor of 16 columns.  A narrow frame therefore keeps most of its columns, and
+the cap shrinks the sidebar when the frame narrows without ever widening it.
 Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
 which expanded-session values are shown: `status`, `activity`, `project`,
 `model`, `mode`, and `last-user-message`.  Values are packed two per row; the
@@ -142,6 +144,7 @@ built-in `help-at-pt` support:
   :custom
   (agent-shell-vertico-sidebar-side 'left)
   (agent-shell-vertico-sidebar-width 40)
+  (agent-shell-vertico-sidebar-max-width-fraction 0.3)
   (agent-shell-vertico-sidebar-title-max-length 80)
   (agent-shell-vertico-sidebar-group-by nil)
   (agent-shell-vertico-sidebar-expand-by-default nil)

@@ -287,12 +287,30 @@ Each element in BINDINGS is of the form:
 (ert-deftest agent-shell-vertico-sidebar-default-width-is-roomy ()
   (should (= (default-value 'agent-shell-vertico-sidebar-width) 40)))
 
-(ert-deftest agent-shell-vertico-sidebar-display-width-fits-frame ()
-  "The sidebar uses less space on narrow frames without growing on wide ones."
-  (let ((agent-shell-vertico-sidebar-width 40))
-    (should (= (agent-shell-vertico-sidebar--display-width 180) 40))
-    (should (= (agent-shell-vertico-sidebar--display-width 90) 30))
-    (should (= (agent-shell-vertico-sidebar--display-width 30) 16))))
+(ert-deftest agent-shell-vertico-sidebar-default-max-width-fraction ()
+  (should (= (default-value 'agent-shell-vertico-sidebar-max-width-fraction)
+             0.3)))
+
+(ert-deftest agent-shell-vertico-sidebar-clamp-width-keeps-roomy-frames ()
+  "The configured width wins whenever the frame has room for it."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3))
+    (should (= (agent-shell-vertico-sidebar--clamp-width 40 200) 40))))
+
+(ert-deftest agent-shell-vertico-sidebar-clamp-width-caps-narrow-frames ()
+  "A narrow frame caps the sidebar to its share of the columns."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3))
+    (should (= (agent-shell-vertico-sidebar--clamp-width 40 60) 18))))
+
+(ert-deftest agent-shell-vertico-sidebar-clamp-width-keeps-a-readable-floor ()
+  "The cap stops at 16 columns, and still never widens the sidebar."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3))
+    (should (= (agent-shell-vertico-sidebar--clamp-width 40 20) 16))
+    (should (= (agent-shell-vertico-sidebar--clamp-width 12 20) 12))))
+
+(ert-deftest agent-shell-vertico-sidebar-clamp-width-nil-fraction-disables ()
+  "A nil fraction disables the cap entirely."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction nil))
+    (should (= (agent-shell-vertico-sidebar--clamp-width 40 60) 40))))
 
 (ert-deftest agent-shell-vertico-sidebar-status-sort-ignores-attention ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1844,6 +1862,57 @@ and `window-state-put', which only carry parameters marked writable in
         (should (= agent-shell-vertico-sidebar--last-rendered-width 30))
         (agent-shell-vertico-sidebar--window-size-change)
         (should (= timer-calls 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-display-caps-width-to-frame-share ()
+  "Opening the sidebar on a narrow frame takes at most its column share.
+The batch frame is 80 columns, so the default 40 exceeds the cap."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3)
+        (agent-shell-test-buffers nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should (<= (window-total-width window)
+                      (floor (* 0.3 (frame-width))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-frame-shrink-caps-window-width ()
+  "A sidebar wider than its frame's share is shrunk by the resize timer.
+The sidebar opens uncapped, then the cap takes effect, standing in for a
+frame that narrowed under an already-open sidebar."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction nil)
+        (agent-shell-test-buffers nil)
+        (callbacks nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should (>= (window-total-width window) 40))
+          (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3))
+            (cl-letf (((symbol-function 'run-with-idle-timer)
+                       (lambda (_delay _repeat function &rest _args)
+                         (push function callbacks)
+                         (timer-create))))
+              (agent-shell-vertico-sidebar--window-size-change))
+            (should (= (length callbacks) 1))
+            (funcall (car callbacks))
+            (should (<= (window-total-width window)
+                        (floor (* 0.3 (frame-width)))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-cap-never-widens-a-narrow-sidebar ()
+  "The cap is shrink-only: a sidebar narrower than the cap is left alone."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.9)
+        (agent-shell-test-buffers nil)
+        (callbacks nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (let* ((window (agent-shell-vertico-sidebar--display-buffer))
+               (width (window-total-width window)))
+          (cl-letf (((symbol-function 'run-with-idle-timer)
+                     (lambda (_delay _repeat function &rest _args)
+                       (push function callbacks)
+                       (timer-create))))
+            (agent-shell-vertico-sidebar--window-size-change))
+          (dolist (callback callbacks)
+            (funcall callback))
+          (should (= (window-total-width window) width)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-relative-time-calls-recent-now ()
   (should (equal (agent-shell-vertico-sidebar--relative-time
