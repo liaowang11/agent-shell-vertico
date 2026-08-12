@@ -924,16 +924,10 @@ key report that there is no session at point."
         (forward-line 1))
       (nreverse positions))))
 
-(defun agent-shell-vertico-sidebar--view-anchor
-    (position node-positions &optional window)
+(defun agent-shell-vertico-sidebar--view-anchor (position node-positions)
   "Capture a simple view anchor at POSITION among NODE-POSITIONS.
 The anchor records POSITION's logical line within its node so a render can
-restore a surviving title, context, or detail line.
-
-When WINDOW is non-nil, also record the visual row of POSITION's line
-relative to its start.  The row measures to the line beginning because
-restoring resolves the anchor to a line beginning; a mid-line POSITION
-would count its partial line as one extra row."
+restore a surviving title, context, or detail line."
   (save-excursion
     (goto-char position)
     (let* ((node (agent-shell-vertico-sidebar--point-node))
@@ -941,17 +935,11 @@ would count its partial line as one extra row."
            (index (or (cl-position node node-positions
                                    :key #'car :test #'equal)
                       0)))
-      (list :window window
-            :node node
+      (list :node node
             :index index
             :line-offset
             (when node-position
-              (count-lines node-position (line-beginning-position)))
-            :screen-row
-            (when window
-              (count-screen-lines (window-start window)
-                                  (line-beginning-position)
-                                  nil window))))))
+              (count-lines node-position (line-beginning-position)))))))
 
 (defun agent-shell-vertico-sidebar--anchor-position (anchor node-positions)
   "Resolve ANCHOR against NODE-POSITIONS after a render."
@@ -970,22 +958,34 @@ would count its partial line as one extra row."
                     node-positions)))
         (point-min))))
 
+(defun agent-shell-vertico-sidebar--filled-window-start (window start)
+  "Return START pulled up until WINDOW keeps no blank rows below the list.
+A render can shrink the content under a scrolled START, or WINDOW may have
+grown; either would show blank rows while sessions sit hidden above the
+start."
+  (min start
+       (save-excursion
+         (goto-char (point-max))
+         (vertical-motion (- (1- (window-body-height window))) window)
+         (point))))
+
 (defun agent-shell-vertico-sidebar--restore-window-anchor
     (anchor node-positions)
-  "Restore one displayed window from ANCHOR using NODE-POSITIONS."
+  "Restore one displayed window from ANCHOR using NODE-POSITIONS.
+ANCHOR holds the window and one view anchor each for its start and its
+point.  Anchoring the start at its own node keeps the row at the top of
+the window stable without any screen-row arithmetic."
   (let ((window (plist-get anchor :window)))
     (when (and (window-live-p window)
                (eq (window-buffer window) (current-buffer)))
-      (let* ((position
-              (agent-shell-vertico-sidebar--anchor-position
-               anchor node-positions))
-             (screen-row (or (plist-get anchor :screen-row) 0))
-             (start
-              (save-excursion
-                (goto-char position)
-                (vertical-motion (- screen-row) window)
-                (point))))
-        (set-window-start window start t)
+      (let ((start (agent-shell-vertico-sidebar--anchor-position
+                    (plist-get anchor :start) node-positions))
+            (position (agent-shell-vertico-sidebar--anchor-position
+                       (plist-get anchor :point) node-positions)))
+        (set-window-start
+         window
+         (agent-shell-vertico-sidebar--filled-window-start window start)
+         t)
         (set-window-point window position)))))
 
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
@@ -1163,16 +1163,19 @@ a column of slack rather than pushing its count past the window edge."
                       (window-body-width window))
                     agent-shell-vertico-sidebar-width))
          ;; `erase-buffer' invalidates raw positions.  Keep only the stable
-         ;; node, its line offset and ordinal fallback, and each window's
-         ;; relative screen row.
+         ;; node, its line offset and ordinal fallback, for point and for
+         ;; each window's start and point.
          (node-positions (agent-shell-vertico-sidebar--node-positions))
          (point-anchor
           (agent-shell-vertico-sidebar--view-anchor (point) node-positions))
          (window-anchors
           (mapcar
            (lambda (window)
-             (agent-shell-vertico-sidebar--view-anchor
-              (window-point window) node-positions window))
+             (list :window window
+                   :start (agent-shell-vertico-sidebar--view-anchor
+                           (window-start window) node-positions)
+                   :point (agent-shell-vertico-sidebar--view-anchor
+                           (window-point window) node-positions)))
            (get-buffer-window-list (current-buffer) nil t)))
          (inhibit-read-only t))
     (dolist (snapshot snapshots)

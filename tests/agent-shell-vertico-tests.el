@@ -1318,8 +1318,8 @@ sidebar buffer rather than whatever buffer the user called it from."
 
 (ert-deftest agent-shell-vertico-sidebar-refresh-anchors-mid-line-window-point ()
   "A window point in the middle of a line keeps its visual row on refresh.
-The captured row must measure to the line beginning, or the partial last
-line counts as one extra row and every refresh scrolls the window up."
+The window is shorter than the list, so its scrolled start is a state the
+fill clamp must leave alone."
   (agent-shell-vertico-tests--with-session-buffers
       ((aardvark "Codex Agent @ aardvark" "/work/aardvark/"
                  '((:session . ((:id . "aa") (:title . "Aardvark")))))
@@ -1338,7 +1338,7 @@ line counts as one extra row and every refresh scrolls the window up."
           (save-window-excursion
             (delete-other-windows)
             (switch-to-buffer other)
-            (let ((sidebar-window (split-window-right)))
+            (let ((sidebar-window (split-window-below -4)))
               (agent-shell-vertico-tests--with-sidebar
                 (agent-shell-vertico-sidebar--render)
                 (set-window-buffer sidebar-window (current-buffer))
@@ -1367,6 +1367,92 @@ line counts as one extra row and every refresh scrolls the window up."
                        (window-point sidebar-window)
                        nil sidebar-window)
                       screen-row))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-refresh-fills-window-when-content-shrinks ()
+  "Collapsing details scrolls the window back so the sessions fill it.
+Keeping the old scrolled start would hide the top sessions behind blank
+rows once the collapsed list fits the window."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((aardvark "Codex Agent @ aardvark" "/work/aardvark/"
+                 '((:session . ((:id . "aa") (:title . "Aardvark")))))
+       (alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status project model mode))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-below -10)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session beta)))
+                (set-window-start sidebar-window (point) t)
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session gamma)))
+                (set-window-point sidebar-window (point))
+                (agent-shell-vertico-sidebar-cycle-global-view)
+                (should
+                 (eq (with-selected-window sidebar-window
+                       (agent-shell-vertico-sidebar--node-at-point))
+                     gamma))
+                (should (= (window-start sidebar-window) (point-min))))))
+        (kill-buffer other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-refresh-fills-window-when-window-grows ()
+  "A window enlarged past the list length scrolls back to the top.
+Keeping the old scrolled start would leave the added rows blank while the
+top sessions stay hidden."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((aardvark "Codex Agent @ aardvark" "/work/aardvark/"
+                 '((:session . ((:id . "aa") (:title . "Aardvark")))))
+       (alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-below -5)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session beta)))
+                (set-window-start sidebar-window (point) t)
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session gamma)))
+                (set-window-point sidebar-window (point))
+                (window-resize sidebar-window 8)
+                (agent-shell-vertico-sidebar--render)
+                (should
+                 (eq (with-selected-window sidebar-window
+                       (agent-shell-vertico-sidebar--node-at-point))
+                     gamma))
+                (should (= (window-start sidebar-window) (point-min))))))
         (kill-buffer other)))))
 
 (ert-deftest agent-shell-vertico-sidebar-toggle-details-preserves-subline ()
