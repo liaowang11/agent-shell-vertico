@@ -287,6 +287,13 @@ Each element in BINDINGS is of the form:
 (ert-deftest agent-shell-vertico-sidebar-default-width-is-roomy ()
   (should (= (default-value 'agent-shell-vertico-sidebar-width) 40)))
 
+(ert-deftest agent-shell-vertico-sidebar-display-width-fits-frame ()
+  "The sidebar uses less space on narrow frames without growing on wide ones."
+  (let ((agent-shell-vertico-sidebar-width 40))
+    (should (= (agent-shell-vertico-sidebar--display-width 180) 40))
+    (should (= (agent-shell-vertico-sidebar--display-width 90) 30))
+    (should (= (agent-shell-vertico-sidebar--display-width 30) 16))))
+
 (ert-deftest agent-shell-vertico-sidebar-status-sort-ignores-attention ()
   (agent-shell-vertico-tests--with-session-buffers
       ((ready "Codex Agent @ ready" "/work/ready/"

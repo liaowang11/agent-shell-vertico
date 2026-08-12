@@ -49,7 +49,7 @@
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-width 40
-  "Initial width of the agent-shell sidebar in columns."
+  "Maximum initial width of the agent-shell sidebar in columns."
   :type 'integer
   :group 'agent-shell-vertico-sidebar)
 
@@ -2006,6 +2006,11 @@ while normal and motion states get the same direct mnemonic commands."
   (agent-shell-vertico-sidebar--bind-evil-keys)
   (agent-shell-vertico-sidebar--render))
 
+(defun agent-shell-vertico-sidebar--display-width (&optional frame-width)
+  "Return the initial sidebar width for FRAME-WIDTH columns."
+  (min agent-shell-vertico-sidebar-width
+       (max 16 (/ (or frame-width (frame-width)) 3))))
+
 (defun agent-shell-vertico-sidebar--display-buffer ()
   "Display and return the sidebar window."
   (let* ((buffer (agent-shell-vertico-sidebar--sidebar-buffer))
@@ -2013,7 +2018,8 @@ while normal and motion states get the same direct mnemonic commands."
                   buffer
                   `((side . ,agent-shell-vertico-sidebar-side)
                     (slot . 0)
-                    (window-width . ,agent-shell-vertico-sidebar-width)
+                    (window-width
+                     . ,(agent-shell-vertico-sidebar--display-width))
                     (preserve-size . (t . nil))
                     (window-parameters
                      . ((no-delete-other-windows . t)
