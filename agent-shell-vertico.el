@@ -38,6 +38,7 @@
 (declare-function agent-shell-attention--permission-pending-p "agent-shell-attention")
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
+(declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
 (declare-function comint-send-eof "comint" ())
 
 (defvar agent-shell--state)
@@ -355,7 +356,8 @@ Respects `agent-shell-prefer-viewport-interaction'."
 ;; is gone from the buffer).  These give Embark an in-buffer target on those
 ;; links and actions that reuse agent-shell's own opener, which handles local
 ;; files, `#Lnnn' line jumps, a binary "open externally" prompt, and a
-;; `browse-url' fallback for everything else.
+;; `browse-url' fallback for everything else.  One action steps around that
+;; opener to send any link straight to an external program.
 
 (defun agent-shell-vertico--markdown-link-target ()
   "Return the Embark target for the rendered Markdown link at point.
@@ -387,6 +389,19 @@ another window so the agent buffer stays put."
   (cl-letf (((symbol-function 'find-file) #'find-file-other-window))
     (agent-shell-markdown--open-link url)))
 
+(defun agent-shell-vertico-open-markdown-link-externally (url)
+  "Open the rendered agent-shell Markdown link URL outside Emacs.
+A link to an existing local file goes to the operating system's default
+program for that file, dropping any `#Lnnn' line, which an external
+program cannot use.  Every other link opens in an external browser."
+  (interactive "sLink: ")
+  (if-let* ((parsed (agent-shell-markdown--parse-local-link url))
+            (file (map-elt parsed :file)))
+      (if (fboundp 'shell-command-do-open)
+          (shell-command-do-open (list file))
+        (browse-url-of-file file))
+    (browse-url-with-browser-kind 'external url)))
+
 (defun agent-shell-vertico-copy-markdown-link (url)
   "Copy the rendered agent-shell Markdown link URL to the kill ring."
   (interactive "sLink: ")
@@ -395,6 +410,7 @@ another window so the agent buffer stays put."
 (defvar-keymap agent-shell-vertico-markdown-link-map
   :doc "Embark actions on agent-shell rendered Markdown links."
   "o" #'agent-shell-vertico-open-markdown-link-other-window
+  "e" #'agent-shell-vertico-open-markdown-link-externally
   "w" #'agent-shell-vertico-copy-markdown-link)
 
 ;;;###autoload

@@ -3058,6 +3058,40 @@ over."
       (should (equal agent-shell-test-opened-link "file:foo.el#L10"))
       (should (eq used 'other)))))
 
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-opens-file-with-os ()
+  (let ((file (make-temp-file "agent-shell-vertico-link"))
+        opened)
+    (unwind-protect
+        (cl-letf (((symbol-function 'shell-command-do-open)
+                   (lambda (files) (setq opened files)))
+                  ((symbol-function 'find-file)
+                   (lambda (&rest _) (error "Link must not open inside Emacs"))))
+          (agent-shell-vertico-open-markdown-link-externally
+           (concat "file:" file "#L10"))
+          (should (equal opened (list file))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-falls-back-to-browse-url-of-file ()
+  "Emacs 30 has no `shell-command-do-open'; use `browse-url-of-file' there."
+  (let ((file (make-temp-file "agent-shell-vertico-link"))
+        opened)
+    (unwind-protect
+        (cl-letf (((symbol-function 'shell-command-do-open) nil)
+                  ((symbol-function 'browse-url-of-file)
+                   (lambda (arg) (setq opened arg))))
+          (agent-shell-vertico-open-markdown-link-externally file)
+          (should (equal opened file)))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-uses-external-browser ()
+  (let (kind url)
+    (cl-letf (((symbol-function 'browse-url-with-browser-kind)
+               (lambda (browser-kind link &rest _)
+                 (setq kind browser-kind url link))))
+      (agent-shell-vertico-open-markdown-link-externally "https://example.com")
+      (should (eq kind 'external))
+      (should (equal url "https://example.com")))))
+
 (ert-deftest agent-shell-vertico-copy-markdown-link-kills-url ()
   (let ((kill-ring nil))
     (agent-shell-vertico-copy-markdown-link "file:foo.el#L10")
@@ -3076,6 +3110,8 @@ over."
                   embark-target-finders))
     (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "o"))
                 #'agent-shell-vertico-open-markdown-link-other-window))
+    (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "e"))
+                #'agent-shell-vertico-open-markdown-link-externally))
     (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "w"))
                 #'agent-shell-vertico-copy-markdown-link))))
 

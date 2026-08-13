@@ -241,6 +241,29 @@ Prefers the \"mode\" config option, falls back to session :mode-id."
   "Stub: return the `agent-shell-markdown-url' text property at POS."
   (get-text-property (or pos (point)) 'agent-shell-markdown-url))
 
+(defun agent-shell-markdown--parse-local-link (url)
+  "Stub: parse URL as a local file link, like the real parser does.
+Strips a `file://' or `file:' prefix and a trailing `#Lnnn' or `:nnn'
+line part, and returns nil unless the remaining path names an existing
+file."
+  (let ((path url)
+        (line nil))
+    (cond ((string-prefix-p "file://" path)
+           (setq path (substring path (length "file://"))))
+          ((string-prefix-p "file:" path)
+           (setq path (substring path (length "file:")))))
+    (when (string-match "\\(?:#L\\|:\\)\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\'"
+                        path)
+      (setq line (cons (string-to-number (match-string 1 path))
+                       (when (match-string 2 path)
+                         (string-to-number (match-string 2 path))))
+            path (substring path 0 (match-beginning 0))))
+    (setq path (expand-file-name path))
+    (when (file-exists-p path)
+      (list (cons :file path)
+            (cons :line-start (car line))
+            (cons :line-end (cdr line))))))
+
 (defun agent-shell-markdown--open-link (url)
   "Stub: record URL and route it through `find-file'.
 The real opener sends local file links through `find-file'; mirroring
