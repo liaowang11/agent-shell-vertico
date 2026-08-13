@@ -39,6 +39,7 @@
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 (declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
+(declare-function embark-open-externally "embark")
 (declare-function comint-send-eof "comint" ())
 
 (defvar agent-shell--state)
@@ -391,16 +392,17 @@ another window so the agent buffer stays put."
 
 (defun agent-shell-vertico-open-markdown-link-externally (url)
   "Open the rendered agent-shell Markdown link URL outside Emacs.
-A link to an existing local file goes to the operating system's default
-program for that file, dropping any `#Lnnn' line, which an external
-program cannot use.  Every other link opens in an external browser."
+Hands the link to `embark-open-externally', which runs the operating
+system's default program for it.  A link to an existing local file is
+resolved to its path first, dropping any `#Lnnn' line, because a
+`file:foo.el#L10' link is not something that program understands.
+
+Requires Embark, like every other action in this map."
   (interactive "sLink: ")
-  (if-let* ((parsed (agent-shell-markdown--parse-local-link url))
-            (file (map-elt parsed :file)))
-      (if (fboundp 'shell-command-do-open)
-          (shell-command-do-open (list file))
-        (browse-url-of-file file))
-    (browse-url-with-browser-kind 'external url)))
+  (embark-open-externally
+   (if-let* ((parsed (agent-shell-markdown--parse-local-link url)))
+       (map-elt parsed :file)
+     url)))
 
 (defun agent-shell-vertico-copy-markdown-link (url)
   "Copy the rendered agent-shell Markdown link URL to the kill ring."
@@ -410,7 +412,7 @@ program cannot use.  Every other link opens in an external browser."
 (defvar-keymap agent-shell-vertico-markdown-link-map
   :doc "Embark actions on agent-shell rendered Markdown links."
   "o" #'agent-shell-vertico-open-markdown-link-other-window
-  "e" #'agent-shell-vertico-open-markdown-link-externally
+  "x" #'agent-shell-vertico-open-markdown-link-externally
   "w" #'agent-shell-vertico-copy-markdown-link)
 
 ;;;###autoload

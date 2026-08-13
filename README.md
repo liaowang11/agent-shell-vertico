@@ -300,9 +300,9 @@ point on a link, `embark-act` (or `embark-dwim`) offers:
   `#Lnnn` line; a binary prompts to open externally; anything else goes
   to `browse-url`
 - `o` open a file link in another window, leaving the agent buffer put
-- `e` open the link outside Emacs — a local file goes to the operating
-  system's default program (no `#Lnnn` line), anything else to an
-  external browser
+- `x` open the link outside Emacs with `embark-open-externally`, the
+  same key Embark uses for its own file and URL maps; a file link is
+  resolved to a plain path first, dropping any `#Lnnn` line
 - `w` copy the link URL to the kill ring
 
 Transcript candidates have a separate Embark map:

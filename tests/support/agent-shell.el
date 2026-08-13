@@ -245,12 +245,13 @@ Prefers the \"mode\" config option, falls back to session :mode-id."
   "Stub: parse URL as a local file link, like the real parser does.
 Strips a `file://' or `file:' prefix and a trailing `#Lnnn' or `:nnn'
 line part, and returns nil unless the remaining path names an existing
-file."
+file.  Like the real parser, `file:' takes only a relative path: an
+absolute one must be written `file://'."
   (let ((path url)
         (line nil))
     (cond ((string-prefix-p "file://" path)
            (setq path (substring path (length "file://"))))
-          ((string-prefix-p "file:" path)
+          ((string-match "\\`file:\\([^/]\\)" path)
            (setq path (substring path (length "file:")))))
     (when (string-match "\\(?:#L\\|:\\)\\([0-9]+\\)\\(?:-L?\\([0-9]+\\)\\)?\\'"
                         path)

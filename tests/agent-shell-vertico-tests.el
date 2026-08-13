@@ -3058,39 +3058,42 @@ over."
       (should (equal agent-shell-test-opened-link "file:foo.el#L10"))
       (should (eq used 'other)))))
 
-(ert-deftest agent-shell-vertico-open-markdown-link-externally-opens-file-with-os ()
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-resolves-file-link ()
+  "A file link reaches Embark as a plain path, without its `#Lnnn' line."
   (let ((file (make-temp-file "agent-shell-vertico-link"))
         opened)
     (unwind-protect
-        (cl-letf (((symbol-function 'shell-command-do-open)
-                   (lambda (files) (setq opened files)))
+        (cl-letf (((symbol-function 'embark-open-externally)
+                   (lambda (arg) (setq opened arg)))
                   ((symbol-function 'find-file)
                    (lambda (&rest _) (error "Link must not open inside Emacs"))))
           (agent-shell-vertico-open-markdown-link-externally
-           (concat "file:" file "#L10"))
-          (should (equal opened (list file))))
-      (delete-file file))))
-
-(ert-deftest agent-shell-vertico-open-markdown-link-externally-falls-back-to-browse-url-of-file ()
-  "Emacs 30 has no `shell-command-do-open'; use `browse-url-of-file' there."
-  (let ((file (make-temp-file "agent-shell-vertico-link"))
-        opened)
-    (unwind-protect
-        (cl-letf (((symbol-function 'shell-command-do-open) nil)
-                  ((symbol-function 'browse-url-of-file)
-                   (lambda (arg) (setq opened arg))))
-          (agent-shell-vertico-open-markdown-link-externally file)
+           (concat "file://" file "#L10"))
           (should (equal opened file)))
       (delete-file file))))
 
-(ert-deftest agent-shell-vertico-open-markdown-link-externally-uses-external-browser ()
-  (let (kind url)
-    (cl-letf (((symbol-function 'browse-url-with-browser-kind)
-               (lambda (browser-kind link &rest _)
-                 (setq kind browser-kind url link))))
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-resolves-relative-file-link ()
+  "A relative `file:' link resolves against `default-directory'."
+  (let* ((dir (file-name-as-directory (make-temp-file "agent-shell-vertico" t)))
+         (file (expand-file-name "note.txt" dir))
+         opened)
+    (unwind-protect
+        (progn
+          (write-region "" nil file)
+          (cl-letf (((symbol-function 'embark-open-externally)
+                     (lambda (arg) (setq opened arg))))
+            (let ((default-directory dir))
+              (agent-shell-vertico-open-markdown-link-externally
+               "file:note.txt#L3"))
+            (should (equal opened file))))
+      (delete-directory dir t))))
+
+(ert-deftest agent-shell-vertico-open-markdown-link-externally-passes-url-through ()
+  (let (opened)
+    (cl-letf (((symbol-function 'embark-open-externally)
+               (lambda (arg) (setq opened arg))))
       (agent-shell-vertico-open-markdown-link-externally "https://example.com")
-      (should (eq kind 'external))
-      (should (equal url "https://example.com")))))
+      (should (equal opened "https://example.com")))))
 
 (ert-deftest agent-shell-vertico-copy-markdown-link-kills-url ()
   (let ((kill-ring nil))
@@ -3110,7 +3113,7 @@ over."
                   embark-target-finders))
     (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "o"))
                 #'agent-shell-vertico-open-markdown-link-other-window))
-    (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "e"))
+    (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "x"))
                 #'agent-shell-vertico-open-markdown-link-externally))
     (should (eq (lookup-key agent-shell-vertico-markdown-link-map (kbd "w"))
                 #'agent-shell-vertico-copy-markdown-link))))
