@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0.60.2") (marginalia "2.1"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.63.5") (marginalia "2.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -31,8 +31,14 @@
 (declare-function agent-shell--current-model-id "agent-shell-config")
 (declare-function agent-shell--get-available-models "agent-shell-config")
 (declare-function agent-shell--get-available-modes "agent-shell")
+(declare-function agent-shell--auto-preferred-config "agent-shell" ())
+(declare-function agent-shell--display-viewport-when-ready
+                  "agent-shell" (&rest arguments))
 (declare-function agent-shell--resolved-agent-configs "agent-shell" ())
 (declare-function agent-shell--display-buffer "agent-shell")
+(declare-function agent-shell--start "agent-shell" (&rest arguments))
+(declare-function agent-shell-resume-session "agent-shell" (session-id))
+(declare-function agent-shell-select-config "agent-shell" (&rest arguments))
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-attention--clear-buffer "agent-shell-attention")
 (declare-function agent-shell-attention--permission-pending-p "agent-shell-attention")
@@ -45,6 +51,7 @@
 (defvar agent-shell--state)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
+(defvar agent-shell-preferred-agent-config)
 (defvar agent-shell-show-config-icons)
 (defvar consult-imenu-config)
 (defvar embark-default-action-overrides)
@@ -328,6 +335,63 @@ Respects `agent-shell-prefer-viewport-interaction'."
     (agent-shell-vertico--clear-attention shell-buffer)
     (switch-to-buffer-other-window
      (agent-shell-vertico--maybe-resolve-viewport shell-buffer))))
+
+(defun agent-shell-vertico--live-session-buffer (session-id)
+  "Return the live `agent-shell' buffer for SESSION-ID, or nil.
+Matches a session still resuming through its `:resume-session-id',
+since the active `:session :id' is stamped only once the
+asynchronous resume finishes."
+  (when session-id
+    (seq-find
+     (lambda (buffer)
+       (and
+        (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (and
+           (boundp 'agent-shell--state)
+           (or
+            (equal
+             session-id
+             (map-nested-elt agent-shell--state '(:session :id)))
+            (equal
+             session-id
+             (map-elt agent-shell--state :resume-session-id)))))))
+     (agent-shell-buffers))))
+
+(defun agent-shell-vertico--resume-session (session-id &optional config)
+  "Resume SESSION-ID with CONFIG, the agent that issued it.
+
+A session ID only means something to the agent that created it, so a
+session is resumed with its own agent rather than with the preferred
+one.  CONFIG is nil when the agent that issued the session is no
+longer configured; the preferred agent is then used.
+
+Also respects `agent-shell-prefer-viewport-interaction'.
+`agent-shell-resume-session' displays the shell buffer itself, so a
+resumed session lands in `agent-shell-mode' even for users who interact
+through viewports.  When viewport interaction is preferred, start the
+shell without focus and let `agent-shell' display the viewport once the
+session is selected, which is what `agent-shell' does when it starts a
+shell for a viewport."
+  (if (not agent-shell-prefer-viewport-interaction)
+      ;; `agent-shell-resume-session' takes no configuration and reads the
+      ;; preference itself, so pass CONFIG by binding the preference.
+      (let ((agent-shell-preferred-agent-config
+             (or config
+                 (bound-and-true-p agent-shell-preferred-agent-config))))
+        (agent-shell-resume-session session-id))
+    (let ((shell-buffer
+           (agent-shell--start
+            :config (or config
+                        (agent-shell--auto-preferred-config)
+                        (agent-shell-select-config
+                         :prompt "Resume with agent: ")
+                        (error "No agent config found"))
+            :session-id session-id
+            :new-session t
+            :no-focus t)))
+      (agent-shell--display-viewport-when-ready :shell-buffer shell-buffer)
+      shell-buffer)))
 
 ;;;###autoload
 (defun agent-shell-vertico-switch ()

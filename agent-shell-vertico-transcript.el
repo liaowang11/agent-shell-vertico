@@ -27,7 +27,6 @@
 (require 'subr-x)
 
 (defvar agent-shell-dot-subdir-function)
-(defvar agent-shell-preferred-agent-config)
 (defvar agent-shell-transcript-file-path-function)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
@@ -36,13 +35,7 @@
 (defvar projectile-current-project-on-switch)
 (defvar projectile-mode)
 
-(declare-function agent-shell--auto-preferred-config "agent-shell" ())
 (declare-function agent-shell--resolved-agent-configs "agent-shell" ())
-(declare-function agent-shell--display-viewport-when-ready
-                  "agent-shell" (&rest arguments))
-(declare-function agent-shell--start "agent-shell" (&rest arguments))
-(declare-function agent-shell-resume-session "agent-shell" (session-id))
-(declare-function agent-shell-select-config "agent-shell" (&rest arguments))
 (declare-function dired "dired" (dirname &optional switches))
 (declare-function evil-local-set-key "evil" (state key definition))
 (declare-function projectile-project-root "projectile" (&optional dir))
@@ -454,31 +447,12 @@ time with the newest first."
         (agent-shell-vertico-transcript-record-modified-time left)))
      records)))
 
-(defun agent-shell-vertico-transcript--live-buffer (session-id)
-  "Return the live `agent-shell' buffer for SESSION-ID, or nil."
-  (when session-id
-    (seq-find
-     (lambda (buffer)
-       (and
-        (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (and
-           (boundp 'agent-shell--state)
-           (or
-            (equal
-             session-id
-             (map-nested-elt agent-shell--state '(:session :id)))
-            (equal
-             session-id
-             (map-elt agent-shell--state :resume-session-id)))))))
-     (agent-shell-buffers))))
-
 (defun agent-shell-vertico-transcript--activate (record)
   "Switch to, resume, or open transcript RECORD."
   (let* ((session-id
           (agent-shell-vertico-transcript-record-session-id record))
          (live-buffer
-          (agent-shell-vertico-transcript--live-buffer session-id)))
+          (agent-shell-vertico--live-session-buffer session-id)))
     (cond
      (live-buffer
       (agent-shell-vertico--display-session
@@ -491,7 +465,7 @@ time with the newest first."
 (defun agent-shell-vertico-transcript--record-status (record)
   "Return a short availability label for RECORD."
   (cond
-   ((agent-shell-vertico-transcript--live-buffer
+   ((agent-shell-vertico--live-session-buffer
      (agent-shell-vertico-transcript-record-session-id record))
     "Live")
    ((agent-shell-vertico-transcript-record-session-id record)
@@ -986,41 +960,6 @@ and may itself be a function returning the list."
                      (map-elt config :buffer-name))))
      (agent-shell--resolved-agent-configs))))
 
-(defun agent-shell-vertico-transcript--resume-session (session-id config)
-  "Resume SESSION-ID with CONFIG, the agent that issued it.
-
-A session ID only means something to the agent that created it, so a
-transcript has to be resumed with its own agent rather than with the
-preferred one.  CONFIG is nil when the transcript names an agent that is
-no longer configured; the preferred agent is then used, as before.
-
-Also respects `agent-shell-prefer-viewport-interaction'.
-`agent-shell-resume-session' displays the shell buffer itself, so a
-resumed session lands in `agent-shell-mode' even for users who interact
-through viewports.  When viewport interaction is preferred, start the
-shell without focus and let `agent-shell' display the viewport once the
-session is selected, which is what `agent-shell' does when it starts a
-shell for a viewport."
-  (if (not agent-shell-prefer-viewport-interaction)
-      ;; `agent-shell-resume-session' takes no configuration and reads the
-      ;; preference itself, so pass CONFIG by binding the preference.
-      (let ((agent-shell-preferred-agent-config
-             (or config
-                 (bound-and-true-p agent-shell-preferred-agent-config))))
-        (agent-shell-resume-session session-id))
-    (let ((shell-buffer
-           (agent-shell--start
-            :config (or config
-                        (agent-shell--auto-preferred-config)
-                        (agent-shell-select-config
-                         :prompt "Resume with agent: ")
-                        (error "No agent config found"))
-            :session-id session-id
-            :new-session t
-            :no-focus t)))
-      (agent-shell--display-viewport-when-ready :shell-buffer shell-buffer)
-      shell-buffer)))
-
 (defun agent-shell-vertico-transcript--resume-record (record)
   "Resume transcript RECORD without checking for a live buffer."
   (let ((session-id
@@ -1036,7 +975,7 @@ shell for a viewport."
             default-directory))
           (agent-shell-transcript-file-path-function
            (lambda () file)))
-      (agent-shell-vertico-transcript--resume-session
+      (agent-shell-vertico--resume-session
        session-id
        (agent-shell-vertico-transcript--config-for-agent
         (agent-shell-vertico-transcript-record-agent record))))))
@@ -1427,7 +1366,7 @@ When PROJECT-ROOTS is nil, use all known local projects."
             (file
              (agent-shell-vertico-transcript-record-file record)))
         (cond
-         ((agent-shell-vertico-transcript--live-buffer session-id)
+         ((agent-shell-vertico--live-session-buffer session-id)
           (cl-incf live))
          (session-id
           (cl-incf resumable))

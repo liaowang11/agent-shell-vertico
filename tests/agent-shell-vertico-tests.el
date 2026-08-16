@@ -49,7 +49,7 @@
 
 (ert-deftest agent-shell-vertico-package-headers-require-supported-apis ()
   "Package metadata must not promise dependency versions that fail to load."
-  (dolist (spec '(("agent-shell-vertico.el" . "0.60.2")
+  (dolist (spec '(("agent-shell-vertico.el" . "0.63.5")
                   ("agent-shell-vertico-sidebar.el" . "0.60.2")
                   ("agent-shell-vertico-transcript.el" . "0.63.5")
                   ("agent-shell-vertico-consult.el" . "0.63.5")))
@@ -2792,6 +2792,28 @@ keyed on the shell buffer must be cleared."
       (agent-shell-vertico--display-session (buffer-name alpha))
       (should (eq agent-shell-test-displayed-buffer alpha)))))
 
+(ert-deftest agent-shell-vertico-live-session-buffer-finds-active-session ()
+  "A live buffer is found by its active session id."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/" '((:session . ((:id . "b"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (should (eq (agent-shell-vertico--live-session-buffer "b") beta))
+      (should (null (agent-shell-vertico--live-session-buffer "gone"))))))
+
+(ert-deftest agent-shell-vertico-live-session-buffer-finds-resuming-session ()
+  "A session still resuming is found through `:resume-session-id'.
+
+The active `:session :id' is stamped only once the asynchronous
+resume finishes, so a second jump to the same link must match the
+pending resume rather than start another shell."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((resuming "Alpha Agent @ alpha" "/tmp/alpha/"
+                 '((:resume-session-id . "a"))))
+    (let ((agent-shell-test-buffers (list resuming)))
+      (should (eq (agent-shell-vertico--live-session-buffer "a")
+                  resuming)))))
+
 (ert-deftest agent-shell-vertico-sort-by-status-ready-before-starting ()
   (agent-shell-vertico-tests--with-session-buffers
       ((starting "Starting Agent @ start" "/tmp/start/" nil)
@@ -4538,7 +4560,7 @@ that omits them."
     (with-temp-buffer
       (setq-local agent-shell-vertico-transcript--record record)
       (cl-letf (((symbol-function
-                  'agent-shell-vertico-transcript--live-buffer)
+                  'agent-shell-vertico--live-session-buffer)
                  (lambda (_session-id) nil)))
         (let ((evil-local-mode nil)
               (evil-state nil))
@@ -4800,7 +4822,7 @@ Polymode Markdown buffer unable to fontify."
          (stats
           (cl-letf
               (((symbol-function
-                 'agent-shell-vertico-transcript--live-buffer)
+                 'agent-shell-vertico--live-session-buffer)
                 (lambda (session-id)
                   (and (equal session-id "live") 'buffer))))
             (agent-shell-vertico-transcript--stats-for-records
