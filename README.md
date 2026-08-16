@@ -249,6 +249,35 @@ unable to fontify, and a file above `consult-preview-partial-size` is previewed
 in a buffer with no file name, where the mode cannot be detected at all. No
 persistent cache or index is written.
 
+## Session links
+
+`agent-shell-vertico-links` stores stable pointers to sessions as Emacs
+bookmarks and Org links.  A pointer records the session id, the agent
+identifier, and the working directory.  Opening it reuses a live
+matching `agent-shell` buffer when one exists, and otherwise resumes
+the session with the agent that issued it, in the stored directory.
+A resume the agent cannot complete is reported instead of silently
+starting a new session.
+
+```elisp
+(use-package agent-shell-vertico-links
+  :after agent-shell-vertico
+  :config (agent-shell-vertico-links-setup))
+```
+
+Then `M-x bookmark-set` and `M-x org-store-link` work from an
+`agent-shell` buffer and from the viewport showing it, and
+`M-x bookmark-jump` reopens the session.  `M-x org-store-link` stores a
+link like `[[agent-shell:SESSION-ID?agent=codex&dir=/path][Session title]]`
+that `org-open-at-point` follows.  The link format matches the
+standalone `agent-shell-links` package, so links stored by either
+package open with the other installed.
+
+With Embark, `embark-act` on such a link opens the session behind it
+(`RET` or `o`) or copies its session id (`i`).  When `embark-org` is
+loaded, its generic Org link actions, such as the copy variants and
+link navigation, join the same keymap.
+
 ## Setup
 
 ```elisp
@@ -276,6 +305,10 @@ persistent cache or index is written.
   :config
   (with-eval-after-load 'embark
     (agent-shell-vertico-transcript-setup-embark)))
+
+(use-package agent-shell-vertico-links
+  :after agent-shell-vertico
+  :config (agent-shell-vertico-links-setup))
 ```
 
 With Embark enabled on an `agent-shell-vertico` candidate, the extra

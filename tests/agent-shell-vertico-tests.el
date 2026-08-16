@@ -24,6 +24,7 @@
 (require 'agent-shell-vertico-sidebar)
 (require 'agent-shell-vertico-transcript)
 (require 'agent-shell-vertico-consult)
+(require 'agent-shell-vertico-links)
 
 ;; Declare as a dynamic variable so `let' bindings below are dynamic and
 ;; visible to functions under test. Mirrors how the real `embark-keymap-alist'
@@ -32,6 +33,7 @@
 (defvar embark-default-action-overrides)
 (defvar embark-target-finders)
 (defvar agent-shell-viewport-view-mode-hook)
+(defvar agent-shell-viewport-edit-mode-hook)
 (defvar evil-local-mode)
 (defvar evil-state)
 (defvar persp-activated-functions)
@@ -52,7 +54,8 @@
   (dolist (spec '(("agent-shell-vertico.el" . "0.63.5")
                   ("agent-shell-vertico-sidebar.el" . "0.60.2")
                   ("agent-shell-vertico-transcript.el" . "0.63.5")
-                  ("agent-shell-vertico-consult.el" . "0.63.5")))
+                  ("agent-shell-vertico-consult.el" . "0.63.5")
+                  ("agent-shell-vertico-links.el" . "0.63.5")))
     (should
      (equal
       (agent-shell-vertico-tests--package-requirement (car spec) "agent-shell")
@@ -5010,6 +5013,516 @@ would save the accessible region alone and drop the rest of the file."
           (lambda (issue)
             (string-match-p "2 working director" issue))
           issues))))))
+
+;;; Links
+;;
+;; Bookmarks and Org links store a stable pointer to a session: the
+;; session id, the agent identifier, and the working directory.  Opening
+;; the pointer reuses a live buffer when one matches, and otherwise
+;; resumes the session with the agent that issued it.
+
+(defun agent-shell-vertico-tests--remove-strict-resume-advice ()
+  "Remove strict resume advice and its installed flag.
+The advice is process-global, so every test that resumes through a
+link must take it back out."
+  (advice-remove
+   'agent-shell--initiate-new-session
+   #'agent-shell-vertico-links--prevent-new-session-fallback)
+  (setq agent-shell-vertico-links--strict-resume-advice-installed nil))
+
+(ert-deftest agent-shell-vertico-links-current-session-reads-state ()
+  "The session plist carries id, identifier, directory, and title."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1") (:title . "Fix the build"))))))
+    (with-current-buffer alpha
+      (let ((session (agent-shell-vertico-links--current-session)))
+        (should (equal (plist-get session :session-id) "s1"))
+        (should (eq (plist-get session :identifier) 'codex))
+        (should (equal (plist-get session :dir) "/tmp/alpha/"))
+        (should (equal (plist-get session :title) "Fix the build"))))))
+
+(ert-deftest agent-shell-vertico-links-current-session-requires-session ()
+  "No pointer outside `agent-shell-mode', or before a session exists."
+  (with-temp-buffer
+    (should-not (agent-shell-vertico-links--current-session)))
+  (agent-shell-vertico-tests--with-session-buffers
+      ((starting "Codex Agent @ start" "/tmp/start/" nil))
+    (with-current-buffer starting
+      (should-not (agent-shell-vertico-links--current-session)))))
+
+(ert-deftest agent-shell-vertico-links-description-prefers-title ()
+  "The session title names the pointer, with the id as fallback."
+  (should (equal (agent-shell-vertico-links--description
+                  '(:session-id "s1" :title "Fix the build"))
+                 "Fix the build"))
+  (should (equal (agent-shell-vertico-links--description
+                  '(:session-id "s1" :title ""))
+                 "agent-shell session s1")))
+
+(ert-deftest agent-shell-vertico-links-build-and-parse-roundtrip ()
+  "Link paths survive their own encoding round trip.
+Session ids, agent identifiers, and directories may all contain the
+characters that separate a link path from its query, or one query
+parameter from the next."
+  (let* ((dir (expand-file-name "/tmp/agent dir/#1/"))
+         (path (agent-shell-vertico-links--build "s 1%2" 'codex dir)))
+    (should (equal (agent-shell-vertico-links--parse path)
+                   (list "s 1%2" "codex" dir)))))
+
+(ert-deftest agent-shell-vertico-links-parse-plain-and-unknown-keys ()
+  "A path may carry no query, empty values, or unknown parameters."
+  (should (equal (agent-shell-vertico-links--parse "session-1")
+                 '("session-1" nil nil)))
+  (should (equal (agent-shell-vertico-links--parse
+                  "session-1?agent=&other=x&dir=/tmp")
+                 '("session-1" "" "/tmp"))))
+
+(ert-deftest agent-shell-vertico-links-config-for-identifier-resolves-makers ()
+  "Identifier lookup runs through the resolved agent configs.
+`agent-shell-agent-configs' may hold config-making functions, which is
+its default shape, so raw entries cannot be read directly."
+  (let ((agent-shell-agent-configs
+         (list (lambda () '((:identifier . claude-code)))
+               '((:identifier . codex)))))
+    (should (eq (map-elt (agent-shell-vertico-links--config-for-identifier
+                          'codex)
+                         :identifier)
+                'codex))
+    (should-not (agent-shell-vertico-links--config-for-identifier 'gone))))
+
+(ert-deftest agent-shell-vertico-links-open-session-reuses-live-buffer ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-prefer-viewport-interaction nil))
+      (agent-shell-vertico-links-open-session "s1" 'codex "/tmp/alpha/")
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (should (null agent-shell-test-last-command))
+      ;; A link without an agent parameter reuses the live buffer too.
+      (setq agent-shell-test-displayed-buffer nil)
+      (agent-shell-vertico-links-open-session "s1" nil nil)
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
+(ert-deftest agent-shell-vertico-links-open-session-requires-identifier-match ()
+  "A live buffer running another agent is not a match for the link.
+The session id only means something to the agent that issued it, so
+the link resumes with its own agent instead."
+  (let ((dir (make-temp-file "agent-shell-vertico-links" t)))
+    (unwind-protect
+        (agent-shell-vertico-tests--with-session-buffers
+            ((alpha "Claude Agent @ work" dir
+                    '((:agent-config . ((:identifier . claude-code)))
+                      (:session . ((:id . "s1"))))))
+          (let* ((agent-shell-test-buffers (list alpha))
+                 (agent-shell-test-start-buffer alpha)
+                 (agent-shell-prefer-viewport-interaction t)
+                 (agent-shell-agent-configs '(((:identifier . codex)))))
+            (unwind-protect
+                (cl-letf (((symbol-function
+                            'agent-shell--display-viewport-when-ready)
+                           (lambda (&rest _arguments) nil)))
+                  (agent-shell-vertico-links-open-session "s1" 'codex dir)
+                  (should (eq agent-shell-test-last-command
+                              'agent-shell--start))
+                  (should (equal (plist-get agent-shell-test-last-args
+                                            :session-id)
+                                 "s1")))
+              (agent-shell-vertico-tests--remove-strict-resume-advice))))
+      (delete-directory dir :recursive))))
+
+(ert-deftest agent-shell-vertico-links-open-session-resumes-with-link-context ()
+  "The resume uses the link's agent config and working directory."
+  (let ((dir (make-temp-file "agent-shell-vertico-links" t)))
+    (unwind-protect
+        (agent-shell-vertico-tests--with-session-buffers
+            ((shell "Codex Agent @ work" dir nil))
+          (let* ((agent-shell-test-buffers nil)
+                 (agent-shell-test-start-buffer shell)
+                 (agent-shell-prefer-viewport-interaction t)
+                 (agent-shell-agent-configs
+                  (list (lambda () '((:identifier . claude-code)))
+                        '((:identifier . codex))))
+                 started-arguments started-directory)
+            (unwind-protect
+                (cl-letf (((symbol-function 'agent-shell--start)
+                           (lambda (&rest arguments)
+                             (setq started-arguments arguments
+                                   started-directory default-directory)
+                             shell))
+                          ((symbol-function
+                            'agent-shell--display-viewport-when-ready)
+                           (lambda (&rest _arguments) nil)))
+                  (agent-shell-vertico-links-open-session "s1" 'codex dir)
+                  (should (eq (plist-get started-arguments :config)
+                              (nth 1 agent-shell-agent-configs)))
+                  (should (equal (file-name-as-directory started-directory)
+                                 (file-name-as-directory dir))))
+              (agent-shell-vertico-tests--remove-strict-resume-advice))))
+      (delete-directory dir :recursive))))
+
+(ert-deftest agent-shell-vertico-links-open-session-validates-directory ()
+  "A pointer into a deleted directory errors before any shell starts."
+  (let ((agent-shell-test-buffers nil))
+    (should-error
+     (agent-shell-vertico-links-open-session
+      "s1" 'codex "/no/such/agent-shell-directory/")
+     :type 'user-error)
+    (should (null agent-shell-test-last-command))))
+
+(ert-deftest agent-shell-vertico-links-open-session-requires-session-id ()
+  (should-error (agent-shell-vertico-links-open-session nil)
+                :type 'user-error)
+  (should-error (agent-shell-vertico-links-open-session "")
+                :type 'user-error))
+
+(ert-deftest agent-shell-vertico-links-bookmark-make-record-shape ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1") (:title . "Ship it"))))))
+    (with-current-buffer alpha
+      (let ((record (agent-shell-vertico-links-bookmark-make-record)))
+        (should (equal (car record) "Ship it"))
+        (should (eq (cdr (assq 'handler record))
+                    #'agent-shell-vertico-links-bookmark-jump))
+        (should (equal (cdr (assq 'session-id record)) "s1"))
+        (should (eq (cdr (assq 'agent record)) 'codex))
+        (should (equal (cdr (assq 'filename record)) "/tmp/alpha/"))
+        (should (equal (cdr (assq 'location record)) "Ship it"))))))
+
+(ert-deftest agent-shell-vertico-links-bookmark-set-and-jump ()
+  "`bookmark-set' and `bookmark-jump' round trip through the handler."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (bookmark-alist nil)
+          (bookmark-save-flag nil)
+          (agent-shell-prefer-viewport-interaction nil))
+      (with-current-buffer alpha
+        (agent-shell-vertico-links-bookmark-enable)
+        (bookmark-set "my agent")
+        (should (equal (bookmark-get-filename "my agent") "/tmp/alpha/"))
+        (setq agent-shell-test-displayed-buffer nil)
+        (bookmark-jump "my agent")
+        (should (eq agent-shell-test-displayed-buffer alpha))))))
+
+(ert-deftest agent-shell-vertico-links-org-store-stores-link ()
+  "Storing a link records type, link, and description for Org."
+  (require 'ol)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1") (:title . "Ship it"))))))
+    (with-current-buffer alpha
+      (let ((link (agent-shell-vertico-links-org-store)))
+        ;; The store function returns the path and signals success; Org
+        ;; reads the full link from the `:link' property.
+        (should (equal link "s1?agent=codex&dir=/tmp/alpha/"))
+        (should (equal (plist-get org-store-link-plist :type)
+                       "agent-shell"))
+        (should (equal (plist-get org-store-link-plist :link)
+                       (concat "agent-shell:" link)))
+        (should (equal (plist-get org-store-link-plist :description)
+                       "Ship it"))))))
+
+(ert-deftest agent-shell-vertico-links-org-store-requires-session ()
+  "Storing declines outside a session so other stores still run."
+  (with-temp-buffer
+    (should-not (agent-shell-vertico-links-org-store))))
+
+(ert-deftest agent-shell-vertico-links-current-session-reads-viewport ()
+  "The session pointer also reads from a viewport showing a session.
+The working directory comes from the shell buffer, whose session the
+viewport displays, not from the viewport's own directory."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1") (:title . "Ship it"))))))
+    (dolist (mode (list #'agent-shell-viewport-view-mode
+                       #'agent-shell-viewport-edit-mode))
+      (let ((viewport (generate-new-buffer "Codex Agent @ work [viewport]")))
+        (unwind-protect
+            (with-current-buffer viewport
+              (funcall mode)
+              (setq default-directory "/tmp/somewhere-else/")
+              (let ((session (agent-shell-vertico-links--current-session)))
+                (should (equal (plist-get session :session-id) "s1"))
+                (should (eq (plist-get session :identifier) 'codex))
+                (should (equal (plist-get session :dir) "/tmp/alpha/"))))
+          (kill-buffer viewport))))))
+
+(ert-deftest agent-shell-vertico-links-org-store-works-from-viewport ()
+  "`org-store-link' from a viewport stores the session it shows."
+  (require 'ol)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1") (:title . "Ship it"))))))
+    (let ((viewport (generate-new-buffer "Codex Agent @ work [viewport]")))
+      (unwind-protect
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (should (equal (agent-shell-vertico-links-org-store)
+                           "s1?agent=codex&dir=/tmp/alpha/"))
+            (should (equal (plist-get org-store-link-plist :description)
+                           "Ship it")))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-links-setup-covers-viewport-buffers ()
+  "Setup installs bookmark support in viewports too, by hook and by
+retrofitting the viewport an existing session already shows."
+  (require 'ol)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((viewport (generate-new-buffer "Codex Agent @ work [viewport]")))
+      (with-current-buffer viewport
+        (agent-shell-viewport-view-mode))
+      (let ((agent-shell-test-buffers (list alpha))
+            (agent-shell-test-viewport-buffer viewport)
+            (agent-shell-mode-hook nil)
+            (agent-shell-viewport-view-mode-hook nil)
+            (agent-shell-viewport-edit-mode-hook nil)
+            (org-link-parameters (copy-alist org-link-parameters)))
+        (unwind-protect
+            (progn
+              (agent-shell-vertico-links-setup)
+              (should (memq #'agent-shell-vertico-links-bookmark-enable
+                            agent-shell-mode-hook))
+              (should (memq #'agent-shell-vertico-links-bookmark-enable
+                            agent-shell-viewport-view-mode-hook))
+              (should (memq #'agent-shell-vertico-links-bookmark-enable
+                            agent-shell-viewport-edit-mode-hook))
+              (should (eq (buffer-local-value
+                           'bookmark-make-record-function alpha)
+                          #'agent-shell-vertico-links-bookmark-make-record))
+              (should (eq (buffer-local-value
+                           'bookmark-make-record-function viewport)
+                          #'agent-shell-vertico-links-bookmark-make-record))
+              ;; `bookmark-set' from the viewport stores the session.
+              (let ((bookmark-alist nil)
+                    (bookmark-save-flag nil))
+                (with-current-buffer viewport
+                  (bookmark-set "viewport session"))
+                (should (equal (bookmark-prop-get "viewport session"
+                                                  'session-id)
+                               "s1"))))
+          (kill-buffer viewport))))))
+
+(ert-deftest agent-shell-vertico-links-org-follow-opens-session ()
+  "Org's own link dispatch follows an `agent-shell' link."
+  (require 'org)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-prefer-viewport-interaction nil)
+          (org-link-parameters (copy-alist org-link-parameters)))
+      (org-link-set-parameters
+       "agent-shell"
+       :follow #'agent-shell-vertico-links-org-follow)
+      (with-temp-buffer
+        (org-mode)
+        (insert "[[agent-shell:s1?agent=codex&dir=/tmp/alpha/][Ship it]]")
+        (goto-char (point-min))
+        (org-open-at-point))
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
+(ert-deftest agent-shell-vertico-links-setup-registers-everywhere ()
+  "Setup installs the bookmark hook, retrofits live buffers, and
+registers the Org link type."
+  (require 'ol)
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (org-link-parameters (copy-alist org-link-parameters)))
+      (agent-shell-vertico-links-setup)
+      (should (memq #'agent-shell-vertico-links-bookmark-enable
+                    agent-shell-mode-hook))
+      (should (eq (buffer-local-value 'bookmark-make-record-function alpha)
+                  #'agent-shell-vertico-links-bookmark-make-record))
+      (should (eq (org-link-get-parameter "agent-shell" :follow)
+                  #'agent-shell-vertico-links-org-follow))
+      (should (eq (org-link-get-parameter "agent-shell" :store)
+                  #'agent-shell-vertico-links-org-store)))))
+
+(ert-deftest agent-shell-vertico-links-strict-resume-blocks-fallback ()
+  "A resume the agent cannot complete never starts a new session.
+`agent-shell' falls back to a fresh session when the agent cannot
+load the requested one, which would silently replace the linked
+session with an empty one.  The fallback is blocked, the half-started
+buffer is killed, and the failure is reported."
+  (let ((dir (make-temp-file "agent-shell-vertico-links" t)))
+    (unwind-protect
+        (agent-shell-vertico-tests--with-session-buffers
+            ((shell "Codex Agent @ work" dir nil))
+          (let* ((agent-shell-test-buffers nil)
+                 (agent-shell-test-start-buffer shell)
+                 (agent-shell-prefer-viewport-interaction t)
+                 (agent-shell-agent-configs '(((:identifier . codex))))
+                 warnings)
+            (unwind-protect
+                (cl-letf (((symbol-function 'display-warning)
+                           (lambda (_type message &rest _)
+                             (push message warnings)))
+                          ((symbol-function
+                            'agent-shell--display-viewport-when-ready)
+                           (lambda (&rest _arguments) nil)))
+                  (agent-shell-vertico-links-open-session "dead" 'codex dir)
+                  ;; agent-shell's fallback: resume failed, start new instead.
+                  (agent-shell--initiate-new-session :shell-buffer shell)
+                  (should-not (buffer-live-p shell))
+                  ;; The stub records every call it receives, so the
+                  ;; still-pending start proves the fallback never ran.
+                  (should (eq agent-shell-test-last-command
+                              'agent-shell--start))
+                  (should (string-match-p "dead" (car warnings))))
+              (agent-shell-vertico-tests--remove-strict-resume-advice))))
+      (delete-directory dir :recursive))))
+
+(ert-deftest agent-shell-vertico-links-strict-resume-clears-on-init-finished ()
+  "The strict mark clears once the session initializes, and takes its
+event subscription with it, so later restarts fall back normally."
+  (let ((dir (make-temp-file "agent-shell-vertico-links" t)))
+    (unwind-protect
+        (agent-shell-vertico-tests--with-session-buffers
+            ((shell "Codex Agent @ work" dir nil))
+          (let* ((agent-shell-test-buffers nil)
+                 (agent-shell-test-start-buffer shell)
+                 (agent-shell-prefer-viewport-interaction t)
+                 (agent-shell-agent-configs '(((:identifier . codex)))))
+            (unwind-protect
+                (progn
+                  (agent-shell-vertico-links-open-session "s1" 'codex dir)
+                  (should (equal
+                           (buffer-local-value
+                            'agent-shell-vertico-links--strict-resume-session-id
+                            shell)
+                           "s1"))
+                  (let ((subscription (car agent-shell-test-subscriptions)))
+                    (funcall (nth 2 subscription) 'init-finished)
+                    (should
+                     (null
+                      (buffer-local-value
+                       'agent-shell-vertico-links--strict-resume-session-id
+                       shell)))
+                    (should-not (memq subscription
+                                      agent-shell-test-subscriptions)))
+                  ;; With the mark cleared, the fallback path runs again.
+                  (agent-shell--initiate-new-session :shell-buffer shell)
+                  (should (eq agent-shell-test-last-command
+                              'agent-shell--initiate-new-session)))
+              (agent-shell-vertico-tests--remove-strict-resume-advice))))
+      (delete-directory dir :recursive))))
+
+(ert-deftest agent-shell-vertico-links-embark-target-finds-org-link ()
+  "Embark targets the whole bracketed link as an `agent-shell-link'."
+  (require 'org)
+  (with-temp-buffer
+    (insert "See [[agent-shell:s1?agent=codex&dir=/tmp/alpha/][Ship it]] now")
+    (let ((bounds (progn (goto-char (point-min))
+                         (re-search-forward org-link-any-re)
+                         (cons (match-beginning 0) (match-end 0)))))
+      ;; Point anywhere inside the link claims it.
+      (goto-char (+ 2 (car bounds)))
+      (should (equal (agent-shell-vertico-links--org-target)
+                     `(agent-shell-link
+                       "agent-shell:s1?agent=codex&dir=/tmp/alpha/"
+                       ,(car bounds) . ,(cdr bounds)))))))
+
+(ert-deftest agent-shell-vertico-links-embark-target-finds-plain-link ()
+  "A bare `agent-shell:' address is also a target.
+Plain links only match registered types, so the test registers the
+link type the same way setup does."
+  (require 'org)
+  (let ((org-link-parameters (copy-alist org-link-parameters)))
+    (org-link-set-parameters "agent-shell")
+    (with-temp-buffer
+      (insert "see agent-shell:s1?agent=codex end")
+      (goto-char (point-min))
+      (search-forward "shell")
+      (should (equal (agent-shell-vertico-links--org-target)
+                     '(agent-shell-link
+                       "agent-shell:s1?agent=codex" 5 . 31))))))
+
+(ert-deftest agent-shell-vertico-links-embark-target-skips-other-links ()
+  "Other Org links and plain text are left for `embark-org' to claim."
+  (require 'org)
+  (with-temp-buffer
+    (insert "[[file:/tmp/x][a file]]")
+    (goto-char 3)
+    (should-not (agent-shell-vertico-links--org-target)))
+  (with-temp-buffer
+    (insert "no links here")
+    (goto-char 5)
+    (should-not (agent-shell-vertico-links--org-target))))
+
+(ert-deftest agent-shell-vertico-links-embark-map-has-core-actions ()
+  (should (eq (lookup-key agent-shell-vertico-links-embark-map (kbd "RET"))
+              #'agent-shell-vertico-links-embark-open))
+  (should (eq (lookup-key agent-shell-vertico-links-embark-map (kbd "o"))
+              #'agent-shell-vertico-links-embark-open))
+  (should (eq (lookup-key agent-shell-vertico-links-embark-map (kbd "i"))
+              #'agent-shell-vertico-links-embark-copy-session-id)))
+
+(ert-deftest agent-shell-vertico-links-embark-open-opens-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ work" "/tmp/alpha/"
+              '((:agent-config . ((:identifier . codex)))
+                (:session . ((:id . "s1"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-prefer-viewport-interaction nil))
+      (agent-shell-vertico-links-embark-open
+       "agent-shell:s1?agent=codex&dir=/tmp/alpha/")
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
+(ert-deftest agent-shell-vertico-links-embark-copy-session-id ()
+  (let ((kill-ring nil)
+        (interprogram-cut-function nil))
+    (agent-shell-vertico-links-embark-copy-session-id
+     "agent-shell:s1?agent=codex&dir=/tmp/alpha/")
+    (should (equal (current-kill 0 t) "s1"))))
+
+(ert-deftest agent-shell-vertico-links-embark-registration ()
+  "Registration adds the finder, a map entry naming only defined
+keymaps, and the default action override."
+  (let ((embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-default-action-overrides nil))
+    (agent-shell-vertico-links--register-embark)
+    (should (memq 'agent-shell-vertico-links--org-target
+                  embark-target-finders))
+    (should (equal (assq 'agent-shell-link embark-keymap-alist)
+                   '(agent-shell-link
+                     agent-shell-vertico-links-embark-map)))
+    (should (equal (assq 'agent-shell-link embark-default-action-overrides)
+                   '(agent-shell-link
+                     . agent-shell-vertico-links-embark-open)))))
+
+(ert-deftest agent-shell-vertico-links-embark-composes-embark-org-map ()
+  "Once `embark-org' is loaded, the generic Org link actions join the
+entry.  Embark resolves every keymap an entry names, so joining
+earlier would signal a void variable."
+  (let ((embark-keymap-alist
+         (list '(agent-shell-link agent-shell-vertico-links-embark-map))))
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (feature &rest _)
+                 (memq feature '(embark embark-org)))))
+      (agent-shell-vertico-links--compose-embark-org-map)
+      (should (equal (assq 'agent-shell-link embark-keymap-alist)
+                     '(agent-shell-link
+                       agent-shell-vertico-links-embark-map
+                       embark-org-link-map))))))
 
 (provide 'agent-shell-vertico-tests)
 

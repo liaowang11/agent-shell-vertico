@@ -95,17 +95,27 @@
         agent-shell-test-last-buffer (current-buffer)))
 
 (defun agent-shell-start (&rest args)
-  "Record a start action with ARGS."
+  "Record a start action with ARGS.
+Returns the stubbed shell buffer, as the real command does."
   (setq agent-shell-test-last-command 'agent-shell-start
-        agent-shell-test-last-args args))
+        agent-shell-test-last-args args)
+  (or agent-shell-test-start-buffer (current-buffer)))
 
 (defun agent-shell-resume-session (session-id)
-  "Record a resume action for SESSION-ID."
+  "Record a resume action for SESSION-ID.
+Returns the stubbed shell buffer, as the real command does."
   (setq agent-shell-test-last-command 'agent-shell-resume-session
-        agent-shell-test-last-args (list session-id)))
+        agent-shell-test-last-args (list session-id))
+  (or agent-shell-test-start-buffer (current-buffer)))
 
 (defvar agent-shell-test-start-buffer nil
   "Stub: buffer returned by `agent-shell--start'.")
+
+(cl-defun agent-shell--initiate-new-session (&rest args)
+  "Record a private new-session action with ARGS.
+Exists as an advice target for strict resume tests."
+  (setq agent-shell-test-last-command 'agent-shell--initiate-new-session
+        agent-shell-test-last-args args))
 
 (cl-defun agent-shell--start (&rest args)
   "Record a private start action with ARGS."
@@ -229,6 +239,32 @@ Prefers the \"mode\" config option, falls back to session :mode-id."
   "Stub: record BUFFER as the displayed buffer."
   (setq agent-shell-test-displayed-buffer buffer)
   buffer)
+
+(defconst agent-shell-viewport--suffix " [viewport]"
+  "Stub: suffix distinguishing viewport buffers from shell buffers.")
+
+(define-derived-mode agent-shell-viewport-view-mode fundamental-mode
+  "Agent Shell Viewport (View)"
+  "Stub of the viewport view mode.")
+
+(define-derived-mode agent-shell-viewport-edit-mode fundamental-mode
+  "Agent Shell Viewport (Edit)"
+  "Stub of the viewport edit mode.")
+
+(cl-defun agent-shell-viewport--shell-buffer (&optional viewport-buffer)
+  "Stub: derive the shell buffer for VIEWPORT-BUFFER by name.
+Mirrors the real resolver: the viewport buffer name is the shell
+buffer name plus the viewport suffix."
+  (when-let* ((viewport-name
+               (buffer-name (or viewport-buffer (current-buffer))))
+              ((string-suffix-p agent-shell-viewport--suffix
+                                viewport-name))
+              (shell-name
+               (substring
+                viewport-name 0
+                (- (length viewport-name)
+                   (length agent-shell-viewport--suffix)))))
+    (get-buffer shell-name)))
 
 (cl-defun agent-shell-viewport--buffer (&key shell-buffer _existing-only)
   "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER."
