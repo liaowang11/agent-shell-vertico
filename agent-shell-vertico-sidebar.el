@@ -2194,7 +2194,7 @@ SCOPE is persp-mode's activation scope, as for
           #'agent-shell-vertico-sidebar--window-selection-change)
 (add-hook 'window-size-change-functions
           #'agent-shell-vertico-sidebar--window-size-change)
-(add-hook 'window-configuration-change-functions
+(add-hook 'window-configuration-change-hook
           #'agent-shell-vertico-sidebar--window-configuration-change)
 
 (provide 'agent-shell-vertico-sidebar)

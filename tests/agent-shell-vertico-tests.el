@@ -1763,6 +1763,15 @@ persp-mode's `defcustom' forms install when persp-mode loads later."
     (should (memq #'agent-shell-vertico-sidebar--restore-workspace-visibility
                   persp-activated-functions))))
 
+(ert-deftest agent-shell-vertico-sidebar-configuration-change-uses-real-hook ()
+  "The configuration-change handler must sit on Emacs's own hook.
+`add-hook' binds whatever variable name it is given, so a name Emacs does
+not run leaves the handler installed on nothing and its timer cleanup
+never happens."
+  (should (memq #'agent-shell-vertico-sidebar--window-configuration-change
+                window-configuration-change-hook))
+  (should-not (boundp 'window-configuration-change-functions)))
+
 (ert-deftest agent-shell-vertico-sidebar-side-window-survives-maximize ()
   "The sidebar's no-delete parameter survives a window state round-trip.
 persp-mode saves and restores workspace layouts with `window-state-get'
