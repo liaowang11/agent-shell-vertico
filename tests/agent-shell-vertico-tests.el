@@ -1899,15 +1899,23 @@ frame that narrowed under an already-open sidebar."
             (should (<= (window-total-width window)
                         (floor (* 0.3 (frame-width)))))))))))
 
-(ert-deftest agent-shell-vertico-sidebar-cap-never-widens-a-narrow-sidebar ()
-  "The cap is shrink-only: a sidebar narrower than the cap is left alone."
-  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.9)
+(ert-deftest agent-shell-vertico-sidebar-resize-restores-the-target-width ()
+  "A sidebar left narrower than its target width is widened back.
+Restoring a workspace recreates the window from a saved proportion and
+drops its preserved size, so the width has to be re-applied in both
+directions rather than only shrunk."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3)
         (agent-shell-test-buffers nil)
         (callbacks nil))
     (agent-shell-vertico-tests--with-sidebar
       (save-window-excursion
         (let* ((window (agent-shell-vertico-sidebar--display-buffer))
-               (width (window-total-width window)))
+               (target (agent-shell-vertico-sidebar--clamp-width
+                        agent-shell-vertico-sidebar-width (frame-width))))
+          (should (= (window-total-width window) target))
+          (window-preserve-size window t nil)
+          (window-resize window (- 16 (window-total-width window)) t)
+          (should (< (window-total-width window) target))
           (cl-letf (((symbol-function 'run-with-idle-timer)
                      (lambda (_delay _repeat function &rest _args)
                        (push function callbacks)
@@ -1915,7 +1923,22 @@ frame that narrowed under an already-open sidebar."
             (agent-shell-vertico-sidebar--window-size-change))
           (dolist (callback callbacks)
             (funcall callback))
-          (should (= (window-total-width window) width)))))))
+          (should (= (window-total-width window) target)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-width-drift-ignores-normal-windows ()
+  "A normal window showing the sidebar buffer is never resized.
+Only genuine side windows carry the configured width."
+  (let ((agent-shell-vertico-sidebar-max-width-fraction 0.3)
+        (agent-shell-test-buffers nil))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (split-window-right)))
+          (set-window-buffer window (agent-shell-vertico-sidebar--sidebar-buffer))
+          (let ((width (window-total-width window)))
+            (should-not (agent-shell-vertico-sidebar--width-drifted-p window))
+            (agent-shell-vertico-sidebar--enforce-window-width window)
+            (should (= (window-total-width window) width))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-relative-time-calls-recent-now ()
   (should (equal (agent-shell-vertico-sidebar--relative-time

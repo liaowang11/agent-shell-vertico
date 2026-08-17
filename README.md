@@ -47,8 +47,13 @@ The layout measures the current sidebar body width and reflows titles when the
 window is resized.  The configured sidebar width is a maximum: the window asks
 for `agent-shell-vertico-sidebar-width` columns but never takes more than the
 `agent-shell-vertico-sidebar-max-width-fraction` share of the frame, down to a
-floor of 16 columns.  A narrow frame therefore keeps most of its columns, and
-the cap shrinks the sidebar when the frame narrows without ever widening it.
+floor of 16 columns.  A narrow frame therefore keeps most of its columns.  An
+open sidebar is held at that width: a resize timer puts the side window back
+whenever it has drifted, whether the frame narrowed around it or a restored
+window configuration recreated it at some proportion of the frame.  Workspace
+packages such as `persp-mode` restore layouts that way, and the restore drops
+the preserved size that held the width, which is why the sidebar is measured
+again rather than pinned once.
 Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
 which expanded-session values are shown: `status`, `activity`, `project`,
 `model`, `mode`, and `last-user-message`.  Values are packed two per row; the
