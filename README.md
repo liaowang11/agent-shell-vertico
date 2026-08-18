@@ -22,6 +22,47 @@ locations are resolved through `agent-shell-dot-subdir-function`.
 Candidates keep the recent ordering from `agent-shell-buffers` and show
 consult-style annotations for status, model, mode, title, and path.
 
+## Prompt queue
+
+`agent-shell` queues a prompt whenever the shell is busy and sends the
+queue on once the agent is free. `agent-shell-vertico-prompt-queue`
+offers that queue as an annotated completion category with Embark
+actions.
+
+- `M-x agent-shell-vertico-prompt-queue`
+  Act on a prompt queued in the current session. Works from the shell
+  buffer, from its viewport, and from any other buffer in a project that
+  has a shell.
+- `M-x agent-shell-vertico-prompt-queue-setup-embark`
+  Register the `agent-shell-prompt-queue` Embark category.
+
+Candidates are the pending prompts in queue order, each showing its
+first line, annotated with the line count and whatever of the prompt the
+line could not show. After them come two queue-wide entries:
+
+- `[Resume queue]` send the next pending prompt now; when the shell is
+  busy the annotation says the queue resumes on its own
+- `[Remove all]` drop every pending prompt, with agent-shell's own
+  confirmation
+
+Choosing a prompt edits it. With Embark:
+
+- `e` edit the prompt
+- `x` remove it
+- `w` copy the whole prompt to the kill ring
+- `v` read the whole prompt in a buffer, without ending the completion
+  session
+
+Every change runs through agent-shell's own commands, so editing follows
+`agent-shell-prefer-viewport-interaction` and removal keeps its
+confirmation. The queue moves on its own while the minibuffer is open,
+so each action locates its prompt in the queue as it stands before
+acting; a prompt the agent has already picked up reports that instead of
+touching its neighbour.
+
+Loading `agent-shell-vertico-consult` upgrades the reader to a Consult
+one that previews the prompt under point.
+
 ## Session sidebar
 
 `agent-shell-vertico-sidebar` provides a compact side window for jumping
@@ -295,6 +336,13 @@ link navigation, join the same keymap.
   (with-eval-after-load 'embark
     (agent-shell-vertico-setup-embark)))
 
+(use-package agent-shell-vertico-prompt-queue
+  :after agent-shell-vertico
+  :bind (("C-c a q" . agent-shell-vertico-prompt-queue))
+  :config
+  (with-eval-after-load 'embark
+    (agent-shell-vertico-prompt-queue-setup-embark)))
+
 (use-package agent-shell-vertico-sidebar
   :after agent-shell-vertico
   :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)))
@@ -305,7 +353,8 @@ link navigation, join the same keymap.
          ("C-c a R" . agent-shell-vertico-transcript-resume-project)))
 
 (use-package agent-shell-vertico-consult
-  :after (agent-shell-vertico-transcript consult)
+  :after (agent-shell-vertico-transcript agent-shell-vertico-prompt-queue
+          consult)
   :bind (("C-c a s" . agent-shell-vertico-transcript-search-project))
   :config
   (with-eval-after-load 'embark

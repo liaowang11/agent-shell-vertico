@@ -254,6 +254,34 @@ table's affixation function also uses, so the two cannot drift apart."
                        3))))
     (_ candidates)))
 
+(defconst agent-shell-vertico--key-char #x100000
+  "First character of the private-use range used to key candidates.")
+
+(defconst agent-shell-vertico--key-range #xfffe
+  "Number of characters one candidate key character can encode.")
+
+(defun agent-shell-vertico--candidate-key (index)
+  "Return an invisible completion key for INDEX.
+
+Completion collapses candidates with equal text, so two candidates that
+display the same way would leave one of them unreachable.  The key is
+private-use characters carrying `invisible', the approach Consult uses
+for repeated lines: candidates stay distinct while the minibuffer shows
+the text alone."
+  (let ((key nil)
+        (remaining index))
+    (while (progn
+             (setq key
+                   (concat
+                    (char-to-string
+                     (+ agent-shell-vertico--key-char
+                        (% remaining agent-shell-vertico--key-range)))
+                    key))
+             (and (>= remaining agent-shell-vertico--key-range)
+                  (setq remaining
+                        (/ remaining agent-shell-vertico--key-range)))))
+    (propertize key 'invisible t)))
+
 (defun agent-shell-vertico--completion-table (scope)
   "Return a completion table for SCOPE."
   (lambda (string pred action)

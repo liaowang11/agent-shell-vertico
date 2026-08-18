@@ -11,10 +11,12 @@
 
 ;;; Commentary:
 
-;; Live, aggregated `rg' search over current `agent-shell' transcript files.
+;; Live, aggregated `rg' search over current `agent-shell' transcript
+;; files, and live preview of the prompts queued in a session.
 
 ;;; Code:
 
+(require 'agent-shell-vertico-prompt-queue)
 (require 'agent-shell-vertico-transcript)
 (require 'consult)
 (require 'subr-x)
@@ -277,6 +279,53 @@ the caller decides what to open once the minibuffer is gone."
   (agent-shell-vertico-consult--search
    (list
     (agent-shell-vertico-transcript--current-project-or-error))))
+
+;;; Prompt queue preview
+;;
+;; A queued prompt is text, not a file or a position, so none of
+;; Consult's own preview helpers fit.  The state function below shows
+;; the prompt under point in the same buffer the `v' action uses, and
+;; puts the windows back when the session ends.
+
+(defun agent-shell-vertico-consult--prompt-queue-state ()
+  "Return a Consult state function previewing pending prompts.
+A queue-wide entry has no prompt of its own, so preview describes what
+it would do instead of leaving the previous prompt on screen."
+  (let ((restore (current-window-configuration)))
+    (lambda (action candidate)
+      (pcase action
+        ('preview
+         (when-let*
+             ((record
+               (agent-shell-vertico-prompt-queue--record-from-candidate
+                candidate)))
+           (display-buffer
+            (agent-shell-vertico-prompt-queue--render record))))
+        ('exit
+         (when-let* ((buffer
+                      (get-buffer
+                       agent-shell-vertico-prompt-queue--buffer)))
+           (kill-buffer buffer))
+         (set-window-configuration restore))))))
+
+(defun agent-shell-vertico-consult--read-prompt-queue (prompt candidates)
+  "Read one of CANDIDATES with PROMPT and live preview."
+  (let ((selection
+         (consult--read
+          candidates
+          :prompt prompt
+          :lookup #'consult--lookup-member
+          :state (agent-shell-vertico-consult--prompt-queue-state)
+          :require-match t
+          :category 'agent-shell-prompt-queue
+          :sort nil)))
+    (or (agent-shell-vertico-prompt-queue--record-from-candidate selection)
+        (user-error "Prompt no longer pending"))))
+
+;; Annotations come from the Marginalia annotator registered for the
+;; category, so both readers render from one definition.
+(setq agent-shell-vertico-prompt-queue-read-function
+      #'agent-shell-vertico-consult--read-prompt-queue)
 
 (provide 'agent-shell-vertico-consult)
 

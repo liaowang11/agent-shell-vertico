@@ -23,6 +23,7 @@
 (require 'agent-shell-vertico)
 (require 'agent-shell-vertico-sidebar)
 (require 'agent-shell-vertico-transcript)
+(require 'agent-shell-vertico-prompt-queue)
 (require 'agent-shell-vertico-consult)
 (require 'agent-shell-vertico-links)
 
@@ -32,6 +33,7 @@
 (defvar embark-keymap-alist)
 (defvar embark-default-action-overrides)
 (defvar embark-target-finders)
+(defvar embark-quit-after-action)
 (defvar agent-shell-viewport-view-mode-hook)
 (defvar agent-shell-viewport-edit-mode-hook)
 (defvar evil-local-mode)
@@ -54,6 +56,7 @@
   (dolist (spec '(("agent-shell-vertico.el" . "0.63.5")
                   ("agent-shell-vertico-sidebar.el" . "0.60.2")
                   ("agent-shell-vertico-transcript.el" . "0.63.5")
+                  ("agent-shell-vertico-prompt-queue.el" . "0.63.5")
                   ("agent-shell-vertico-consult.el" . "0.63.5")
                   ("agent-shell-vertico-links.el" . "0.63.5")))
     (should
@@ -62,6 +65,7 @@
       (cdr spec))))
   (dolist (file '("agent-shell-vertico.el"
                   "agent-shell-vertico-transcript.el"
+                  "agent-shell-vertico-prompt-queue.el"
                   "agent-shell-vertico-consult.el"))
     (should (equal
              (agent-shell-vertico-tests--package-requirement file "marginalia")
@@ -3397,14 +3401,14 @@ label it with someone else's agent or title."
       (substring-no-properties
        (agent-shell-vertico-transcript--record-candidate titled 0))
       (concat "Understand session list display"
-              (agent-shell-vertico-transcript--candidate-key 0))))
+              (agent-shell-vertico--candidate-key 0))))
     ;; Without a title the first user message stands in.
     (should
      (equal
       (substring-no-properties
        (agent-shell-vertico-transcript--record-candidate untitled 0))
       (concat "In agent-shell-vertico-transcript.el"
-              (agent-shell-vertico-transcript--candidate-key 0))))))
+              (agent-shell-vertico--candidate-key 0))))))
 
 (ert-deftest agent-shell-vertico-transcript-candidates-stay-distinct ()
   "Records sharing a title must stay separately selectable.
@@ -5576,6 +5580,334 @@ earlier would signal a void variable."
                      '(agent-shell-link
                        agent-shell-vertico-links-embark-map
                        embark-org-link-map))))))
+
+;;; Prompt queue
+
+(defun agent-shell-vertico-tests--queue-label (candidate)
+  "Return CANDIDATE without the invisible key that keeps it distinct."
+  (concat (seq-remove (lambda (char) (>= char #x100000)) candidate)))
+
+(defun agent-shell-vertico-tests--queue-labels (candidates)
+  "Return the visible text of each candidate in CANDIDATES."
+  (mapcar #'agent-shell-vertico-tests--queue-label candidates))
+
+(defmacro agent-shell-vertico-tests--with-queue (prompts &rest body)
+  "Evaluate BODY in a session buffer whose queue holds PROMPTS.
+Binds `shell' to the session buffer and `candidates' to its prompt
+queue candidates, and leaves the session buffer current."
+  (declare (indent 1) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((shell "Codex Agent @ alpha" "/work/alpha/"
+               (list (cons :session (list (cons :id "a")))
+                     (cons :pending-prompts (copy-sequence ,prompts)))))
+     (with-current-buffer shell
+       (let ((candidates
+              (agent-shell-vertico-prompt-queue--candidates shell)))
+         (ignore candidates)
+         ,@body))))
+
+(defun agent-shell-vertico-tests--queue-set-pending (buffer prompts)
+  "Replace BUFFER's pending prompts with PROMPTS.
+Stands in for the queue draining or shrinking while a candidate is in
+hand."
+  (with-current-buffer buffer
+    (setf (map-elt agent-shell--state :pending-prompts)
+          (copy-sequence prompts))))
+
+(defun agent-shell-vertico-tests--queue-record (candidates label)
+  "Return the record of the candidate in CANDIDATES showing LABEL."
+  (agent-shell-vertico-prompt-queue--record-from-candidate
+   (seq-find (lambda (candidate)
+               (equal label
+                      (agent-shell-vertico-tests--queue-label candidate)))
+             candidates)))
+
+(ert-deftest agent-shell-vertico-prompt-queue-candidates-list-pending-prompts ()
+  "Candidates are the session's pending prompts, queue actions last."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (should (equal (agent-shell-vertico-tests--queue-labels candidates)
+                   '("First prompt" "Second prompt"
+                     "[Resume queue]" "[Remove all]")))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-candidates-empty-without-queue ()
+  "An empty queue offers nothing, not even the queue-wide actions."
+  (agent-shell-vertico-tests--with-queue '()
+    (should-not candidates)
+    (should-error (agent-shell-vertico-prompt-queue) :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resolves-shell-from-viewport ()
+  "A viewport buffer acts on the shell it belongs to."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (let ((viewport
+           (generate-new-buffer (concat (buffer-name shell) " [viewport]"))))
+      (unwind-protect
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (should (eq (agent-shell-vertico-prompt-queue--shell-buffer)
+                        shell)))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-candidates-stay-distinct ()
+  "Two identical prompts remain separately selectable."
+  (agent-shell-vertico-tests--with-queue '("Same prompt" "Same prompt")
+    (should (equal (agent-shell-vertico-tests--queue-labels
+                    (seq-take candidates 2))
+                   '("Same prompt" "Same prompt")))
+    (should-not (equal (nth 0 candidates) (nth 1 candidates)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-candidate-shows-first-line ()
+  "A candidate shows the prompt's first line, truncated to fit."
+  (agent-shell-vertico-tests--with-queue
+      (list "Line one\nLine two" (make-string 100 ?x))
+    (let ((labels (agent-shell-vertico-tests--queue-labels candidates)))
+      (should (equal (nth 0 labels) "Line one"))
+      (should (= (string-width (nth 1 labels)) 80))
+      (should (string-suffix-p "…" (nth 1 labels))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-annotation-shows-remainder ()
+  "A multi-line prompt is annotated with its size and its remainder."
+  (agent-shell-vertico-tests--with-queue
+      '("Line one\nLine two\nLine three" "Single line")
+    (let ((multi (agent-shell-vertico-prompt-queue--annotate
+                  (nth 0 candidates)))
+          (single (agent-shell-vertico-prompt-queue--annotate
+                   (nth 1 candidates))))
+      (should (string-match-p "3 lines" multi))
+      (should (string-match-p "Line two Line three" multi))
+      (should-not (string-match-p "lines" single)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-affixation-matches-annotator ()
+  "Both annotation paths render through one function, so cannot drift."
+  (agent-shell-vertico-tests--with-queue '("Line one\nLine two")
+    (should (equal (nth 2 (car (agent-shell-vertico-prompt-queue--affixate
+                                candidates)))
+                   (agent-shell-vertico-prompt-queue--annotate
+                    (car candidates))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-table-declares-category ()
+  "The table declares the category Embark and Marginalia key on."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (let ((metadata (funcall (agent-shell-vertico-prompt-queue--table
+                              candidates)
+                             "" nil 'metadata)))
+      (should (eq (completion-metadata-get metadata 'category)
+                  'agent-shell-prompt-queue))
+      (should (eq (completion-metadata-get metadata 'display-sort-function)
+                  #'identity)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-action-annotations ()
+  "Queue-wide entries say what they do to the queue as a whole."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (should (string-match-p
+             "send the next pending prompt"
+             (agent-shell-vertico-prompt-queue--annotate (nth 2 candidates))))
+    (should (string-match-p
+             "drop 2 pending prompts"
+             (agent-shell-vertico-prompt-queue--annotate
+              (nth 3 candidates))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resume-annotation-reports-busy ()
+  "A busy shell resumes on its own, and the annotation says so."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t)))
+      (should (string-match-p
+               "auto-resume"
+               (agent-shell-vertico-prompt-queue--annotate
+                (nth 1 candidates)))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resolve-index-keeps-position ()
+  "An untouched queue resolves a candidate to its recorded position."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (should (= (agent-shell-vertico-prompt-queue--resolve-index
+                (agent-shell-vertico-tests--queue-record
+                 candidates "Second prompt"))
+               1))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resolve-index-follows-drain ()
+  "A prompt that moved up because the queue drained is found again."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let ((record (agent-shell-vertico-tests--queue-record
+                   candidates "Second prompt")))
+      (agent-shell-vertico-tests--queue-set-pending shell '("Second prompt"))
+      (should (= (agent-shell-vertico-prompt-queue--resolve-index record) 0)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resolve-index-errors-when-sent ()
+  "A prompt the agent already picked up cannot be acted on."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let ((record (agent-shell-vertico-tests--queue-record
+                   candidates "Second prompt")))
+      (agent-shell-vertico-tests--queue-set-pending shell '("First prompt"))
+      (should-error (agent-shell-vertico-prompt-queue--resolve-index record)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-edit-dispatches-to-agent-shell ()
+  "Editing runs agent-shell's own command in the owning session."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (agent-shell-vertico-prompt-queue-embark-edit (nth 1 candidates))
+    (should (eq agent-shell-test-last-command 'agent-shell-prompt-queue-edit))
+    (should (eq agent-shell-test-last-buffer shell))
+    (should (equal agent-shell-test-last-args '(1)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-remove-uses-resolved-index ()
+  "Removal re-resolves the index the queue has now, not the one shown."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let ((candidate (nth 1 candidates)))
+      (agent-shell-vertico-tests--queue-set-pending shell '("Second prompt"))
+      (agent-shell-vertico-prompt-queue-embark-remove candidate)
+      (should (eq agent-shell-test-last-command
+                  'agent-shell-prompt-queue-remove))
+      (should (eq agent-shell-test-last-buffer shell))
+      (should (equal agent-shell-test-last-args '(0))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-repeated-removals-shift ()
+  "Removing several prompts in one session hits the intended ones.
+`embark-act-all' holds every candidate from before the first removal, so
+each later index has moved by the time its turn comes."
+  (agent-shell-vertico-tests--with-queue '("First" "Second" "Third")
+    (agent-shell-vertico-prompt-queue-embark-remove (nth 0 candidates))
+    (should (equal agent-shell-test-last-args '(0)))
+    (agent-shell-vertico-tests--queue-set-pending shell '("Second" "Third"))
+    (agent-shell-vertico-prompt-queue-embark-remove (nth 2 candidates))
+    (should (equal agent-shell-test-last-args '(1)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-resume-entry-resumes-queue ()
+  "The resume entry resumes the whole queue."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (agent-shell-vertico-prompt-queue-embark-act (nth 1 candidates))
+    (should (eq agent-shell-test-last-command
+                'agent-shell-prompt-queue-resume))
+    (should (eq agent-shell-test-last-buffer shell))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-remove-all-entry-drops-queue ()
+  "The remove-all entry removes every pending prompt."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (agent-shell-vertico-prompt-queue-embark-act (nth 2 candidates))
+    (should (eq agent-shell-test-last-command
+                'agent-shell-prompt-queue-remove))
+    (should (equal agent-shell-test-last-args '(nil)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-prompt-action-skips-queue-entry ()
+  "A per-prompt action on a queue-wide entry does nothing, quietly.
+`embark-act-all' runs over every candidate, and an error would abort the
+rest of the run."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (agent-shell-vertico-prompt-queue-embark-remove (nth 1 candidates))
+    (should-not agent-shell-test-last-command)))
+
+(ert-deftest agent-shell-vertico-prompt-queue-copy-yanks-whole-prompt ()
+  "Copying puts the full prompt, not the shown line, in the kill ring."
+  (agent-shell-vertico-tests--with-queue '("Line one\nLine two")
+    (let ((kill-ring nil)
+          (interprogram-cut-function nil))
+      (agent-shell-vertico-prompt-queue-embark-copy (car candidates))
+      (should (equal (current-kill 0 t) "Line one\nLine two")))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-view-shows-whole-prompt ()
+  "Viewing renders the prompt verbatim in its own buffer."
+  (agent-shell-vertico-tests--with-queue '("Line one\nLine two")
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-prompt-queue-embark-view (car candidates))
+          (with-current-buffer agent-shell-vertico-prompt-queue--buffer
+            (should (equal (buffer-string) "Line one\nLine two"))
+            (should buffer-read-only)))
+      (when-let* ((buffer (get-buffer
+                           agent-shell-vertico-prompt-queue--buffer)))
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-command-edits-selection ()
+  "The command acts on whatever its reader returns."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let ((agent-shell-vertico-prompt-queue-read-function
+           (lambda (_prompt read-candidates)
+             (agent-shell-vertico-prompt-queue--record-from-candidate
+              (nth 1 read-candidates)))))
+      (agent-shell-vertico-prompt-queue)
+      (should (eq agent-shell-test-last-command
+                  'agent-shell-prompt-queue-edit))
+      (should (equal agent-shell-test-last-args '(1))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-loading-does-not-prebind-embark ()
+  "Loading the module must not bind embark's own options.
+A `defvar' with a value would pre-bind them, clobbering the defaults
+embark installs when it loads later."
+  (skip-unless (not (featurep 'embark)))
+  (should-not (boundp 'embark-quit-after-action)))
+
+(ert-deftest agent-shell-vertico-prompt-queue-setup-embark-registers ()
+  "Registration names the map, the default action, and the view exception."
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil)
+        (embark-quit-after-action t))
+    (agent-shell-vertico-prompt-queue-setup-embark)
+    (should (equal (assq 'agent-shell-prompt-queue embark-keymap-alist)
+                   '(agent-shell-prompt-queue
+                     agent-shell-vertico-prompt-queue-embark-map)))
+    (should (equal (assq 'agent-shell-prompt-queue
+                         embark-default-action-overrides)
+                   '(agent-shell-prompt-queue
+                     . agent-shell-vertico-prompt-queue-embark-act)))
+    (should (eq (lookup-key agent-shell-vertico-prompt-queue-embark-map
+                            (kbd "x"))
+                #'agent-shell-vertico-prompt-queue-embark-remove))
+    (should (eq (lookup-key agent-shell-vertico-prompt-queue-embark-map
+                            (kbd "e"))
+                #'agent-shell-vertico-prompt-queue-embark-edit))
+    ;; Viewing is a peek: keep the completion session alive, and keep
+    ;; whatever the user chose for every other action.
+    (should (equal (alist-get 'agent-shell-vertico-prompt-queue-embark-view
+                              embark-quit-after-action 'missing)
+                   nil))
+    (should (eq (alist-get t embark-quit-after-action) t))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-consult-reader-is-installed ()
+  "Loading the Consult module upgrades the reader to a previewing one."
+  (should (eq agent-shell-vertico-prompt-queue-read-function
+              #'agent-shell-vertico-consult--read-prompt-queue)))
+
+(ert-deftest agent-shell-vertico-prompt-queue-consult-read-keeps-queue-order ()
+  "The Consult reader keeps the category and the queue's own order."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let (options)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (read-candidates &rest args)
+                   (setq options args)
+                   (nth 1 read-candidates))))
+        (let ((record (agent-shell-vertico-consult--read-prompt-queue
+                       "Pending prompt: " candidates)))
+          (should (eq (map-elt record :buffer) shell))
+          (should (equal (map-elt record :text) "Second prompt"))))
+      (should (eq (plist-get options :category) 'agent-shell-prompt-queue))
+      (should-not (plist-get options :sort))
+      (should (plist-get options :state)))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-consult-state-previews-prompt ()
+  "Preview shows the whole prompt and leaves nothing behind on exit."
+  (agent-shell-vertico-tests--with-queue '("Line one\nLine two")
+    (let ((state (agent-shell-vertico-consult--prompt-queue-state)))
+      (unwind-protect
+          (progn
+            (funcall state 'preview (car candidates))
+            (with-current-buffer agent-shell-vertico-prompt-queue--buffer
+              (should (equal (buffer-string) "Line one\nLine two")))
+            (funcall state 'exit nil)
+            (should-not (get-buffer
+                         agent-shell-vertico-prompt-queue--buffer)))
+        (when-let* ((buffer (get-buffer
+                             agent-shell-vertico-prompt-queue--buffer)))
+          (kill-buffer buffer))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-consult-state-previews-actions ()
+  "Previewing a queue-wide entry describes it instead of showing a prompt."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (let ((state (agent-shell-vertico-consult--prompt-queue-state)))
+      (unwind-protect
+          (progn
+            (funcall state 'preview (nth 2 candidates))
+            (with-current-buffer agent-shell-vertico-prompt-queue--buffer
+              (should (string-match-p "drop 1 pending prompt"
+                                      (buffer-string)))))
+        (funcall state 'exit nil)))))
 
 (provide 'agent-shell-vertico-tests)
 

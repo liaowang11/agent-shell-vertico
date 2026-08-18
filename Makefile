@@ -7,6 +7,7 @@ compile:
 		-f batch-byte-compile agent-shell-vertico.el \
 		agent-shell-vertico-sidebar.el \
 		agent-shell-vertico-transcript.el \
+		agent-shell-vertico-prompt-queue.el \
 		agent-shell-vertico-consult.el \
 		agent-shell-vertico-links.el
 

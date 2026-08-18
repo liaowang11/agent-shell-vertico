@@ -217,6 +217,43 @@ Prefers the \"mode\" config option, falls back to session :mode-id."
       (agent-shell--config-option-as-modes option)
     (map-nested-elt state '(:session :modes))))
 
+(cl-defun agent-shell--shell-buffer (&key viewport-buffer no-error no-create)
+  "Stub: resolve the shell buffer the way the real resolver does.
+A viewport buffer resolves to its shell, an `agent-shell-mode' buffer to
+itself, and anything else to the first project shell.  NO-CREATE and
+NO-ERROR only cover the no-shell case, which is all this package asks
+of it."
+  (or (agent-shell-viewport--shell-buffer
+       (or viewport-buffer (current-buffer)))
+      (if (derived-mode-p 'agent-shell-mode)
+          (current-buffer)
+        (seq-first (agent-shell-project-buffers)))
+      (progn
+        (unless (or no-error (not no-create))
+          (user-error "No agent shell buffers available for current project"))
+        nil)))
+
+(defun agent-shell-prompt-queue-edit (index)
+  "Record an edit action for the pending prompt at INDEX."
+  (interactive (list 0))
+  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-edit
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args (list index)))
+
+(defun agent-shell-prompt-queue-remove (&optional remove-index)
+  "Record a remove action for REMOVE-INDEX, or for the whole queue."
+  (interactive (list nil))
+  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-remove
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args (list remove-index)))
+
+(defun agent-shell-prompt-queue-resume ()
+  "Record a resume action for the pending prompt queue."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-resume
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args nil))
+
 (defun agent-shell-restart (&rest args)
   "Record a restart action with ARGS."
   (interactive)

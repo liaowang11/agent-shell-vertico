@@ -472,36 +472,6 @@ time with the newest first."
     "Resumable")
    (t "Transcript only")))
 
-(defconst agent-shell-vertico-transcript--key-char #x100000
-  "First character of the private-use range used to key candidates.")
-
-(defconst agent-shell-vertico-transcript--key-range #xfffe
-  "Number of characters one candidate key character can encode.")
-
-(defun agent-shell-vertico-transcript--candidate-key (index)
-  "Return an invisible completion key for INDEX.
-
-Completion collapses candidates with equal text, so two sessions an
-agent titled the same way would leave one of them unreachable.  The key
-is private-use characters carrying `invisible', the approach Consult
-uses for repeated lines: candidates stay distinct while the minibuffer
-shows the title alone."
-  (let ((key nil)
-        (remaining index))
-    (while (progn
-             (setq key
-                   (concat
-                    (char-to-string
-                     (+ agent-shell-vertico-transcript--key-char
-                        (% remaining
-                           agent-shell-vertico-transcript--key-range)))
-                    key))
-             (and (>= remaining agent-shell-vertico-transcript--key-range)
-                  (setq remaining
-                        (/ remaining
-                           agent-shell-vertico-transcript--key-range)))))
-    (propertize key 'invisible t)))
-
 (defconst agent-shell-vertico-transcript--annotation-columns
   '((project . 0.3)
     (agent . 0.14)
@@ -647,7 +617,7 @@ WIDTH, when given, is how many columns the candidate text may use."
          (concat
           (agent-shell-vertico-transcript--candidate-text record width)
           (when index
-            (agent-shell-vertico-transcript--candidate-key index)))))
+            (agent-shell-vertico--candidate-key index)))))
     (put-text-property
      0 (length candidate) 'agent-shell-vertico-transcript-record
      record candidate)
