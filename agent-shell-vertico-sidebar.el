@@ -939,19 +939,33 @@ key report that there is no session at point."
         (forward-line 1))
       (nreverse positions))))
 
+(defun agent-shell-vertico-sidebar--preceding-node-entry
+    (position node-positions)
+  "Return the last NODE-POSITIONS entry starting at or before POSITION.
+NODE-POSITIONS is in display order, so the first match from the end is the
+node POSITION sits under."
+  (seq-find (lambda (entry) (<= (cdr entry) position))
+            (reverse node-positions)))
+
 (defun agent-shell-vertico-sidebar--view-anchor (position node-positions)
   "Capture a simple view anchor at POSITION among NODE-POSITIONS.
 The anchor records POSITION's logical line within its node so a render can
-restore a surviving title, context, or detail line."
+restore a surviving title, context, or detail line.
+
+A POSITION carrying no node, which is where the newline ending the last row
+leaves a blank line, anchors to the node above it.  Its missing ordinal
+would otherwise read as the first node, and every refresh would move point
+from the end of the sidebar to the top."
   (save-excursion
     (goto-char position)
-    (let* ((node (agent-shell-vertico-sidebar--point-node))
-           (node-position (cdr (assoc node node-positions)))
-           (index (or (cl-position node node-positions
-                                   :key #'car :test #'equal)
-                      0)))
-      (list :node node
-            :index index
+    (let* ((entry (or (assoc (agent-shell-vertico-sidebar--point-node)
+                             node-positions)
+                      (agent-shell-vertico-sidebar--preceding-node-entry
+                       position node-positions)))
+           (node-position (cdr entry)))
+      (list :node (car entry)
+            ;; `entry' is the very cons held by NODE-POSITIONS.
+            :index (or (cl-position entry node-positions :test #'eq) 0)
             :line-offset
             (when node-position
               (count-lines node-position (line-beginning-position)))))))

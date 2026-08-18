@@ -1184,6 +1184,27 @@ point left there reports no session at point for the next key pressed."
         (should (agent-shell-vertico-sidebar--node-at-point))
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))))))
 
+(ert-deftest agent-shell-vertico-sidebar-render-keeps-point-below-the-last-row ()
+  "Point past the last row stays on that row instead of jumping to the top.
+The newline ending the last row leaves a blank line with no node on it, and
+an anchor that finds no node there must not fall back to the first node."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-max))
+        (should-not (agent-shell-vertico-sidebar--node-at-point))
+        (agent-shell-vertico-sidebar--render)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))))))
+
 (ert-deftest agent-shell-vertico-sidebar-title-is-hoverable-to-its-last-character ()
   "The whole session title carries the hover highlight and its tooltip."
   (agent-shell-vertico-tests--with-session-buffers
