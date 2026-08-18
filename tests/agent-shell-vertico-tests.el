@@ -5770,6 +5770,32 @@ each later index has moved by the time its turn comes."
     (agent-shell-vertico-prompt-queue-embark-remove (nth 2 candidates))
     (should (equal agent-shell-test-last-args '(1)))))
 
+(ert-deftest agent-shell-vertico-prompt-queue-inject-uses-resolved-index ()
+  "Injection re-resolves the index the same way removal does."
+  (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
+    (let ((candidate (nth 1 candidates)))
+      (agent-shell-vertico-tests--queue-set-pending shell '("Second prompt"))
+      (agent-shell-vertico-prompt-queue-embark-inject candidate)
+      (should (eq agent-shell-test-last-command
+                  'agent-shell-prompt-queue-inject))
+      (should (eq agent-shell-test-last-buffer shell))
+      (should (equal agent-shell-test-last-args '(0))))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-inject-needs-agent-shell-support ()
+  "Injection arrived after the agent-shell version this package requires."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (cl-letf (((symbol-function 'agent-shell-prompt-queue-inject) nil))
+      (should-error (agent-shell-vertico-prompt-queue-embark-inject
+                     (car candidates))
+                    :type 'user-error)
+      (should-not agent-shell-test-last-command))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-inject-skips-queue-entry ()
+  "A queue-wide entry has no prompt to inject, and says so quietly."
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (agent-shell-vertico-prompt-queue-embark-inject (nth 1 candidates))
+    (should-not agent-shell-test-last-command)))
+
 (ert-deftest agent-shell-vertico-prompt-queue-resume-entry-resumes-queue ()
   "The resume entry resumes the whole queue."
   (agent-shell-vertico-tests--with-queue '("First prompt")

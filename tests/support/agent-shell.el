@@ -247,6 +247,13 @@ of it."
         agent-shell-test-last-buffer (current-buffer)
         agent-shell-test-last-args (list remove-index)))
 
+(defun agent-shell-prompt-queue-inject (index)
+  "Record an inject action for the pending prompt at INDEX."
+  (interactive (list 0))
+  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-inject
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args (list index)))
+
 (defun agent-shell-prompt-queue-resume ()
   "Record a resume action for the pending prompt queue."
   (interactive)

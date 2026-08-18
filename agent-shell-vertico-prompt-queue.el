@@ -44,6 +44,8 @@
 (declare-function agent-shell--shell-buffer "agent-shell" (&rest arguments))
 (declare-function agent-shell-prompt-queue-edit
                   "agent-shell-prompt-queue" (index))
+(declare-function agent-shell-prompt-queue-inject
+                  "agent-shell-inject" (index))
 (declare-function agent-shell-prompt-queue-remove
                   "agent-shell-prompt-queue" (&optional remove-index))
 (declare-function agent-shell-prompt-queue-resume
@@ -284,6 +286,23 @@ prompts, or earlier removals may have moved this one up."
       (agent-shell-prompt-queue-remove
        (agent-shell-vertico-prompt-queue--resolve-index record)))))
 
+(defun agent-shell-vertico-prompt-queue--act-inject (record)
+  "Deliver RECORD's prompt to the turn already running.
+
+`agent-shell-prompt-queue-inject' takes the prompt out of the queue
+itself, and only once the agent has taken it: an agent that declines,
+or one that never advertised mid-turn injection, leaves the prompt
+pending rather than losing it.
+
+Injection is newer than the agent-shell version this package requires,
+so an older one is reported rather than left to signal a void function."
+  (when (agent-shell-vertico-prompt-queue--prompt-p record)
+    (unless (fboundp 'agent-shell-prompt-queue-inject)
+      (user-error "This agent-shell cannot inject prompts mid-turn"))
+    (with-current-buffer (agent-shell-vertico-prompt-queue--session record)
+      (agent-shell-prompt-queue-inject
+       (agent-shell-vertico-prompt-queue--resolve-index record)))))
+
 (defun agent-shell-vertico-prompt-queue--act-copy (record)
   "Copy RECORD's whole prompt to the kill ring."
   (when (agent-shell-vertico-prompt-queue--prompt-p record)
@@ -347,6 +366,11 @@ so a long prompt is only readable in a buffer of its own."
   (agent-shell-vertico-prompt-queue--act-remove
    (agent-shell-vertico-prompt-queue--record-from-candidate candidate)))
 
+(defun agent-shell-vertico-prompt-queue-embark-inject (candidate)
+  "Inject pending prompt CANDIDATE into the running turn."
+  (agent-shell-vertico-prompt-queue--act-inject
+   (agent-shell-vertico-prompt-queue--record-from-candidate candidate)))
+
 (defun agent-shell-vertico-prompt-queue-embark-copy (candidate)
   "Copy pending prompt CANDIDATE to the kill ring."
   (agent-shell-vertico-prompt-queue--act-copy
@@ -360,6 +384,8 @@ so a long prompt is only readable in a buffer of its own."
 (defvar-keymap agent-shell-vertico-prompt-queue-embark-map
   :doc "Embark actions for `agent-shell' pending prompts."
   "e" #'agent-shell-vertico-prompt-queue-embark-edit
+  ;; `i' is the key agent-shell gives Inject in the queue's own button row.
+  "i" #'agent-shell-vertico-prompt-queue-embark-inject
   "x" #'agent-shell-vertico-prompt-queue-embark-remove
   "w" #'agent-shell-vertico-prompt-queue-embark-copy
   "v" #'agent-shell-vertico-prompt-queue-embark-view)
@@ -393,8 +419,8 @@ Call this only after Embark is loaded."
 Lists the session's pending prompts, then `[Resume queue]' and
 `[Remove all]'.  Choosing a prompt edits it; choosing one of the
 queue-wide entries resumes or empties the queue.  With Embark, a prompt
-also takes `e' to edit, `x' to remove, `w' to copy, and `v' to read in
-full.
+also takes `e' to edit, `i' to inject into the running turn, `x' to
+remove, `w' to copy, and `v' to read in full.
 
 Works from the shell buffer, from its viewport, and from any other
 buffer in a project that has a shell."

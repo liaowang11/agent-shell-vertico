@@ -48,6 +48,12 @@ line could not show. After them come two queue-wide entries:
 Choosing a prompt edits it. With Embark:
 
 - `e` edit the prompt
+- `i` inject it into the running turn, the key agent-shell gives Inject
+  in the queue's own button row. The prompt leaves the queue only once
+  the agent takes it, so an agent that declines, or one without mid-turn
+  injection, leaves it pending. Needs an agent-shell with
+  `agent-shell-prompt-queue-inject`; an older one reports that instead
+  of failing
 - `x` remove it
 - `w` copy the whole prompt to the kill ring
 - `v` read the whole prompt in a buffer, without ending the completion
