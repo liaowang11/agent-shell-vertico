@@ -23,6 +23,7 @@
 (require 'agent-shell-vertico)
 (require 'agent-shell-vertico-sidebar)
 (require 'agent-shell-vertico-transcript)
+(require 'agent-shell-vertico-resume)
 (require 'agent-shell-vertico-prompt-queue)
 (require 'agent-shell-vertico-consult)
 (require 'agent-shell-vertico-links)
@@ -57,6 +58,7 @@
                   ("agent-shell-vertico-sidebar.el" . "0.60.2")
                   ("agent-shell-vertico-transcript.el" . "0.63.5")
                   ("agent-shell-vertico-prompt-queue.el" . "0.63.5")
+                  ("agent-shell-vertico-resume.el" . "0.63.5")
                   ("agent-shell-vertico-consult.el" . "0.63.5")
                   ("agent-shell-vertico-links.el" . "0.63.5")))
     (should
@@ -65,6 +67,7 @@
       (cdr spec))))
   (dolist (file '("agent-shell-vertico.el"
                   "agent-shell-vertico-transcript.el"
+                  "agent-shell-vertico-resume.el"
                   "agent-shell-vertico-prompt-queue.el"
                   "agent-shell-vertico-consult.el"))
     (should (equal
@@ -5934,6 +5937,311 @@ embark installs when it loads later."
               (should (string-match-p "drop 1 pending prompt"
                                       (buffer-string)))))
         (funcall state 'exit nil)))))
+
+;;; Resume picker enrichment
+
+(defmacro agent-shell-vertico-tests--with-transcript-store (specs &rest body)
+  "Write transcripts from SPECS into a store and evaluate BODY.
+
+Each spec is (NAME SESSION-ID AGENT MODEL MESSAGE).  BODY runs with
+`root' bound to a project root whose transcripts live in a shared store,
+and `records' bound to that project's parsed records."
+  (declare (indent 1) (debug t))
+  `(let* ((root (file-name-as-directory
+                 (make-temp-file "agent-shell-vertico-resume-root-" t)))
+          (store (make-temp-file "agent-shell-vertico-resume-store-" t))
+          (agent-shell-dot-subdir-function (lambda (_subdir) store)))
+     (unwind-protect
+         (progn
+           (dolist (spec ,specs)
+             (pcase-let ((`(,name ,session-id ,agent ,model ,message) spec))
+               (with-temp-file (expand-file-name name store)
+                 (insert (format "**Agent:** %s\n" agent)
+                         (format "**Working Directory:** %s\n"
+                                 (directory-file-name root))
+                         (format "**Session ID:** %s\n" session-id)
+                         (format "**Model:** %s\n\n---\n\n" model)
+                         (format "## User\n\n%s\n" message)))))
+           (let ((records
+                  (agent-shell-vertico-transcript--records-for-project root)))
+             (ignore records)
+             ,@body))
+       (delete-directory root t)
+       (delete-directory store t))))
+
+(defun agent-shell-vertico-tests--acp-session (session-id)
+  "Return a stub ACP session alist for SESSION-ID."
+  `((sessionId . ,session-id)
+    (title . "Session title")
+    (cwd . "/work/project")))
+
+(ert-deftest agent-shell-vertico-resume-annotation-shows-transcript-fields ()
+  "A listed session is annotated with its transcript's agent, model, message."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((index (agent-shell-vertico-resume--record-index records))
+           (session (agent-shell-vertico-tests--acp-session "abc"))
+           (candidate
+            (agent-shell-vertico-resume--candidate
+             "project  Session title  Today, 10:00"
+             session
+             (gethash "abc" index)))
+           (annotation (agent-shell-vertico-resume--annotate candidate)))
+      (should (string-match-p "Claude" annotation))
+      (should (string-match-p "opus" annotation))
+      (should (string-match-p "make the sidebar wider" annotation))
+      (should (string-match-p "Resumable" annotation)))))
+
+(ert-deftest agent-shell-vertico-resume-annotation-marks-live-session ()
+  "A session already held by a shell buffer is annotated as live."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((shell "Claude Agent @ project" "/work/project/"
+              '((:session . ((:id . "abc"))))))
+    (setq agent-shell-test-buffers (list shell))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (candidate
+            (agent-shell-vertico-resume--candidate "label" session nil)))
+      (should (string-match-p
+               "Live" (agent-shell-vertico-resume--annotate candidate))))))
+
+(ert-deftest agent-shell-vertico-resume-annotation-without-transcript ()
+  "A session with no transcript still annotates, with empty columns."
+  (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+         (candidate
+          (agent-shell-vertico-resume--candidate "label" session nil))
+         (annotation (agent-shell-vertico-resume--annotate candidate)))
+    (should annotation)
+    (should (string-match-p "Resumable" annotation))))
+
+(ert-deftest agent-shell-vertico-resume-annotation-skips-non-session-choice ()
+  "A choice that starts a new shell carries no session, so no annotation."
+  (should-not (agent-shell-vertico-resume--annotate "New shell")))
+
+(ert-deftest agent-shell-vertico-resume-affixation-matches-annotation ()
+  "Both renderers go through one suffix, so they cannot drift apart."
+  (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+         (candidate
+          (agent-shell-vertico-resume--candidate "label" session nil))
+         (affixation
+          (car (agent-shell-vertico-resume--affixate (list candidate)))))
+    (should (equal (nth 0 affixation) candidate))
+    (should (equal (nth 2 affixation)
+                   (agent-shell-vertico-resume--annotate candidate)))))
+
+(ert-deftest agent-shell-vertico-resume-index-prefers-newest-transcript ()
+  "Two transcripts of one session resolve to the newest."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("old.md" "abc" "Claude" "opus" "first attempt")
+        ("new.md" "abc" "Claude" "opus" "second attempt"))
+    (let ((index (agent-shell-vertico-resume--record-index records)))
+      (should (= (hash-table-count index) 1))
+      (should
+       (equal
+        (agent-shell-vertico-transcript-record-preview (gethash "abc" index))
+        (agent-shell-vertico-transcript-record-preview (car records)))))))
+
+(ert-deftest agent-shell-vertico-resume-records-choices-against-sessions ()
+  "The choices hook records each label with the transcript it resolves to."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((index (agent-shell-vertico-resume--record-index records))
+           (session (agent-shell-vertico-tests--acp-session "abc"))
+           (agent-shell-vertico-resume--choices nil)
+           (agent-shell-vertico-resume--index index)
+           (hook (agent-shell-vertico-resume--choices-function nil))
+           (choices (funcall hook (list (cons "New shell" :new-shell)
+                                        (cons "Resume abc" session)))))
+      (should (equal (mapcar #'car choices) '("New shell" "Resume abc")))
+      (should (equal (cdr (assoc "New shell"
+                                 agent-shell-vertico-resume--choices))
+                     :new-shell))
+      (should (equal (cdr (assoc "Resume abc"
+                                 agent-shell-vertico-resume--choices))
+                     session))
+      (should
+       (equal
+        (agent-shell-vertico-transcript-record-session-id
+         (agent-shell-vertico-resume--candidate-record
+          (nth 1 (agent-shell-vertico-resume--candidates
+                  '("New shell" "Resume abc")))))
+        "abc")))))
+
+(ert-deftest agent-shell-vertico-resume-choices-hook-keeps-user-transform ()
+  "A user's own choices function still runs, and its result is what shows."
+  (let* ((agent-shell-vertico-resume--choices nil)
+         (user-function
+          (lambda (choices)
+            (seq-remove (lambda (choice) (eq (cdr choice) :temp-shell))
+                        choices)))
+         (hook (agent-shell-vertico-resume--choices-function user-function))
+         (choices (funcall hook (list (cons "New shell" :new-shell)
+                                      (cons "New temp shell" :temp-shell)))))
+    (should (equal (mapcar #'car choices) '("New shell")))
+    (should (equal (mapcar #'car agent-shell-vertico-resume--choices)
+                   '("New shell")))))
+
+(ert-deftest agent-shell-vertico-resume-read-delegates-foreign-prompt ()
+  "A prompt the picker makes for something else reads as it always did."
+  (let* ((agent-shell-vertico-resume--choices
+          (list (cons "New shell" :new-shell)))
+         (delegated nil)
+         (inner (lambda (&rest args) (setq delegated args) "chosen buffer"))
+         (agent-shell-vertico-resume-read-choice-function
+          (lambda (&rest _) (error "Picker reader used for a foreign prompt"))))
+    (should (equal (agent-shell-vertico-resume--read
+                    inner "Switch to shell buffer: "
+                    '("shell one" "shell two") nil t)
+                   "chosen buffer"))
+    (should (equal (car delegated) "Switch to shell buffer: "))))
+
+(ert-deftest agent-shell-vertico-resume-read-enriches-picker-candidates ()
+  "The picker's own prompt reads through the configured reader."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (agent-shell-vertico-resume--index
+            (agent-shell-vertico-resume--record-index records))
+           (agent-shell-vertico-resume--choices
+            (list (cons "New shell" :new-shell)
+                  (cons "Resume abc" session)))
+           (seen nil)
+           (agent-shell-vertico-resume-read-choice-function
+            (lambda (_prompt candidates _default)
+              (setq seen candidates)
+              (nth 1 candidates))))
+      (should (equal (agent-shell-vertico-resume--read
+                      (lambda (&rest _) (error "Delegated a picker prompt"))
+                      "Start shell: "
+                      '(("New shell" . :new-shell) ("Resume abc" . session))
+                      nil t nil nil "New shell")
+                     "Resume abc"))
+      (should (equal (mapcar #'substring-no-properties seen)
+                     '("New shell" "Resume abc")))
+      (should
+       (agent-shell-vertico-transcript-record-p
+        (get-text-property
+         0 'agent-shell-vertico-transcript-record (nth 1 seen)))))))
+
+(ert-deftest agent-shell-vertico-resume-picker-returns-selected-session ()
+  "End to end: the advice enriches the prompt and returns what was chosen."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (annotations nil)
+           (agent-shell-session-choices-function nil)
+           (default-directory root)
+           (agent-shell-vertico-resume-read-choice-function
+            (lambda (_prompt candidates _default)
+              (setq annotations
+                    (mapcar #'agent-shell-vertico-resume--annotate candidates))
+              (nth 1 candidates))))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should (equal (agent-shell--prompt-select-session (list session))
+                         session))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session))
+      (should-not (nth 0 annotations))
+      (should (string-match-p "make the sidebar wider" (nth 1 annotations))))))
+
+(ert-deftest agent-shell-vertico-resume-picker-survives-store-failure ()
+  "A transcript store that cannot be read leaves the picker working."
+  (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+         (agent-shell-dot-subdir-function nil)
+         (agent-shell-session-choices-function nil)
+         (reported nil)
+         (annotation nil)
+         (agent-shell-vertico-resume-read-choice-function
+          (lambda (_prompt candidates _default)
+            (setq annotation
+                  (agent-shell-vertico-resume--annotate (nth 1 candidates)))
+            (nth 1 candidates))))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format &rest arguments)
+                 (setq reported (apply #'format-message format arguments)))))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should (equal (agent-shell--prompt-select-session (list session))
+                         session))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session)))
+    (should (string-match-p "no transcripts" reported))
+    (should (string-match-p "Resumable" annotation))))
+
+(ert-deftest agent-shell-vertico-resume-picker-skips-work-without-sessions ()
+  "With no session to resume there is nothing to join, so nothing is read."
+  (let ((parsed nil)
+        (agent-shell-session-choices-function nil)
+        (agent-shell-vertico-resume-read-choice-function
+         (lambda (&rest _) (error "Enriched a prompt with no sessions"))))
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-transcript--records-for-project)
+               (lambda (&rest _) (setq parsed t) nil))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) "New shell")))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should-not (agent-shell--prompt-select-session nil))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session)))
+    (should-not parsed)))
+
+(ert-deftest agent-shell-vertico-resume-setup-installs-advice ()
+  "Setup installs the picker advice once."
+  (unwind-protect
+      (progn
+        (agent-shell-vertico-resume-setup)
+        (agent-shell-vertico-resume-setup)
+        (let ((installed 0))
+          (advice-mapc
+           (lambda (function _properties)
+             (when (eq function #'agent-shell-vertico-resume--select-session)
+               (cl-incf installed)))
+           'agent-shell--prompt-select-session)
+          (should (= installed 1))))
+    (advice-remove 'agent-shell--prompt-select-session
+                   #'agent-shell-vertico-resume--select-session)))
+
+(ert-deftest agent-shell-vertico-resume-table-declares-category ()
+  "The fallback reader's table carries the category and keeps the order."
+  (let* ((table (agent-shell-vertico-resume--table '("b" "a")))
+         (metadata (funcall table "" nil 'metadata)))
+    (should (equal (alist-get 'category (cdr metadata))
+                   'agent-shell-session-choice))
+    (should (equal (funcall (alist-get 'display-sort-function (cdr metadata))
+                            '("b" "a"))
+                   '("b" "a")))
+    (should (equal (all-completions "" table) '("b" "a")))))
+
+(ert-deftest agent-shell-vertico-resume-consult-registers-reader ()
+  "Loading the Consult module makes the picker read with preview."
+  (should (equal agent-shell-vertico-resume-read-choice-function
+                 #'agent-shell-vertico-consult--read-session-choice)))
+
+(ert-deftest agent-shell-vertico-resume-consult-reader-previews-transcript ()
+  "The Consult reader previews the transcript of the candidate at point."
+  (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+         (record (agent-shell-vertico-transcript-record-create
+                  :file "/store/one.md" :session-id "abc"))
+         (candidate
+          (agent-shell-vertico-resume--candidate "Resume abc" session record))
+         (options nil))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest rest)
+                 (setq options rest)
+                 (car candidates)))
+              ((symbol-function 'consult--temporary-files) (lambda () #'ignore))
+              ((symbol-function 'consult--jump-preview) (lambda () #'ignore)))
+      (should (equal (agent-shell-vertico-consult--read-session-choice
+                      "Start shell: " (list candidate) "Resume abc")
+                     candidate))
+      (should (equal (plist-get options :category) 'agent-shell-session-choice))
+      (should (equal (plist-get options :default) "Resume abc"))
+      (should-not (plist-get options :sort))
+      (should (functionp (plist-get options :state))))))
 
 (provide 'agent-shell-vertico-tests)
 

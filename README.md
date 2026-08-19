@@ -207,7 +207,8 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-follow-workspaces t))
 ```
 
-The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
+The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
+previous session row), `TAB` (fold or session details),
 `S-TAB` (cycle all fold levels),
 `=` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
@@ -215,7 +216,8 @@ The regular (non-Evil) sidebar map includes `TAB` (fold or session details),
 window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
-rows, `RET` activates the current row or metadata field, `o` opens the session,
+rows, `C-j`/`C-k` move a whole session row at a time, `RET` activates the
+current row or metadata field, `o` opens the session,
 `O` opens it in another window, `TAB` toggles the current row, and `S-TAB`
 cycles every row through the fold levels.  `gr` refreshes, `D`
 kills, `R` restarts, and `I` interrupts the current session; `t` opens its
@@ -223,6 +225,34 @@ transcript and `T` shows traffic.  `q` closes the sidebar, while `=`, `s`,
 `c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains
 Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
 prefix remains available as a fallback (for example, `C-c k` kills).
+
+## Session picker
+
+`agent-shell` shows a session picker when `agent-shell-session-strategy` is
+`prompt`: starting a shell lists the sessions the agent can resume in the
+current directory. The picker reports what `session/list` returns, which is
+the directory, the session title, and the date.
+
+- `M-x agent-shell-vertico-resume-setup`
+  Annotate that picker with what the local transcripts know.
+
+Each listed session is joined to its transcript by session ID, and annotated
+with whether a shell already holds it, the agent, the model, and the first
+message of the session. A session with no transcript on this machine still
+lists and still resumes; its columns are empty.
+
+With `agent-shell-vertico-consult` loaded, moving through the picker previews
+the joined transcript, in the same way transcript search previews its matches.
+
+The picker offers no hook for this, so `agent-shell-vertico-resume-setup`
+advises `agent-shell--prompt-select-session`. It replaces only how the choice
+is read: which sessions are offered, what a choice means, and any
+`agent-shell-session-choices-function` you have configured all keep working
+unchanged.
+
+Annotating costs one pass over the project's transcripts each time the picker
+opens, which takes about half a second for a project with several hundred
+transcripts.
 
 ## Transcript recall
 
@@ -358,9 +388,13 @@ link navigation, join the same keymap.
   :bind (("C-c a r" . agent-shell-vertico-transcript-browse-project)
          ("C-c a R" . agent-shell-vertico-transcript-resume-project)))
 
+(use-package agent-shell-vertico-resume
+  :after agent-shell-vertico-transcript
+  :config (agent-shell-vertico-resume-setup))
+
 (use-package agent-shell-vertico-consult
   :after (agent-shell-vertico-transcript agent-shell-vertico-prompt-queue
-          consult)
+          agent-shell-vertico-resume consult)
   :bind (("C-c a s" . agent-shell-vertico-transcript-search-project))
   :config
   (with-eval-after-load 'embark

@@ -19,8 +19,12 @@ Four modules form a small dependency graph:
 - `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
   Markdown transcripts `agent-shell` writes; requires the core independently
   of the sidebar.
-- `agent-shell-vertico-consult.el` — Consult sources over the transcript store;
-  requires the transcript module, not the sidebar.
+- `agent-shell-vertico-resume.el` — annotations for `agent-shell`'s own
+  session picker, joined to transcripts by session ID; requires the
+  transcript module.
+- `agent-shell-vertico-consult.el` — Consult sources over the transcript store,
+  and the previewing reader for the session picker; requires the transcript
+  and resume modules, not the sidebar.
 
 ## Commands
 
@@ -98,6 +102,22 @@ live buffer, validates it is an `agent-shell-mode` buffer, then dispatches the
 real `agent-shell-*` command with `call-interactively` inside that buffer.
 `agent-shell-vertico-setup-embark` registers the category into
 `embark-keymap-alist`.
+
+**Enriching the session picker.** `agent-shell--prompt-select-session` calls a
+plain `completing-read` with no completion category, and the only supported
+hook, `agent-shell-session-choices-function`, can relabel choices but cannot
+change the reader. `agent-shell-vertico-resume-setup` therefore advises that
+function. Inside the advice, three things are bound for the duration of the
+call: the choices function (composed with the user's own, so it records the
+label-to-token alist the picker will use), the session-ID-to-transcript index,
+and `completing-read` itself. The replacement reader only takes over when every
+candidate is one of the recorded labels, because the picker also reads other
+things while it is installed, such as which shell buffer to switch to. The
+labels are returned unchanged, so upstream's own dispatch on `:new-shell`,
+`:other-shell` and the session alist is untouched. Layer the reader the way the
+transcript module layers its own: the plain reader lives in
+`agent-shell-vertico-resume-read-choice-function`, and loading the Consult
+module replaces it with the previewing one.
 
 ## Critical constraint: do not pre-bind host-package variables
 

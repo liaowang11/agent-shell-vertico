@@ -12,11 +12,13 @@
 ;;; Commentary:
 
 ;; Live, aggregated `rg' search over current `agent-shell' transcript
-;; files, and live preview of the prompts queued in a session.
+;; files, live preview of the prompts queued in a session, and live
+;; preview of the transcripts behind `agent-shell''s session picker.
 
 ;;; Code:
 
 (require 'agent-shell-vertico-prompt-queue)
+(require 'agent-shell-vertico-resume)
 (require 'agent-shell-vertico-transcript)
 (require 'consult)
 (require 'subr-x)
@@ -231,6 +233,26 @@ the caller decides what to open once the minibuffer is gone."
 
 (setq agent-shell-vertico-transcript-read-record-function
       #'agent-shell-vertico-consult--read-record)
+
+(defun agent-shell-vertico-consult--read-session-choice
+    (prompt candidates default)
+  "Read one session picker choice from CANDIDATES with PROMPT and preview.
+
+DEFAULT is the choice the picker starts on.  Candidates carry the
+transcript record they were joined to, which is what the preview shows;
+a choice with no transcript behind it previews nothing."
+  (consult--read
+   candidates
+   :prompt prompt
+   :lookup #'consult--lookup-member
+   :state (agent-shell-vertico-consult--state)
+   :require-match t
+   :category 'agent-shell-session-choice
+   :default default
+   :sort nil))
+
+(setq agent-shell-vertico-resume-read-choice-function
+      #'agent-shell-vertico-consult--read-session-choice)
 
 (defun agent-shell-vertico-consult--search (project-roots)
   "Search transcripts belonging to PROJECT-ROOTS and open one."

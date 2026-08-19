@@ -64,6 +64,58 @@
   (setq agent-shell-test-subscriptions
         (delq subscription agent-shell-test-subscriptions)))
 
+(defvar agent-shell-session-choices-function nil)
+
+(defun agent-shell--apply-session-choices (choices)
+  "Apply `agent-shell-session-choices-function' to CHOICES.
+Mirrors the real validation: the function must return a non-empty list
+of choices whose tokens were all offered."
+  (if agent-shell-session-choices-function
+      (let ((result (funcall agent-shell-session-choices-function choices)))
+        (unless (listp result)
+          (user-error "Session choices function must return a list, got: %S"
+                      result))
+        (unless result
+          (user-error "Session choices function returned no choices"))
+        (let ((tokens (mapcar #'cdr choices)))
+          (dolist (choice result)
+            (unless (member (cdr choice) tokens)
+              (user-error "Session choices returned an unknown token: %S"
+                          (cdr choice)))))
+        result)
+    choices))
+
+(cl-defun agent-shell--session-choice-label (&key acp-session max-widths)
+  "Return the picker label for ACP-SESSION.
+MAX-WIDTHS pads the columns in the real builder; the stub keeps the
+column order and the separator that matter to callers."
+  (ignore max-widths)
+  (format "%s  %s  %s"
+          (file-name-nondirectory
+           (directory-file-name (or (map-elt acp-session (quote cwd)) "")))
+          (or (map-elt acp-session (quote title)) "Untitled")
+          (or (map-elt acp-session (quote updatedAt))
+              (map-elt acp-session (quote createdAt))
+              "unknown-time")))
+
+(defun agent-shell--prompt-select-session (acp-sessions)
+  "Prompt to choose one of ACP-SESSIONS, or nil to start a new shell.
+Mirrors the real picker: choices pass through the choices function, a
+`completing-read' names one of them, and the label maps back to its
+token."
+  (let* ((choices (agent-shell--apply-session-choices
+                   (append (list (cons "New shell" :new-shell))
+                           (mapcar (lambda (acp-session)
+                                     (cons (agent-shell--session-choice-label
+                                            :acp-session acp-session)
+                                           acp-session))
+                                   acp-sessions))))
+         (selection (completing-read "Start shell: " choices nil t nil nil
+                                     (caar choices))))
+    (pcase (map-elt choices selection)
+      (:new-shell nil)
+      (acp-session acp-session))))
+
 (defun agent-shell-open-transcript ()
   "Record an open transcript action."
   (interactive)

@@ -499,16 +499,17 @@ in step.")
       (round (* width marginalia-field-width))
     width))
 
-(defun agent-shell-vertico-transcript--field (value column face)
-  "Return VALUE as annotation COLUMN, padded to its width and drawn in FACE.
+(defun agent-shell-vertico-transcript--field (value width face)
+  "Return VALUE as an annotation column of WIDTH, drawn in FACE.
+
+WIDTH is a column count or a fraction of `marginalia-field-width'.
 
 The columns are padded here rather than by `marginalia--fields'.  That
 macro expands where this file is compiled, so building the package
 against the marginalia test stub would freeze the stub's plain
 concatenation into the compiled file, and every annotation would lose its
 padding, its faces and the marker marginalia aligns by."
-  (let* ((width (agent-shell-vertico-transcript--resolve-width
-                 (agent-shell-vertico-transcript--column-width column)))
+  (let* ((width (agent-shell-vertico-transcript--resolve-width width))
          (text (truncate-string-to-width (or value "") width 0 ?\s
                                          (truncate-string-ellipsis))))
     (unless (string-prefix-p (or value "") text)
@@ -526,15 +527,15 @@ every annotation in the list.")
 (defun agent-shell-vertico-transcript--fields (fields)
   "Return FIELDS as one annotation string.
 
-Each entry in FIELDS is a value, a column name, and a face.  Columns are
+Each entry in FIELDS is a value, a column width, and a face.  Columns are
 separated by `marginalia-separator', as marginalia's own annotations are."
   (concat
    agent-shell-vertico-transcript--align-marker
    (mapconcat
     (lambda (field)
-      (pcase-let ((`(,value ,column ,face) field))
+      (pcase-let ((`(,value ,width ,face) field))
         (concat marginalia-separator
-                (agent-shell-vertico-transcript--field value column face))))
+                (agent-shell-vertico-transcript--field value width face))))
     fields
     "")))
 
@@ -676,16 +677,21 @@ two weeks, which is what made them hard to tell apart."
     (agent-shell-vertico-transcript--fields
      (list
       (list (or (agent-shell-vertico-transcript-record-project-name record) "-")
-            'project 'marginalia-value)
+            (agent-shell-vertico-transcript--column-width 'project)
+            'marginalia-value)
       (list (or (agent-shell-vertico-transcript-record-agent record) "-")
-            'agent 'marginalia-value)
+            (agent-shell-vertico-transcript--column-width 'agent)
+            'marginalia-value)
       (list (agent-shell-vertico-transcript--record-status record)
-            'status 'marginalia-type)
+            (agent-shell-vertico-transcript--column-width 'status)
+            'marginalia-type)
       (list (marginalia--time-relative
              (agent-shell-vertico-transcript-record-modified-time record))
-            'changed 'marginalia-date)
+            (agent-shell-vertico-transcript--column-width 'changed)
+            'marginalia-date)
       (list (agent-shell-vertico-transcript--record-created record)
-            'created 'shadow)))))
+            (agent-shell-vertico-transcript--column-width 'created)
+            'shadow)))))
 
 (add-to-list 'marginalia-annotators
              '(agent-shell-transcript
