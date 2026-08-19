@@ -1169,6 +1169,103 @@ session that is blocked again must keep asking for a reply."
           (should-not (gethash orphan
                                agent-shell-vertico-sidebar--activity)))))))
 
+(ert-deftest agent-shell-vertico-sidebar-next-session-moves-past-detail-lines ()
+  "Next-session moves to the following session's first line, not its details."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status))
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (goto-char (point-min))
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        ;; From alpha's detail line, the next stop is still beta's own row.
+        (forward-line 1)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        (agent-shell-vertico-sidebar-next-session)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+        (should (string-match-p "Review beta"
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))
+        ;; Point stays on the last session rather than falling off the list.
+        (let ((position (point)))
+          (should-error (agent-shell-vertico-sidebar-next-session)
+                        :type 'user-error)
+          (should (= (point) position)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-previous-session-leaves-current-row ()
+  "Previous-session moves to the session before the one point sits in."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status))
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (agent-shell-vertico-sidebar--goto-node (cons 'session beta)))
+        (forward-line 1)
+        (agent-shell-vertico-sidebar-previous-session)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        (should (string-match-p "Review alpha"
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))
+        (let ((position (point)))
+          (should-error (agent-shell-vertico-sidebar-previous-session)
+                        :type 'user-error)
+          (should (= (point) position)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-session-motion-skips-project-headers ()
+  "Session motion lands on session rows only, never on a project header."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (goto-char (point-min))
+        (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                    'project))
+        (agent-shell-vertico-sidebar-next-session)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        (agent-shell-vertico-sidebar-next-session)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+        (agent-shell-vertico-sidebar-previous-session)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-binds-session-motion-keys ()
+  "Both key styles move between sessions with `C-j' and `C-k'.
+Refresh keeps bare `g' in the regular map, so the motion keys stay clear of
+the `g' prefix Evil states use for `gr'."
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-j"))
+              #'agent-shell-vertico-sidebar-next-session))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-k"))
+              #'agent-shell-vertico-sidebar-previous-session))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "g"))
+              #'agent-shell-vertico-sidebar-refresh))
+  (should (eq (cdr (assoc "C-j" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-next-session))
+  (should (eq (cdr (assoc "C-k" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-previous-session)))
+
 (ert-deftest agent-shell-vertico-sidebar-render-keeps-point-on-a-row ()
   "Point stays on a session row when the row it was on disappears.
 Searching for the remembered row walks to the end of the buffer, and

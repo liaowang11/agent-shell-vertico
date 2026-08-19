@@ -1599,6 +1599,48 @@ shows."
   (when (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'project)
     (agent-shell-vertico-sidebar--node-at-point)))
 
+(defun agent-shell-vertico-sidebar--row-start (node-positions)
+  "Return the first position of the row point sits in, using NODE-POSITIONS.
+
+Context and detail lines carry their session's node, so a row is left from
+its own first line however deep in it point started."
+  (or (cdr (or (assoc (agent-shell-vertico-sidebar--point-node)
+                      node-positions)
+               (agent-shell-vertico-sidebar--preceding-node-entry
+                (line-beginning-position) node-positions)))
+      (line-beginning-position)))
+
+(defun agent-shell-vertico-sidebar--move-to-session (backward)
+  "Move point to the session row after the current row, or BACKWARD of it.
+
+Project headers and the current row's own extra lines are skipped, so each
+key lands on one session's first line.  Point does not move when there is
+no such row."
+  (let* ((node-positions (agent-shell-vertico-sidebar--node-positions))
+         (start (agent-shell-vertico-sidebar--row-start node-positions))
+         (sessions (mapcar #'cdr
+                           (seq-filter (lambda (entry)
+                                         (eq (caar entry) 'session))
+                                       node-positions)))
+         (position (seq-find (if backward
+                                 (lambda (position) (< position start))
+                               (lambda (position) (> position start)))
+                             (if backward (reverse sessions) sessions))))
+    (unless position
+      (user-error "No %s agent-shell session"
+                  (if backward "previous" "next")))
+    (goto-char position)))
+
+(defun agent-shell-vertico-sidebar-next-session ()
+  "Move point to the first line of the next session row."
+  (interactive)
+  (agent-shell-vertico-sidebar--move-to-session nil))
+
+(defun agent-shell-vertico-sidebar-previous-session ()
+  "Move point to the first line of the previous session row."
+  (interactive)
+  (agent-shell-vertico-sidebar--move-to-session t))
+
 (defun agent-shell-vertico-sidebar-toggle-project ()
   "Toggle the project fold at point."
   (interactive)
@@ -1910,6 +1952,7 @@ statuses themselves are separated by the lighter middle dot."
    "===================\n\n"
    "Navigation\n"
    "  j / k       Move to the next or previous row\n"
+   "  C-j / C-k   Move to the next or previous session\n"
    "  RET         Activate the row or metadata field\n"
    "  mouse-1     Activate at the clicked position\n"
    "  TAB         Toggle a project or current session details\n"
@@ -1964,6 +2007,8 @@ statuses themselves are separated by the lighter middle dot."
     (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
+    (define-key map (kbd "C-j") #'agent-shell-vertico-sidebar-next-session)
+    (define-key map (kbd "C-k") #'agent-shell-vertico-sidebar-previous-session)
     (define-key map (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
     (define-key map (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
     (define-key map (kbd "S-TAB")
@@ -1997,6 +2042,8 @@ statuses themselves are separated by the lighter middle dot."
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
     ("k" . evil-previous-line)
+    ("C-j" . agent-shell-vertico-sidebar-next-session)
+    ("C-k" . agent-shell-vertico-sidebar-previous-session)
     ("RET" . agent-shell-vertico-sidebar-activate)
     ("<return>" . agent-shell-vertico-sidebar-activate)
     ("TAB" . agent-shell-vertico-sidebar-toggle-at-point)
@@ -2021,11 +2068,11 @@ statuses themselves are separated by the lighter middle dot."
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
 
-The explicit `j'/`k' entries keep vertical navigation intact; `D'/`R'/`I'
-are the destructive session actions so navigation and lowercase mnemonics
-remain available.  Refresh is `gr', and the other mnemonic actions
-intentionally take precedence over their generic Evil commands in this
-read-only sidebar.")
+The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
+move a whole session row at a time; `D'/`R'/`I' are the destructive session
+actions so navigation and lowercase mnemonics remain available.  Refresh is
+`gr', and the other mnemonic actions intentionally take precedence over
+their generic Evil commands in this read-only sidebar.")
 
 (defun agent-shell-vertico-sidebar--bind-evil-keys ()
   "Install direct Dired-style bindings for Evil sidebar states.
