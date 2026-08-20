@@ -23,8 +23,9 @@ Four modules form a small dependency graph:
   session picker, joined to transcripts by session ID; requires the
   transcript module.
 - `agent-shell-vertico-consult.el` — Consult sources over the transcript store,
-  and the previewing reader for the session picker; requires the transcript
-  and resume modules, not the sidebar.
+  the previewing reader for the session picker, and the `consult-line`
+  integration that keeps folded blocks in a live shell buffer readable;
+  requires the transcript and resume modules, not the sidebar.
 
 ## Commands
 

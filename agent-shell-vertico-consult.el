@@ -14,6 +14,9 @@
 ;; Live, aggregated `rg' search over current `agent-shell' transcript
 ;; files, live preview of the prompts queued in a session, and live
 ;; preview of the transcripts behind `agent-shell''s session picker.
+;;
+;; Also makes Consult's line search usable inside a live shell buffer,
+;; where agent-shell's collapsed blocks otherwise arrive blank.
 
 ;;; Code:
 
@@ -21,8 +24,10 @@
 (require 'agent-shell-vertico-resume)
 (require 'agent-shell-vertico-transcript)
 (require 'consult)
+(require 'map)
 (require 'subr-x)
 
+(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
 (declare-function consult--file-action "consult" (file))
 (declare-function consult--jump-preview "consult" ())
 (declare-function consult--lookup-member "consult" (&rest args))
@@ -31,6 +36,9 @@
 (declare-function consult--process-collection "consult" (builder &rest props))
 (declare-function consult--read "consult" (table &rest options))
 (declare-function consult--temporary-files "consult" ())
+
+;; No value: Consult's own `defcustom' must install the real default.
+(defvar consult-fontify-preserve)
 
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
@@ -348,6 +356,57 @@ it would do instead of leaving the previous prompt on screen."
 ;; category, so both readers render from one definition.
 (setq agent-shell-vertico-prompt-queue-read-function
       #'agent-shell-vertico-consult--read-prompt-queue)
+
+;;; Searching inside a live shell buffer
+
+(defun agent-shell-vertico-consult--folding-buffer-p (buffer)
+  "Return non-nil when BUFFER hides text with agent-shell's folds."
+  (and (buffer-live-p buffer)
+       (buffer-local-boundp 'agent-shell-ui-mode buffer)
+       (buffer-local-value 'agent-shell-ui-mode buffer)))
+
+(defun agent-shell-vertico-consult--plain-candidates ()
+  "Stop Consult copying agent-shell's `invisible' property onto candidates.
+agent-shell hides a collapsed block's body with an `invisible' text
+property.  `consult--line-fontify' copies `face', `invisible' and
+`display' from the source buffer onto each candidate, and the minibuffer
+hides any non-nil `invisible' value, so every line inside a collapsed
+block arrives blank.  Nil `consult-fontify-preserve' skips that copy.
+
+It has to be set here rather than in the shell buffer: the annotation
+runs with the minibuffer current, so a value local to the shell buffer
+is never read.  Candidates lose their buffer faces and keep their text."
+  (when-let* ((window (minibuffer-selected-window))
+              ((agent-shell-vertico-consult--folding-buffer-p
+                (window-buffer window))))
+    (setq-local consult-fontify-preserve nil)))
+
+(defun agent-shell-vertico-consult--expand-fold ()
+  "Expand the agent-shell fragment Consult jumped or previewed into.
+Consult opens folds by calling each overlay's `isearch-open-invisible'
+at point.  agent-shell folds with a text property and no overlay, so
+nothing opens by itself and point lands on text nobody can read.
+
+Hidden text whose fragment reports itself expanded is trailing
+whitespace rather than a fold, and toggling there would collapse the
+fragment, so leave it alone."
+  (when (and (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
+             (invisible-p (point))
+             (map-elt (get-text-property (point) 'agent-shell-ui-state)
+                      :collapsed))
+    (agent-shell-ui-toggle-fragment)))
+
+;;;###autoload
+(defun agent-shell-vertico-consult-setup-buffer-search ()
+  "Make Consult's line search work inside agent-shell's collapsed blocks.
+Candidates keep their text instead of arriving blank, and both previewing
+and selecting one expand the block it lives in.  Nothing collapses those
+blocks again: Consult's preview only restores the folds it opened
+itself, which are overlays."
+  (add-hook 'minibuffer-setup-hook
+            #'agent-shell-vertico-consult--plain-candidates)
+  (add-hook 'consult-after-jump-hook
+            #'agent-shell-vertico-consult--expand-fold))
 
 (provide 'agent-shell-vertico-consult)
 

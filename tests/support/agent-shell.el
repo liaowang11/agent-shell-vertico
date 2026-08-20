@@ -27,6 +27,15 @@
 
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
+(defvar agent-shell-test-toggle-fragment-count 0)
+
+(defvar-local agent-shell-ui-mode nil
+  "Stubbed agent-shell fold minor mode.")
+
+(defun agent-shell-ui-toggle-fragment ()
+  "Record a fold toggle instead of folding."
+  (cl-incf agent-shell-test-toggle-fragment-count))
+
 (defun agent-shell-buffers ()
   "Return stubbed agent shell buffers."
   (cl-incf agent-shell-test-buffer-query-count)

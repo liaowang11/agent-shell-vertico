@@ -360,6 +360,24 @@ With Embark, `embark-act` on such a link opens the session behind it
 loaded, its generic Org link actions, such as the copy variants and
 link navigation, join the same keymap.
 
+## Buffer search
+
+`consult-line` shows an `agent-shell` buffer's collapsed blocks as blank
+rows, and jumping to a match leaves the block collapsed. agent-shell hides
+a folded body with an `invisible` text property, Consult copies that
+property onto its candidates, and the minibuffer hides the text there too.
+Consult can only open folds built from overlays.
+
+```elisp
+(agent-shell-vertico-consult-setup-buffer-search)
+```
+
+After that, matches inside a collapsed block show their text, and both
+previewing and selecting one expands the block. Candidates in
+`agent-shell` buffers lose their buffer faces, which is the trade for
+reading them. Blocks opened while previewing stay open, because Consult's
+preview restores only the folds it opened itself.
+
 ## Setup
 
 ```elisp
@@ -397,6 +415,7 @@ link navigation, join the same keymap.
           agent-shell-vertico-resume consult)
   :bind (("C-c a s" . agent-shell-vertico-transcript-search-project))
   :config
+  (agent-shell-vertico-consult-setup-buffer-search)
   (with-eval-after-load 'embark
     (agent-shell-vertico-transcript-setup-embark)))
 

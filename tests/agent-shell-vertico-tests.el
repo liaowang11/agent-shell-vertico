@@ -5171,6 +5171,146 @@ would save the accessible region alone and drop the rest of the file."
             (string-match-p "2 working director" issue))
           issues))))))
 
+;;; Buffer search
+
+(defun agent-shell-vertico-tests--folding-buffer (&optional collapsed)
+  "Return a buffer with one fragment body, hidden when COLLAPSED is non-nil.
+The body sits on line 2 and carries the `invisible' and
+`agent-shell-ui-state' text properties agent-shell puts there."
+  (let ((buffer (generate-new-buffer " *agent-shell-fold*")))
+    (with-current-buffer buffer
+      (agent-shell-mode)
+      (setq agent-shell-ui-mode t)
+      (insert "▶ Read file\nhidden body line\n")
+      (put-text-property (point-min) (point-max)
+                         'agent-shell-ui-state
+                         (list :qualified-id "read-1" :collapsed collapsed))
+      (when collapsed
+        (put-text-property 13 (point-max) 'invisible t)))
+    buffer))
+
+(ert-deftest agent-shell-vertico-consult-folding-buffer-p-finds-fold-owner ()
+  (let ((folding (agent-shell-vertico-tests--folding-buffer t))
+        (plain (generate-new-buffer " *plain*")))
+    (unwind-protect
+        (progn
+          (should (agent-shell-vertico-consult--folding-buffer-p folding))
+          (should-not (agent-shell-vertico-consult--folding-buffer-p plain))
+          (should-not (agent-shell-vertico-consult--folding-buffer-p nil)))
+      (kill-buffer folding)
+      (kill-buffer plain))
+    (should-not (agent-shell-vertico-consult--folding-buffer-p folding))))
+
+(ert-deftest agent-shell-vertico-consult-plain-candidates-stops-property-copy ()
+  "Entering the minibuffer from a folding buffer turns off the face copy.
+
+`consult--line-fontify' copies `face', `invisible' and `display' from
+the source buffer onto each candidate, which blanks every line hidden
+inside a collapsed block."
+  (let ((folding (agent-shell-vertico-tests--folding-buffer t))
+        (minibuffer (generate-new-buffer " *fake-minibuffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'minibuffer-selected-window)
+                   (lambda () (selected-window))))
+          (set-window-buffer (selected-window) folding)
+          (with-current-buffer minibuffer
+            (agent-shell-vertico-consult--plain-candidates)
+            (should (local-variable-p 'consult-fontify-preserve))
+            (should-not consult-fontify-preserve))
+          (should (eq (default-value 'consult-fontify-preserve) t)))
+      (kill-buffer minibuffer)
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-plain-candidates-spares-others ()
+  (let ((plain (generate-new-buffer " *plain*"))
+        (minibuffer (generate-new-buffer " *fake-minibuffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'minibuffer-selected-window)
+                   (lambda () (selected-window))))
+          (set-window-buffer (selected-window) plain)
+          (with-current-buffer minibuffer
+            (agent-shell-vertico-consult--plain-candidates)
+            (should-not (local-variable-p 'consult-fontify-preserve))))
+      (kill-buffer minibuffer)
+      (kill-buffer plain))))
+
+(ert-deftest agent-shell-vertico-consult-plain-candidates-without-window ()
+  "A minibuffer with no originating window leaves the option alone."
+  (let ((minibuffer (generate-new-buffer " *fake-minibuffer*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'minibuffer-selected-window)
+                   (lambda () nil)))
+          (with-current-buffer minibuffer
+            (agent-shell-vertico-consult--plain-candidates)
+            (should-not (local-variable-p 'consult-fontify-preserve))))
+      (kill-buffer minibuffer))))
+
+(ert-deftest agent-shell-vertico-consult-expand-fold-opens-collapsed-body ()
+  (let ((folding (agent-shell-vertico-tests--folding-buffer t))
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer folding
+          (goto-char (point-max))
+          (forward-line -1)
+          (should (invisible-p (point)))
+          (agent-shell-vertico-consult--expand-fold)
+          (should (= agent-shell-test-toggle-fragment-count 1)))
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-expand-fold-spares-visible-text ()
+  (let ((folding (agent-shell-vertico-tests--folding-buffer t))
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer folding
+          (goto-char (point-min))
+          (agent-shell-vertico-consult--expand-fold)
+          (should (= agent-shell-test-toggle-fragment-count 0)))
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-expand-fold-spares-expanded-fragment ()
+  "Hidden text inside an expanded fragment is trailing whitespace, not a fold.
+Toggling there would collapse the fragment the user just jumped into."
+  (let ((folding (agent-shell-vertico-tests--folding-buffer nil))
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer folding
+          (put-text-property 13 (point-max) 'invisible t)
+          (goto-char (point-max))
+          (forward-line -1)
+          (should (invisible-p (point)))
+          (agent-shell-vertico-consult--expand-fold)
+          (should (= agent-shell-test-toggle-fragment-count 0)))
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-expand-fold-spares-other-buffers ()
+  (let ((plain (generate-new-buffer " *plain*"))
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer plain
+          (insert "hidden\n")
+          (put-text-property (point-min) (point-max) 'invisible t)
+          (put-text-property (point-min) (point-max)
+                             'agent-shell-ui-state (list :collapsed t))
+          (goto-char (point-min))
+          (agent-shell-vertico-consult--expand-fold)
+          (should (= agent-shell-test-toggle-fragment-count 0)))
+      (kill-buffer plain))))
+
+(ert-deftest agent-shell-vertico-consult-setup-buffer-search-installs-hooks ()
+  (let ((minibuffer-setup-hook nil)
+        (consult-after-jump-hook (list #'recenter)))
+    (agent-shell-vertico-consult-setup-buffer-search)
+    (should (memq #'agent-shell-vertico-consult--plain-candidates
+                  minibuffer-setup-hook))
+    (should (memq #'agent-shell-vertico-consult--expand-fold
+                  consult-after-jump-hook))
+    (should (memq #'recenter consult-after-jump-hook))
+    (agent-shell-vertico-consult-setup-buffer-search)
+    (should (= (seq-count (lambda (fn)
+                            (eq fn #'agent-shell-vertico-consult--expand-fold))
+                          consult-after-jump-hook)
+               1))))
+
 ;;; Links
 ;;
 ;; Bookmarks and Org links store a stable pointer to a session: the
