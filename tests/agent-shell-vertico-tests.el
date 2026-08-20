@@ -6458,6 +6458,41 @@ and `records' bound to that project's parsed records."
   (should (equal agent-shell-vertico-resume-read-choice-function
                  #'agent-shell-vertico-consult--read-session-choice)))
 
+(ert-deftest agent-shell-vertico-resume-consult-picker-returns-selected-session ()
+  "The advised picker lets Consult read once and returns the selected session."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (agent-shell-session-choices-function nil)
+           (default-directory root)
+           (consult-read-count 0)
+           (agent-shell-vertico-resume-read-choice-function
+            #'agent-shell-vertico-consult--read-session-choice))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &optional predicate &rest _)
+                   (nth 1 (all-completions "" collection predicate))))
+                ((symbol-function 'consult--read)
+                 (lambda (candidates &rest options)
+                   (cl-incf consult-read-count)
+                   (when (> consult-read-count 1)
+                     (error "Consult reader re-entered"))
+                   (completing-read
+                    (plist-get options :prompt)
+                    candidates nil
+                    (plist-get options :require-match)
+                    nil nil (plist-get options :default))))
+                ((symbol-function 'consult--temporary-files)
+                 (lambda () #'ignore))
+                ((symbol-function 'consult--jump-preview)
+                 (lambda () #'ignore)))
+        (agent-shell-vertico-resume-setup)
+        (unwind-protect
+            (should (equal (agent-shell--prompt-select-session (list session))
+                           session))
+          (advice-remove 'agent-shell--prompt-select-session
+                         #'agent-shell-vertico-resume--select-session)))
+      (should (= consult-read-count 1)))))
+
 (ert-deftest agent-shell-vertico-resume-consult-reader-previews-transcript ()
   "The Consult reader previews the transcript of the candidate at point."
   (let* ((session (agent-shell-vertico-tests--acp-session "abc"))

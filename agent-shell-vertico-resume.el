@@ -274,10 +274,13 @@ reads other things while this replacement is installed, such as which
 shell buffer to switch to, and those have to read as they always did."
   (let ((candidates (all-completions "" collection predicate)))
     (if (agent-shell-vertico-resume--ours-p candidates)
-        (funcall agent-shell-vertico-resume-read-choice-function
-                 prompt
-                 (agent-shell-vertico-resume--candidates candidates)
-                 default)
+        ;; A custom reader such as Consult calls `completing-read' internally.
+        ;; Restore INNER so the replacement cannot intercept itself.
+        (cl-letf (((symbol-function 'completing-read) inner))
+          (funcall agent-shell-vertico-resume-read-choice-function
+                   prompt
+                   (agent-shell-vertico-resume--candidates candidates)
+                   default))
       (funcall inner prompt collection predicate require-match initial-input
                hist default inherit-input-method))))
 
