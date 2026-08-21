@@ -1308,10 +1308,11 @@ point left there reports no session at point for the next key pressed."
         (should (agent-shell-vertico-sidebar--node-at-point))
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))))))
 
-(ert-deftest agent-shell-vertico-sidebar-render-keeps-point-below-the-last-row ()
-  "Point past the last row stays on that row instead of jumping to the top.
-The newline ending the last row leaves a blank line with no node on it, and
-an anchor that finds no node there must not fall back to the first node."
+(ert-deftest agent-shell-vertico-sidebar-render-ends-on-a-session-row ()
+  "The rendered list ends without a blank line, and point there holds.
+Every row is inserted with a closing newline, so the buffer would otherwise
+end on a line carrying no session: point left there reports no session at
+point, and a refresh would send it to the top of the list."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
@@ -1319,15 +1320,19 @@ an anchor that finds no node there must not fall back to the first node."
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-group-by nil)
-          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status model mode))
           (agent-shell-vertico-sidebar-sort-by 'name))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (goto-char (point-max))
-        (should-not (agent-shell-vertico-sidebar--node-at-point))
-        (agent-shell-vertico-sidebar--render)
-        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))))))
+        (should-not (eq (char-before) ?\n))
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+        (let ((line (line-number-at-pos)))
+          (agent-shell-vertico-sidebar--render)
+          (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+          (should (= (line-number-at-pos) line)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-title-is-hoverable-to-its-last-character ()
   "The whole session title carries the hover highlight and its tooltip."

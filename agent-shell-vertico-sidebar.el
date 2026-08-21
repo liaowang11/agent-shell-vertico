@@ -950,35 +950,35 @@ node POSITION sits under."
 (defun agent-shell-vertico-sidebar--view-anchor (position node-positions)
   "Capture a simple view anchor at POSITION among NODE-POSITIONS.
 The anchor records POSITION's logical line within its node so a render can
-restore a surviving title, context, or detail line.
-
-A POSITION carrying no node, which is where the newline ending the last row
-leaves a blank line, anchors to the node above it.  Its missing ordinal
-would otherwise read as the first node, and every refresh would move point
-from the end of the sidebar to the top."
+restore a surviving title, context, or detail line."
   (save-excursion
     (goto-char position)
-    (let* ((entry (or (assoc (agent-shell-vertico-sidebar--point-node)
-                             node-positions)
-                      (agent-shell-vertico-sidebar--preceding-node-entry
-                       position node-positions)))
-           (node-position (cdr entry)))
-      (list :node (car entry)
-            ;; `entry' is the very cons held by NODE-POSITIONS.
-            :index (or (cl-position entry node-positions :test #'eq) 0)
+    (let* ((node (agent-shell-vertico-sidebar--point-node))
+           (node-position (cdr (assoc node node-positions)))
+           (index (or (cl-position node node-positions
+                                   :key #'car :test #'equal)
+                      0)))
+      (list :node node
+            :index index
             :line-offset
             (when node-position
               (count-lines node-position (line-beginning-position)))))))
 
 (defun agent-shell-vertico-sidebar--anchor-position (anchor node-positions)
-  "Resolve ANCHOR against NODE-POSITIONS after a render."
+  "Resolve ANCHOR against NODE-POSITIONS after a render.
+
+The offset is only honoured when it reaches the beginning of a line that
+still belongs to the node.  Walking past the last line of the list leaves
+point at the end of it instead, which is a column the anchor never
+recorded, so a node whose lines were removed falls back to its first."
   (let* ((node (plist-get anchor :node))
          (node-position (cdr (assoc node node-positions))))
     (or (when node-position
           (save-excursion
             (goto-char node-position)
             (forward-line (or (plist-get anchor :line-offset) 0))
-            (if (equal node (agent-shell-vertico-sidebar--point-node))
+            (if (and (bolp)
+                     (equal node (agent-shell-vertico-sidebar--point-node)))
                 (point)
               node-position)))
         (when node-positions
@@ -1239,6 +1239,13 @@ a column of slack rather than pushing its count past the window edge."
                   buffer (agent-shell-vertico-sidebar--project-root buffer)
                   width)
                  'session buffer))))
+          ;; Every row is inserted with a closing newline, so the buffer
+          ;; would end on a blank line carrying no session.  Point left
+          ;; there, by a key at the end of the list or a click in the empty
+          ;; area under it, reports no session at point.
+          (goto-char (point-max))
+          (when (eq (char-before) ?\n)
+            (delete-char -1))
           (let ((node-positions
                  (agent-shell-vertico-sidebar--node-positions)))
             (goto-char
