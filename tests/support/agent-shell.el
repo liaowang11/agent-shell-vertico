@@ -28,6 +28,7 @@
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
 (defvar agent-shell-test-toggle-fragment-count 0)
+(defvar agent-shell-test-group-collapse-calls nil)
 
 (defvar-local agent-shell-ui-mode nil
   "Stubbed agent-shell fold minor mode.")
@@ -35,6 +36,34 @@
 (defun agent-shell-ui-toggle-fragment ()
   "Record a fold toggle instead of folding."
   (cl-incf agent-shell-test-toggle-fragment-count))
+
+(defun agent-shell-ui--set-group-collapsed (group-qualified-id collapsed)
+  "Record a group fold change and reveal its children when expanded.
+This mirrors the part of the real private API used by the package: group
+children lose their `invisible' property when COLLAPSED is nil."
+  (push (list group-qualified-id collapsed)
+        agent-shell-test-group-collapse-calls)
+  (save-excursion
+    (goto-char (point-min))
+    (while (< (point) (point-max))
+      (let* ((start (point))
+             (state (get-text-property start 'agent-shell-ui-state))
+             (next (or (next-single-property-change
+                        start 'agent-shell-ui-state nil (point-max))
+                       (point-max))))
+        (when (and state
+                   (equal (map-elt state :qualified-id)
+                          group-qualified-id))
+          (map-put! state :collapsed collapsed)
+          (put-text-property start next 'agent-shell-ui-state state))
+        (when (and (not collapsed)
+                   state
+                   (equal (map-elt state :group-id) group-qualified-id)
+                   (not (map-elt state :collapsed)))
+          (put-text-property start next 'invisible nil))
+        (if (> next start)
+            (goto-char next)
+          (goto-char (point-max)))))))
 
 (defun agent-shell-buffers ()
   "Return stubbed agent shell buffers."

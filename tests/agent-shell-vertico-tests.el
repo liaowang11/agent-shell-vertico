@@ -86,13 +86,15 @@
          (kill-buffer sidebar)))))
 
 (cl-defun agent-shell-vertico-tests--insert-block
-    (&key qid kind group-id label-left label-right body (navigatable t))
+    (&key qid kind group-id label-left label-right body (navigatable t)
+          (collapsed nil) (invisible nil))
   "Insert a fragment block mimicking `agent-shell-ui--insert-fragment'.
 QID is the qualified id; LABEL-LEFT, LABEL-RIGHT, and BODY are the
 section texts; NAVIGATABLE sets the `:navigatable' state flag.  KIND is
 the fragment `:kind' (`group' for an activity-group header); GROUP-ID is
-the qualified id of the header this block nests under.  Return the block
-start position."
+the qualified id of the header this block nests under.  COLLAPSED and
+INVISIBLE set the corresponding fold state and text property.  Return
+the block start position."
   (let ((start (point)))
     (when (and (or label-left label-right) body)
       (let ((i (point)))
@@ -116,8 +118,10 @@ start position."
                        (list (cons :qualified-id qid)
                              (cons :kind kind)
                              (cons :group-id group-id)
-                             (cons :collapsed nil)
+                             (cons :collapsed collapsed)
                              (cons :navigatable navigatable)))
+    (when invisible
+      (put-text-property start (point) 'invisible t))
     (insert "\n\n")
     start))
 
@@ -3033,14 +3037,14 @@ pending resume rather than start another shell."
     (agent-shell-vertico-tests--insert-block
      :qid "2-5-agent_message_chunk" :body "Final answer two" :navigatable nil)
     (let* ((index (agent-shell-vertico--imenu-index))
-           (internal (mapcar #'car (cdr (assoc "Internal" index))))
+           (activity (mapcar #'car (cdr (assoc "Activity" index))))
            (response (mapcar #'car (cdr (assoc "Response" index)))))
-      ;; Intermediate narration and the tool are Internal; the last message
+      ;; Intermediate narration and the tool are Activity; the last message
       ;; chunk of each interaction is the Response.
-      (should (equal internal '("Let me start" "Read foo")))
+      (should (equal activity '("Let me start" "Read foo")))
       (should (equal response '("Final answer one" "Final answer two"))))))
 
-(ert-deftest agent-shell-vertico-imenu-index-groups-internal-and-response ()
+(ert-deftest agent-shell-vertico-imenu-index-groups-activity-and-response ()
   (with-temp-buffer
     (agent-shell-vertico-tests--insert-block
      :qid "1-call_abc" :label-left "completed read"
@@ -3062,19 +3066,19 @@ pending resume rather than start another shell."
     (agent-shell-vertico-tests--insert-block
      :qid "1-Error" :body "boom" :navigatable nil)
     (let* ((index (agent-shell-vertico--imenu-index))
-           (internal (cdr (assoc "Internal" index)))
+           (activity (cdr (assoc "Activity" index)))
            (response (cdr (assoc "Response" index))))
-      (should (equal (mapcar #'car internal)
+      (should (equal (mapcar #'car activity)
                      '("Read README.org"
                        "Let me look at the config"
                        "1. step one")))
       (should (equal (mapcar #'car response)
                      '("Here is the final answer")))
-      (should (integerp (cdr (car internal))))
+      (should (integerp (cdr (car activity))))
       ;; No requests outside `agent-shell-mode'.
       (should-not (assoc "Request" index)))))
 
-(ert-deftest agent-shell-vertico-imenu-nests-group-members-under-header ()
+(ert-deftest agent-shell-vertico-imenu-flattens-group-members-into-activity ()
   (with-temp-buffer
     ;; An activity-group header, its two tool-call members, then an
     ;; ungrouped plan and the interaction's final message.
@@ -3091,22 +3095,23 @@ pending resume rather than start another shell."
     (agent-shell-vertico-tests--insert-block
      :qid "1-3-agent_message_chunk" :body "Final answer" :navigatable nil)
     (let* ((index (agent-shell-vertico--imenu-index))
-           (internal (cdr (assoc "Internal" index)))
+           (activity (cdr (assoc "Activity" index)))
            (response (mapcar #'car (cdr (assoc "Response" index))))
-           (group (assoc "✓ Tool calls 2/2" internal)))
-      ;; The header is a submenu; its members nest beneath it in call order.
+           (group (assoc "✓ Tool calls 2/2" activity)))
+      ;; The header and each member are selectable entries in one stream.
       (should group)
-      (should (equal (mapcar #'car (cdr group))
-                     '("Read README.org" "Edit init.el")))
+      (should (integerp (cdr group)))
+      (should (equal (mapcar #'car activity)
+                     '("✓ Tool calls 2/2"
+                       "↳ Read README.org"
+                       "↳ Edit init.el"
+                       "1. step one")))
       ;; Members carry real buffer positions and their status annotation.
-      (should (integerp (cdr (cadr group))))
-      (should (string-match-p
-               "completed read"
-               (agent-shell-vertico--imenu-annotation (car (cadr group)))))
-      ;; The header and the ungrouped plan are the only top-level Internal
-      ;; entries — members do not also appear flat.
-      (should (equal (mapcar #'car internal)
-                     '("✓ Tool calls 2/2" "1. step one")))
+      (let ((member (nth 1 activity)))
+        (should (integerp (cdr member)))
+        (should (string-match-p
+                 "completed read"
+                 (agent-shell-vertico--imenu-annotation (car member)))))
       (should (equal response '("Final answer"))))))
 
 (ert-deftest agent-shell-vertico-imenu-drops-empty-group-header ()
@@ -3147,7 +3152,7 @@ so returning nil here would leave every other mode's imenu unannotated."
      :qid "1-call_abc" :label-left "completed read"
      :label-right "Read README.org" :body "x\ny\nz" :navigatable t)
     (let* ((index (agent-shell-vertico--imenu-index))
-           (candidate (car (car (cdr (assoc "Internal" index)))))
+           (candidate (car (car (cdr (assoc "Activity" index)))))
            (annotation (agent-shell-vertico--imenu-annotation candidate)))
       (should (stringp annotation))
       (should (string-match-p "completed read" annotation)))))
@@ -3179,7 +3184,10 @@ so returning nil here would leave every other mode's imenu unannotated."
     (should imenu-auto-rescan)
     ;; imenu's own hard truncation is disabled so our ellipsized truncation
     ;; is authoritative.
-    (should (null imenu-max-item-length))))
+    (should (null imenu-max-item-length))
+    (should (local-variable-p 'imenu-after-jump-hook))
+    (should (memq #'agent-shell-vertico--imenu-reveal-at-point
+                  imenu-after-jump-hook))))
 
 (ert-deftest agent-shell-vertico-setup-imenu-adds-mode-hooks ()
   (let ((agent-shell-mode-hook nil)
@@ -5271,6 +5279,56 @@ inside a collapsed block."
           (should (invisible-p (point)))
           (agent-shell-vertico-consult--expand-fold)
           (should (= agent-shell-test-toggle-fragment-count 1)))
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-expand-parent-group ()
+  "A jump into a hidden activity member expands its parent group first."
+  (let ((folding (generate-new-buffer " *agent-shell-group-fold*"))
+        (agent-shell-test-group-collapse-calls nil)
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer folding
+          (agent-shell-mode)
+          (setq agent-shell-ui-mode t)
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-activity-0" :kind 'group :label-left "Activity")
+          (let ((member
+                 (agent-shell-vertico-tests--insert-block
+                  :qid "1-call_a" :group-id "1-activity-0"
+                  :label-left "completed read" :label-right "Read foo"
+                  :body "contents" :navigatable t :invisible t)))
+            (goto-char member)
+            (should (invisible-p (point)))
+            (agent-shell-vertico-consult--expand-fold)
+            (should (equal agent-shell-test-group-collapse-calls
+                           '(("1-activity-0" nil))))
+            (should-not (invisible-p (point)))
+            (should (= agent-shell-test-toggle-fragment-count 0))))
+      (kill-buffer folding))))
+
+(ert-deftest agent-shell-vertico-consult-expand-fold-opens-collapsed-member ()
+  "Expanding a parent preserves and then opens a collapsed member."
+  (let ((folding (generate-new-buffer " *agent-shell-member-fold*"))
+        (agent-shell-test-group-collapse-calls nil)
+        (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer folding
+          (agent-shell-mode)
+          (setq agent-shell-ui-mode t)
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-activity-0" :kind 'group :label-left "Activity")
+          (let ((member
+                 (agent-shell-vertico-tests--insert-block
+                  :qid "1-call_a" :group-id "1-activity-0"
+                  :label-left "completed read" :label-right "Read foo"
+                  :body "contents" :navigatable t :collapsed t
+                  :invisible t)))
+            (goto-char member)
+            (should (invisible-p (point)))
+            (agent-shell-vertico-consult--expand-fold)
+            (should (equal agent-shell-test-group-collapse-calls
+                           '(("1-activity-0" nil))))
+            (should (= agent-shell-test-toggle-fragment-count 1))))
       (kill-buffer folding))))
 
 (ert-deftest agent-shell-vertico-consult-expand-fold-spares-visible-text ()

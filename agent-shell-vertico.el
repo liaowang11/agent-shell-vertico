@@ -45,6 +45,9 @@
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 (declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
+(declare-function agent-shell-ui--set-group-collapsed "agent-shell-ui"
+                  (group-qualified-id collapsed))
+(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
 (declare-function embark-open-externally "embark")
 (declare-function comint-send-eof "comint" ())
 
@@ -593,20 +596,20 @@ Call this only after Embark is loaded."
 ;; text property.  A single walk of those fragments therefore works in
 ;; either mode.  Items are grouped as Request (the user's prompts, shell
 ;; only — read from comint via shell-maker's own `imenu-generic-expression'),
-;; Internal (thinking, tool calls, plans, and the agent's intermediate
+;; Activity (thinking, tool calls, plans, and the agent's intermediate
 ;; narration — the work it does on the way to an answer), and Response
 ;; (the final agent message of each interaction).
 ;;
 ;; Agents differ in how they stream prose: some emit a single message at
 ;; the end, others narrate between tool calls as a series of message
 ;; chunks.  Only the last message chunk of an interaction is its Response;
-;; earlier chunks are intermediate narration and join Internal.
+;; earlier chunks are intermediate narration and join Activity.
 ;;
 ;; A run of consecutive tool calls and thoughts renders under one
 ;; collapsible activity-group header (e.g. "✓ Tool calls 2/2").  That
 ;; header is its own fragment (`:kind' `group'); its members carry the
-;; header's qualified-id in `:group-id'.  Internal mirrors this: each
-;; header is a nested submenu whose members nest beneath it.
+;; header's qualified-id in `:group-id'.  Activity keeps the header and
+;; members as one ordered, selectable stream, prefixing members with `↳'.
 
 (defun agent-shell-vertico--imenu-message-p (qualified-id)
   "Return non-nil when QUALIFIED-ID names an agent message chunk."
@@ -712,21 +715,26 @@ else the left label — stamped with its status label for annotation."
 (defun agent-shell-vertico--imenu-group-title (start)
   "Return the truncated activity-group header label at START.
 The header carries its summary (e.g. \"✓ Tool calls 2/2\") in its
-`label-left' section and has no body of its own."
+`label-left' section and has no body of its own.  Return an imenu item
+whose position is the header's own buffer position."
   (let* ((qualified-id (map-elt (get-text-property start 'agent-shell-ui-state)
                                 :qualified-id))
          (end (agent-shell-vertico--imenu-block-end start qualified-id)))
-    (agent-shell-vertico--imenu-truncate
-     (or (agent-shell-vertico--imenu-section start end 'label-left) "Activity"))))
+    (cons
+     (agent-shell-vertico--imenu-truncate
+      (or (agent-shell-vertico--imenu-section start end 'label-left)
+          "Activity"))
+     start)))
 
-(defun agent-shell-vertico--imenu-fragment-groups ()
-  "Return the Internal and Response imenu groups for the current buffer.
+(defun agent-shell-vertico--imenu-fragment-stream ()
+  "Return the Activity and Response imenu groups for the current buffer.
 Walk each `agent-shell-ui-state' block once, in buffer order, recording
 which message chunk is the last of its interaction.  Activity-group
-headers (`:kind' `group') become nested Internal submenus titled by their
-summary label; the tool calls and thoughts they contain (`:group-id')
-nest beneath them.  Every other indexed block joins Internal flat, except
-final message chunks, which form Response."
+headers (`:kind' `group') and their members (`:group-id') remain in one
+ordered Activity stream.  Members are prefixed with `↳' so the source
+hierarchy remains visible while every entry stays selectable.  Every
+other indexed block joins Activity, except final message chunks, which
+form Response."
   (let ((seen (make-hash-table :test #'equal))
         (final-message (make-hash-table :test #'equal))
         collected)
@@ -759,38 +767,50 @@ final message chunks, which form Response."
                               (agent-shell-vertico--imenu-group-title start)
                             (agent-shell-vertico--imenu-item start)))
                     collected))))))
-    (let ((submenus (make-hash-table :test #'equal))
-          internal response)
-      (dolist (block (nreverse collected))
+    (let* ((blocks (nreverse collected))
+           (groups (make-hash-table :test #'equal))
+           (group-member-count (make-hash-table :test #'equal))
+           activity response)
+      ;; Record headers and the indexed members they own before rendering.
+      ;; This lets an empty header disappear without changing the order of
+      ;; any non-empty group, even if a stream update arrives out of order.
+      (dolist (block blocks)
+        (let ((qualified-id (nth 0 block))
+              (kind (nth 1 block))
+              (group-id (nth 2 block)))
+          (if (eq kind 'group)
+              (puthash qualified-id t groups)
+            (when group-id
+              (puthash group-id
+                       (1+ (gethash group-id group-member-count 0))
+                       group-member-count)))))
+      (dolist (block blocks)
         (let ((qualified-id (nth 0 block))
               (kind (nth 1 block))
               (group-id (nth 2 block))
               (item (nth 3 block)))
           (cond
-           ;; Group header: a submenu whose members are appended below.
+           ;; Keep a group header selectable at its own buffer position.
            ((eq kind 'group)
-            (let ((submenu (cons item nil)))
-              (puthash qualified-id submenu submenus)
-              (push submenu internal)))
-           ;; A group member nests under its header's submenu.
-           ((and group-id (gethash group-id submenus))
-            (push item (cdr (gethash group-id submenus))))
+            (when (> (gethash qualified-id group-member-count 0) 0)
+              (push item activity)))
            ;; The final message chunk of its interaction is the Response.
            ((and (agent-shell-vertico--imenu-message-p qualified-id)
                  (= (cdr item)
                     (gethash (agent-shell-vertico--imenu-interaction qualified-id)
                              final-message)))
             (push item response))
-           (t (push item internal)))))
-      ;; Members were pushed in reverse; restore call order.  A leaf's cdr is
-      ;; its buffer position (an integer), a submenu's cdr its member list, so
-      ;; an empty submenu (cdr nil) is a header that gained no member; drop it.
-      (dolist (entry internal)
-        (when (listp (cdr entry))
-          (setcdr entry (nreverse (cdr entry)))))
-      (setq internal (seq-remove (lambda (entry) (null (cdr entry))) internal))
+           (t
+            ;; A member stays in source order beside its header.  The arrow
+            ;; distinguishes it from ungrouped activity without hiding its
+            ;; status text property.
+            (when (and group-id
+                       (gethash group-id groups)
+                       (> (gethash group-id group-member-count 0) 0))
+              (setcar item (concat "↳ " (car item))))
+            (push item activity)))))
       (append
-       (when internal (list (cons "Internal" (nreverse internal))))
+       (when activity (list (cons "Activity" (nreverse activity))))
        (when response (list (cons "Response" (nreverse response))))))))
 
 (defun agent-shell-vertico--imenu-requests ()
@@ -805,13 +825,13 @@ are naturally absent there."
 
 (defun agent-shell-vertico--imenu-index ()
   "Build a nested imenu index of `agent-shell' session items.
-Grouped as Request (shell only), Internal (thinking, tool calls, and
+Grouped as Request (shell only), Activity (thinking, tool calls, and
 plans), and Response (the agent's messages).  Suitable as an
 `imenu-create-index-function' in both `agent-shell-mode' and
 `agent-shell-viewport-view-mode' buffers."
   (append
    (agent-shell-vertico--imenu-requests)
-   (agent-shell-vertico--imenu-fragment-groups)))
+   (agent-shell-vertico--imenu-fragment-stream)))
 
 (defun agent-shell-vertico--imenu-annotation (candidate)
   "Marginalia annotator for an `imenu' CANDIDATE created by this package.
@@ -835,10 +855,28 @@ other mode's imenu would lose its annotations."
       ((and annotator (pred functionp)) (funcall annotator candidate))
       (_ (marginalia-annotate-imenu candidate)))))
 
+(defun agent-shell-vertico--imenu-reveal-at-point ()
+  "Reveal the activity group and fragment at point when they are hidden.
+The imenu and Consult jump hooks land inside the selected text.  A hidden
+activity member first needs its parent group expanded; if its own fragment
+is collapsed, expand that fragment as well."
+  (when (and (bound-and-true-p agent-shell-ui-mode)
+             (invisible-p (point)))
+    (let* ((state (get-text-property (point) 'agent-shell-ui-state))
+           (group-id (map-elt state :group-id)))
+      (when group-id
+        (agent-shell-ui--set-group-collapsed group-id nil))
+      (when (and (invisible-p (point))
+                 (map-elt (get-text-property (point) 'agent-shell-ui-state)
+                          :collapsed))
+        (agent-shell-ui-toggle-fragment)))))
+
 (defun agent-shell-vertico--imenu-setup ()
   "Install the agent-shell imenu index in the current buffer."
   (setq-local imenu-create-index-function #'agent-shell-vertico--imenu-index)
   (setq-local imenu-auto-rescan t)
+  (add-hook 'imenu-after-jump-hook
+            #'agent-shell-vertico--imenu-reveal-at-point nil t)
   ;; This package truncates names itself, on a word boundary and with an
   ;; ellipsis, via `agent-shell-vertico-imenu-name-width'.  Disable imenu's
   ;; own hard cut (`imenu-max-item-length', applied by `consult-imenu') so it
@@ -873,7 +911,7 @@ effect for buffers created afterwards."
     (dolist (mode '(agent-shell-mode agent-shell-viewport-view-mode))
       (add-to-list 'consult-imenu-config
                    `(,mode :types ((?r "Request" font-lock-keyword-face)
-                                   (?i "Internal" font-lock-function-name-face)
+                                   (?a "Activity" font-lock-function-name-face)
                                    (?p "Response" font-lock-string-face)))))))
 
 (provide 'agent-shell-vertico)

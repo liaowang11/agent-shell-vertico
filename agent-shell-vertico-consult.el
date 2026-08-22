@@ -23,11 +23,11 @@
 (require 'agent-shell-vertico-prompt-queue)
 (require 'agent-shell-vertico-resume)
 (require 'agent-shell-vertico-transcript)
+(require 'agent-shell-vertico)
 (require 'consult)
 (require 'map)
 (require 'subr-x)
 
-(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
 (declare-function consult--file-action "consult" (file))
 (declare-function consult--jump-preview "consult" ())
 (declare-function consult--lookup-member "consult" (&rest args))
@@ -382,19 +382,11 @@ is never read.  Candidates lose their buffer faces and keep their text."
     (setq-local consult-fontify-preserve nil)))
 
 (defun agent-shell-vertico-consult--expand-fold ()
-  "Expand the agent-shell fragment Consult jumped or previewed into.
-Consult opens folds by calling each overlay's `isearch-open-invisible'
-at point.  agent-shell folds with a text property and no overlay, so
-nothing opens by itself and point lands on text nobody can read.
-
-Hidden text whose fragment reports itself expanded is trailing
-whitespace rather than a fold, and toggling there would collapse the
-fragment, so leave it alone."
-  (when (and (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
-             (invisible-p (point))
-             (map-elt (get-text-property (point) 'agent-shell-ui-state)
-                      :collapsed))
-    (agent-shell-ui-toggle-fragment)))
+  "Reveal the activity group and fragment Consult jumped or previewed into.
+Agent-shell folds use text properties rather than overlays, so Consult's
+normal invisible-text handling cannot reveal them on its own."
+  (when (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
+    (agent-shell-vertico--imenu-reveal-at-point)))
 
 ;;;###autoload
 (defun agent-shell-vertico-consult-setup-buffer-search ()
