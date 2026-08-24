@@ -1477,11 +1477,17 @@ sessions just to decide whether an age timer is needed."
       (_ nil))
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
+(defconst agent-shell-vertico-sidebar--subscription-refused 'refused
+  "Marker recorded for a session that would not take a subscription.")
+
 (defun agent-shell-vertico-sidebar--unwatch-buffer ()
   "Remove the event subscription for the current agent-shell buffer."
   (let ((subscription (gethash (current-buffer)
                                agent-shell-vertico-sidebar--subscriptions)))
-    (when (and subscription (fboundp 'agent-shell-unsubscribe))
+    (when (and subscription
+               (not (eq subscription
+                        agent-shell-vertico-sidebar--subscription-refused))
+               (fboundp 'agent-shell-unsubscribe))
       (ignore-errors (agent-shell-unsubscribe :subscription subscription)))
     (remhash (current-buffer) agent-shell-vertico-sidebar--subscriptions)
     (remhash (current-buffer) agent-shell-vertico-sidebar--attention)
@@ -1493,20 +1499,34 @@ sessions just to decide whether an age timer is needed."
 (defun agent-shell-vertico-sidebar--watch-buffer (&optional buffer schedule)
   "Subscribe to events from BUFFER when supported by agent-shell.
 
-When SCHEDULE is non-nil, mark the sidebar dirty after subscribing."
+When SCHEDULE is non-nil, mark the sidebar dirty after subscribing.
+
+A session can refuse the subscription: `agent-shell-subscribe-to' extends
+the session's own state alist with `map-put!', which signals
+`map-not-inplace' when that alist carries no `:event-subscriptions' key,
+as an agent-shell buffer built before that key existed does.  The sidebar
+renders such a session without live event updates rather than letting one
+bad session abort the whole render.  The refusal is recorded so later
+renders neither retry it nor report it again."
   (setq buffer (or buffer (current-buffer)))
   (when (and (buffer-live-p buffer)
              (with-current-buffer buffer
                (derived-mode-p 'agent-shell-mode))
              (fboundp 'agent-shell-subscribe-to)
              (not (gethash buffer agent-shell-vertico-sidebar--subscriptions)))
-    (puthash buffer
-             (agent-shell-subscribe-to
-              :shell-buffer buffer
-              :on-event (lambda (event)
-                          (agent-shell-vertico-sidebar--handle-event
-                           buffer event)))
-             agent-shell-vertico-sidebar--subscriptions)
+    (let ((subscription
+           (condition-case error
+               (agent-shell-subscribe-to
+                :shell-buffer buffer
+                :on-event (lambda (event)
+                            (agent-shell-vertico-sidebar--handle-event
+                             buffer event)))
+             (error
+              (message "agent-shell-vertico: %s takes no events (%s)"
+                       (buffer-name buffer) (error-message-string error))
+              agent-shell-vertico-sidebar--subscription-refused))))
+      (puthash buffer subscription
+               agent-shell-vertico-sidebar--subscriptions))
     (with-current-buffer buffer
       (add-hook 'kill-buffer-hook
                 #'agent-shell-vertico-sidebar--unwatch-buffer nil t))

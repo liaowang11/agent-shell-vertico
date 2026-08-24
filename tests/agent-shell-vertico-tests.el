@@ -1138,6 +1138,38 @@ session that is blocked again must keep asking for a reply."
         (should (gethash alpha agent-shell-vertico-sidebar--subscriptions))
         (should (gethash beta agent-shell-vertico-sidebar--subscriptions))))))
 
+(ert-deftest agent-shell-vertico-sidebar-renders-past-a-refused-subscription ()
+  "A session that cannot take a subscription does not blank the sidebar.
+
+`agent-shell-subscribe-to' extends the session's own state alist with
+`map-put!', which signals `map-not-inplace' when that alist has no
+`:event-subscriptions' key.  One such buffer aborted the whole render."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (subscribe (symbol-function 'agent-shell-subscribe-to)))
+      (cl-letf (((symbol-function 'agent-shell-subscribe-to)
+                 (lambda (&rest args)
+                   (if (eq (plist-get args :shell-buffer) alpha)
+                       (signal 'map-not-inplace (list '((:buffer . alpha))))
+                     (apply subscribe args)))))
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-sidebar--render)
+          (should (string-match-p "Review alpha" (buffer-string)))
+          (should (string-match-p "Review beta" (buffer-string)))
+          (should (gethash beta agent-shell-vertico-sidebar--subscriptions))
+          (should (= (length agent-shell-test-subscriptions) 1))
+          ;; Recorded as handled, so the next render does not retry a
+          ;; subscription the session has already refused.
+          (should (gethash alpha
+                           agent-shell-vertico-sidebar--subscriptions))
+          (agent-shell-vertico-sidebar--render)
+          (should (= (length agent-shell-test-subscriptions) 1)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-unwatches-a-killed-session ()
   "Killing a session unsubscribes it and forgets its metadata."
   (agent-shell-vertico-tests--with-session-buffers
