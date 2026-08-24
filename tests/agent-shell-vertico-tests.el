@@ -2168,8 +2168,19 @@ Only genuine side windows carry the configured width."
                            :kind)
                 'done))))
 
+(defmacro agent-shell-vertico-tests--with-frame-focus (focused &rest body)
+  "Run BODY on a graphical frame whose input focus is FOCUSED.
+
+Batch frames are terminal frames and report no focus at all, so both the
+frame kind and its focus state are stated here rather than inherited."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t))
+             ((symbol-function 'frame-focus-state)
+              (lambda (&optional _) ,focused)))
+     ,@body))
+
 (ert-deftest agent-shell-vertico-sidebar-visible-viewport-counts-as-seen ()
-  "A turn finishing in front of the reader leaves no unread mark.
+  "A turn finishing in the selected window leaves no unread mark.
 
 Users who interact through viewports never have the shell buffer itself
 on screen, so asking whether that buffer is visible marked every finished
@@ -2183,13 +2194,122 @@ turn unread."
                 (agent-shell-test-viewport-buffer viewport)
                 (agent-shell-vertico-sidebar--attention
                  (make-hash-table :test #'eq)))
-            (save-window-excursion
-              (set-window-buffer (selected-window) viewport)
-              (agent-shell-vertico-sidebar--handle-event
-               alpha '((:event . turn-complete)))
-              (should-not (gethash alpha
-                                   agent-shell-vertico-sidebar--attention))))
+            (agent-shell-vertico-tests--with-frame-focus t
+              (save-window-excursion
+                (set-window-buffer (selected-window) viewport)
+                (agent-shell-vertico-sidebar--handle-event
+                 alpha '((:event . turn-complete)))
+                (should-not
+                 (gethash alpha
+                          agent-shell-vertico-sidebar--attention)))))
         (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-sidebar-selected-session-counts-as-seen ()
+  "A turn finishing in the session the reader has selected leaves no mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (agent-shell-vertico-tests--with-frame-focus t
+        (save-window-excursion
+          (set-window-buffer (selected-window) alpha)
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete)))
+          (should-not (gethash alpha
+                               agent-shell-vertico-sidebar--attention)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unselected-window-keeps-unread ()
+  "A turn finishing in a window the reader has not selected stays unread.
+
+The session is on screen, but the reader is working in another window, so
+nobody has read the output yet."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (agent-shell-vertico-tests--with-frame-focus t
+        (save-window-excursion
+          (set-window-buffer (split-window) alpha)
+          (should-not (eq (window-buffer (selected-window)) alpha))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete)))
+          (should (eq (plist-get
+                       (gethash alpha
+                                agent-shell-vertico-sidebar--attention)
+                       :kind)
+                      'done)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unfocused-frame-keeps-unread ()
+  "A turn finishing while Emacs has no input focus stays unread.
+
+The session sits in the selected window, but the reader is in another
+application and has not seen the output."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (agent-shell-vertico-tests--with-frame-focus nil
+        (save-window-excursion
+          (set-window-buffer (selected-window) alpha)
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete)))
+          (should (eq (plist-get
+                       (gethash alpha
+                                agent-shell-vertico-sidebar--attention)
+                       :kind)
+                      'done)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unfocused-viewport-keeps-unread ()
+  "A turn finishing in a selected viewport with no input focus stays unread."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport)
+                (agent-shell-vertico-sidebar--attention
+                 (make-hash-table :test #'eq)))
+            (agent-shell-vertico-tests--with-frame-focus nil
+              (save-window-excursion
+                (set-window-buffer (selected-window) viewport)
+                (agent-shell-vertico-sidebar--handle-event
+                 alpha '((:event . turn-complete)))
+                (should (eq (plist-get
+                             (gethash alpha
+                                      agent-shell-vertico-sidebar--attention)
+                             :kind)
+                            'done)))))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-sidebar-terminal-frame-counts-as-focused ()
+  "A terminal frame reports no focus, so window selection alone decides.
+
+`frame-focus-state' answers nil on a terminal frame whether or not the
+reader is looking at it, so treating that nil as \"away\" would mark every
+finished turn unread for terminal users."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (cl-letf (((symbol-function 'display-graphic-p)
+                 (lambda (&optional _) nil))
+                ((symbol-function 'frame-focus-state)
+                 (lambda (&optional _) nil)))
+        (save-window-excursion
+          (set-window-buffer (selected-window) alpha)
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete)))
+          (should-not (gethash alpha
+                               agent-shell-vertico-sidebar--attention)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-selecting-viewport-marks-seen ()
   "Selecting a session's viewport clears its unread mark."

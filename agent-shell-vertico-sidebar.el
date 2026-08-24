@@ -1451,7 +1451,7 @@ sessions just to decide whether an age timer is needed."
                 agent-shell-vertico-sidebar--attention))
       ('turn-complete
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
-       (if (agent-shell-vertico-sidebar--session-visible-p buffer)
+       (if (agent-shell-vertico-sidebar--session-focused-p buffer)
            (remhash buffer agent-shell-vertico-sidebar--attention)
          (puthash buffer (list :kind 'done :time now)
                   agent-shell-vertico-sidebar--attention)))
@@ -1569,17 +1569,30 @@ not gain a viewport because the sidebar asked about it."
            (not (eq viewport buffer))
            viewport))))
 
-(defun agent-shell-vertico-sidebar--session-visible-p (buffer)
-  "Return non-nil when session BUFFER is on screen.
+(defun agent-shell-vertico-sidebar--frame-focused-p (frame)
+  "Return non-nil unless FRAME is known to have lost input focus.
 
-A session is on screen when its own buffer is, and equally when the
-viewport showing it is: readers who set
-`agent-shell-prefer-viewport-interaction' never display the shell buffer
-itself, and for them every finished turn would otherwise be unread."
-  (or (get-buffer-window buffer 'visible)
-      (when-let ((viewport
-                  (agent-shell-vertico-sidebar--viewport-buffer buffer)))
-        (get-buffer-window viewport 'visible))))
+Only graphical frames report focus.  A terminal frame answers nil
+whether or not the reader is looking at it, so it counts as focused and
+window selection alone decides what has been read."
+  (or (not (display-graphic-p frame))
+      (not (null (frame-focus-state frame)))))
+
+(defun agent-shell-vertico-sidebar--session-focused-p (buffer)
+  "Return non-nil when the reader is looking at session BUFFER.
+
+Being on screen is not the same as being read.  A session in a window
+the reader has not selected, or on a frame Emacs has lost focus in,
+holds output nobody has seen yet.  The viewport counts as its session:
+readers who set `agent-shell-prefer-viewport-interaction' never display
+the shell buffer itself, and for them every finished turn would
+otherwise be unread."
+  (let* ((window (selected-window))
+         (shown (window-buffer window)))
+    (and (agent-shell-vertico-sidebar--frame-focused-p (window-frame window))
+         (or (eq shown buffer)
+             (eq shown (agent-shell-vertico-sidebar--viewport-buffer
+                        buffer))))))
 
 (defun agent-shell-vertico-sidebar--session-for-buffer (buffer)
   "Return the session BUFFER belongs to, or nil.
