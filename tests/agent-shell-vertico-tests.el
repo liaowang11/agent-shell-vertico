@@ -2330,6 +2330,96 @@ finished turn unread for terminal users."
                                  agent-shell-vertico-sidebar--attention)))
         (kill-buffer viewport)))))
 
+(ert-deftest agent-shell-vertico-sidebar-selection-change-reads-its-frame ()
+  "The selected window of the frame Emacs names decides what was seen.
+
+`window-selection-change-functions' passes the frame whose selected
+window changed.  Reading the current buffer instead cleared the mark of
+whichever session happened to be current, which is the wrong session as
+soon as a second frame is involved."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash alpha (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (save-window-excursion
+        (set-window-buffer (selected-window) alpha)
+        (with-temp-buffer
+          (should-not (eq (current-buffer) alpha))
+          (agent-shell-vertico-sidebar--window-selection-change
+           (selected-frame)))
+        (should-not (gethash alpha
+                            agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-regained-focus-marks-seen ()
+  "Returning to Emacs marks the session in the selected window seen.
+
+A turn that finished while Emacs had no focus is unread, and coming back
+to the frame is the moment it is read.  No window is selected then, so
+`window-selection-change-functions' never runs for it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash alpha (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-tests--with-frame-focus t
+        (save-window-excursion
+          (set-window-buffer (selected-window) alpha)
+          (agent-shell-vertico-sidebar--focus-change)
+          (should-not (gethash alpha
+                              agent-shell-vertico-sidebar--attention)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-regained-focus-marks-viewport-seen ()
+  "Returning to a frame showing a viewport marks its session seen."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport)
+                (agent-shell-vertico-sidebar--attention
+                 (make-hash-table :test #'eq)))
+            (puthash alpha (list :kind 'done :time 10.0)
+                     agent-shell-vertico-sidebar--attention)
+            (agent-shell-vertico-tests--with-frame-focus t
+              (save-window-excursion
+                (set-window-buffer (selected-window) viewport)
+                (agent-shell-vertico-sidebar--focus-change)
+                (should-not
+                 (gethash alpha
+                          agent-shell-vertico-sidebar--attention)))))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-sidebar-lost-focus-keeps-unread ()
+  "Leaving Emacs does not mark the session in the selected window seen.
+
+`after-focus-change-function' runs for focus loss too, and the reader is
+now in another application."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--attention
+           (make-hash-table :test #'eq)))
+      (puthash alpha (list :kind 'done :time 10.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-tests--with-frame-focus nil
+        (save-window-excursion
+          (set-window-buffer (selected-window) alpha)
+          (agent-shell-vertico-sidebar--focus-change)
+          (should (eq (plist-get
+                       (gethash alpha
+                                agent-shell-vertico-sidebar--attention)
+                       :kind)
+                     'done)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-new-turn-clears-attention ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"

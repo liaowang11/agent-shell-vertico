@@ -1615,16 +1615,44 @@ shows."
     (remhash buffer agent-shell-vertico-sidebar--attention)
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
-(defun agent-shell-vertico-sidebar--window-selection-change
-    (&optional _frame window)
-  "Mark a session seen when its window, or its viewport's, is selected."
-  (let ((buffer (if (window-live-p window)
-                    (window-buffer window)
-                  (current-buffer))))
+(defun agent-shell-vertico-sidebar--mark-selected-seen (frame-or-window)
+  "Mark the session shown in FRAME-OR-WINDOW as seen.
+
+A window stands for itself, a frame for its selected window, and nil for
+the current buffer.  A viewport counts as the session it shows."
+  (let ((buffer (cond ((window-live-p frame-or-window)
+                       (window-buffer frame-or-window))
+                      ((frame-live-p frame-or-window)
+                       (window-buffer
+                        (frame-selected-window frame-or-window)))
+                      (t (current-buffer)))))
     (when-let ((session (and (buffer-live-p buffer)
                              (agent-shell-vertico-sidebar--session-for-buffer
                               buffer))))
       (agent-shell-vertico-sidebar--mark-seen session))))
+
+(defun agent-shell-vertico-sidebar--window-selection-change
+    (&optional frame-or-window)
+  "Mark a session seen when its window, or its viewport's, is selected.
+
+Emacs passes the frame whose selected window changed, because this runs
+from the default value of `window-selection-change-functions'.  Reading
+the current buffer instead would clear the mark of whichever session
+happens to be current, which is the wrong session once a second frame is
+involved."
+  (agent-shell-vertico-sidebar--mark-selected-seen frame-or-window))
+
+(defun agent-shell-vertico-sidebar--focus-change ()
+  "Mark the session in a refocused frame's selected window as seen.
+
+A turn that finishes while Emacs has no input focus stays unread, so
+returning to a frame is the moment its selected session has been read.
+No window is selected then, so `window-selection-change-functions' does
+not run for it."
+  (dolist (frame (frame-list))
+    (when (and (frame-live-p frame)
+               (agent-shell-vertico-sidebar--frame-focused-p frame))
+      (agent-shell-vertico-sidebar--mark-selected-seen frame))))
 
 (defun agent-shell-vertico-sidebar--session-at-point ()
   "Return the live session buffer at point, or signal a user error."
@@ -2291,6 +2319,8 @@ SCOPE is persp-mode's activation scope, as for
           #'agent-shell-vertico-sidebar--watch-buffer-on-mode-hook)
 (add-hook 'window-selection-change-functions
           #'agent-shell-vertico-sidebar--window-selection-change)
+(add-function :after after-focus-change-function
+              #'agent-shell-vertico-sidebar--focus-change)
 (add-hook 'window-size-change-functions
           #'agent-shell-vertico-sidebar--window-size-change)
 (add-hook 'window-configuration-change-hook
