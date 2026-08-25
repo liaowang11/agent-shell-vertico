@@ -40,6 +40,8 @@
 (declare-function evil-local-set-key "evil" (state key definition))
 (declare-function projectile-project-root "projectile" (&optional dir))
 (declare-function projectile-relevant-known-projects "projectile" ())
+(declare-function treesit-language-available-p "treesit.c"
+                  (language &optional detail))
 
 (defgroup agent-shell-vertico-transcript nil
   "Transcript recall for `agent-shell'."
@@ -956,6 +958,42 @@ and may itself be a function returning the list."
        (agent-shell-vertico-transcript--config-for-agent
         (agent-shell-vertico-transcript-record-agent record))))))
 
+(defun agent-shell-vertico-transcript--markdown-major-mode ()
+  "Return the Markdown major mode used to read a transcript, or nil.
+
+Prefer `markdown-ts-view-mode', the read-only viewing mode built on
+`markdown-ts-mode', which hides the markup and renders inline images.  A
+transcript is read, not edited, and the reader makes the buffer read-only
+anyway.
+
+Emacs ships both modes but leaves them out of `auto-mode-alist', so a
+transcript never reaches either on its own: the mode has to be loaded and
+named here.  The `markdown' and `markdown-inline' grammars are checked
+first, because without them the mode drops the buffer to Text mode and
+warns, which is worse than the fallback.
+
+Fall back to `markdown-mode', and to nil when neither mode is available,
+which leaves the mode the file itself selects in place."
+  (cond
+   ((and (or (fboundp 'markdown-ts-view-mode)
+             (require 'markdown-ts-mode nil t))
+         (fboundp 'markdown-ts-view-mode)
+         (fboundp 'treesit-language-available-p)
+         (treesit-language-available-p 'markdown)
+         (treesit-language-available-p 'markdown-inline))
+    'markdown-ts-view-mode)
+   ((fboundp 'markdown-mode)
+    'markdown-mode)))
+
+(defun agent-shell-vertico-transcript--set-markdown-major-mode ()
+  "Put the current buffer in the Markdown mode transcripts are read in.
+
+A mode already built on that one is left alone, so a reader who visits
+transcripts in a mode derived from `markdown-mode' keeps it."
+  (when-let* ((mode (agent-shell-vertico-transcript--markdown-major-mode)))
+    (unless (derived-mode-p mode)
+      (funcall mode))))
+
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)
   "Open transcript RECORD, optionally in OTHER-WINDOW."
@@ -966,6 +1004,9 @@ and may itself be a function returning the list."
               (find-file-other-window file)
             (find-file file))))
     (with-current-buffer buffer
+      ;; Before the record and the minor mode, since changing the major
+      ;; mode clears both.
+      (agent-shell-vertico-transcript--set-markdown-major-mode)
       (setq-local agent-shell-vertico-transcript--record record)
       (agent-shell-vertico-transcript-mode 1)
       (when-let* ((line

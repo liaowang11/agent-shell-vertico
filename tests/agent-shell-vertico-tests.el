@@ -74,6 +74,16 @@
              (agent-shell-vertico-tests--package-requirement file "marginalia")
              "2.1"))))
 
+(define-derived-mode agent-shell-vertico-tests--markdown-mode text-mode
+  "Test Markdown"
+  "Stand-in for a Markdown major mode.
+The real Markdown modes are not available to the suite.")
+
+(define-derived-mode agent-shell-vertico-tests--derived-markdown-mode
+  agent-shell-vertico-tests--markdown-mode
+  "Test Markdown Child"
+  "Stand-in for a mode built on a Markdown major mode.")
+
 (defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
   "Evaluate BODY in a freshly initialized named sidebar buffer."
   (declare (indent 0) (debug t))
@@ -4448,6 +4458,94 @@ that omits them."
       (agent-shell-vertico-transcript--browse-project-root "/work/project/")
       (should (eq opened record))
       (should-not activated))))
+
+(ert-deftest agent-shell-vertico-transcript-markdown-mode-prefers-view-mode ()
+  "The read-only tree-sitter view mode wins when its grammars are installed."
+  (cl-letf (((symbol-function 'markdown-ts-view-mode) #'ignore)
+            ((symbol-function 'markdown-mode) #'ignore)
+            ((symbol-function 'treesit-language-available-p)
+             (lambda (_language &optional _detail) t)))
+    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
+                'markdown-ts-view-mode))))
+
+(ert-deftest agent-shell-vertico-transcript-markdown-mode-needs-both-grammars ()
+  "A missing inline grammar falls back to `markdown-mode'.
+`markdown-ts-mode' parses inline markup with its own grammar and drops
+to Text mode without it."
+  (cl-letf (((symbol-function 'markdown-ts-view-mode) #'ignore)
+            ((symbol-function 'markdown-mode) #'ignore)
+            ((symbol-function 'treesit-language-available-p)
+             (lambda (language &optional _detail)
+               (eq language 'markdown))))
+    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
+                'markdown-mode))))
+
+(ert-deftest agent-shell-vertico-transcript-markdown-mode-without-tree-sitter ()
+  "`markdown-mode' is used when the tree-sitter mode cannot be loaded."
+  (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
+            ((symbol-function 'markdown-mode) #'ignore)
+            ((symbol-function 'require)
+             (lambda (_feature &optional _file _noerror) nil)))
+    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
+                'markdown-mode))))
+
+(ert-deftest agent-shell-vertico-transcript-markdown-mode-without-any-mode ()
+  "No Markdown mode leaves the choice to the file itself."
+  (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
+            ((symbol-function 'markdown-mode) nil)
+            ((symbol-function 'require)
+             (lambda (_feature &optional _file _noerror) nil)))
+    (should-not (agent-shell-vertico-transcript--markdown-major-mode))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-sets-markdown-mode ()
+  "Opening a transcript switches it to the chosen Markdown mode."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n"))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (setq buffer
+                  (agent-shell-vertico-transcript--open-record
+                   (agent-shell-vertico-transcript-record-create
+                    :file file))))
+          (with-current-buffer buffer
+            (should (eq major-mode 'agent-shell-vertico-tests--markdown-mode))
+            (should agent-shell-vertico-transcript-mode)
+            (should agent-shell-vertico-transcript--record)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-keeps-derived-mode ()
+  "A mode already derived from the chosen one is left alone."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n"))
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (agent-shell-vertico-tests--derived-markdown-mode))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (agent-shell-vertico-transcript--open-record
+             (agent-shell-vertico-transcript-record-create :file file)))
+          (with-current-buffer buffer
+            (should (eq major-mode
+                        'agent-shell-vertico-tests--derived-markdown-mode))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
 
 (ert-deftest agent-shell-vertico-transcript-resume-activates-record ()
   (let ((record

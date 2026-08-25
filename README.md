@@ -299,6 +299,22 @@ list offers, 10000 by default, or nil for no cap. The list is newest first, so
 the cap drops the oldest, and the prompt then reads `(newest 10000 of 12345)`
 rather than presenting the shortened list as everything.
 
+An opened transcript is put in `markdown-ts-view-mode`, the read-only viewing
+mode built on `markdown-ts-mode`, which hides the markup and renders inline
+images. It is used when Emacs ships it and both the `markdown` and
+`markdown-inline` tree-sitter grammars are installed
+(`M-x markdown-ts-mode-install-parsers` installs them). Emacs leaves both modes
+out of `auto-mode-alist`, so a transcript would otherwise never reach either.
+Without the mode or its grammars the reader falls back to `markdown-mode`, and
+without that to whatever mode the file itself selects. A buffer already in a
+mode built on the chosen one keeps it, so `markdown-mode` derivatives such as
+Polymode's `poly-markdown-mode` survive the fallback path.
+
+The reader's own keys win over the view mode's, because minor mode keymaps take
+precedence: `n`, `p` and `b` move between messages and browse rather than
+walking headings. The view mode's heading motions stay on `C-c C-n`, `C-c C-p`,
+`C-c C-f`, `C-c C-b` and `C-c C-u`, and `TAB` still cycles outline folding.
+
 The transcript reader provides:
 
 - `r` smart resume or switch to the live session
