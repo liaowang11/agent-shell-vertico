@@ -407,6 +407,14 @@ buffer name plus the viewport suffix."
 (defvar agent-shell-test-opened-link nil
   "Stub: last URL passed to `agent-shell-markdown--open-link'.")
 
+(defvar agent-shell-test-file-display-action nil
+  "Stub: `agent-shell-file-display-action' seen by the last open-link call.")
+
+(defcustom agent-shell-file-display-action
+  '((display-buffer-reuse-window display-buffer-same-window))
+  "Stub: mirrors the real defcustom of the same name."
+  :type '(cons (repeat function) alist))
+
 (defun agent-shell-markdown-link-url-at-point (&optional pos)
   "Stub: return the `agent-shell-markdown-url' text property at POS."
   (get-text-property (or pos (point)) 'agent-shell-markdown-url))
@@ -436,11 +444,12 @@ absolute one must be written `file://'."
             (cons :line-end (cdr line))))))
 
 (defun agent-shell-markdown--open-link (url)
-  "Stub: record URL and route it through `find-file'.
-The real opener sends local file links through `find-file'; mirroring
-that lets tests observe which `find-file' variant an action rebinds."
-  (setq agent-shell-test-opened-link url)
-  (find-file url))
+  "Stub: record URL and the active `agent-shell-file-display-action'.
+The real opener sends local file links through `display-buffer' using
+that variable; mirroring that lets tests observe which display action
+an action binds."
+  (setq agent-shell-test-opened-link url
+        agent-shell-test-file-display-action agent-shell-file-display-action))
 
 (provide 'agent-shell)
 

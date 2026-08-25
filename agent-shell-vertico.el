@@ -482,7 +482,7 @@ goes to `browse-url'."
 Like `agent-shell-vertico-open-markdown-link', but file links open in
 another window so the agent buffer stays put."
   (interactive "sLink: ")
-  (cl-letf (((symbol-function 'find-file) #'find-file-other-window))
+  (let ((agent-shell-file-display-action '(display-buffer-pop-up-window)))
     (agent-shell-markdown--open-link url)))
 
 (defun agent-shell-vertico-open-markdown-link-externally (url)
