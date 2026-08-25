@@ -96,10 +96,12 @@ current sidebar buffer."
 
 `priority' puts sessions needing attention first, followed by working,
 ready, and starting sessions.  Within a priority tier, attention uses its
-entry time and working uses the start of its current busy turn; streamed
-activity does not reorder those sessions.  `activity' uses the latest agent
-event, `recency' uses the last display time, `status' uses only status, and
-`name' sorts by session title."
+entry time, working uses the start of its current busy turn, and every
+other session uses its latest activity; streamed chunks do not reorder
+working sessions, and a session read or finished recently stays above
+stale idle ones.  `activity' uses the latest agent event, `recency' uses
+the last display time, `status' uses only status, and `name' sorts by
+session title."
   :type '(choice (const priority) (const activity) (const recency)
                  (const status) (const name))
   :group 'agent-shell-vertico-sidebar)
@@ -453,14 +455,16 @@ repeating those queries during one redisplay."
 
 Attention timestamps order sessions waiting for user action.  Working
 sessions use the time their current turn entered the busy state; streamed
-activity is deliberately not a priority tie-breaker."
+activity is deliberately not a priority tie-breaker.  Every other session
+uses its latest activity, so one read or finished recently stays above
+stale idle sessions instead of dropping to its alphabetical slot."
   (or (plist-get (agent-shell-vertico-sidebar--attention buffer) :time)
       (agent-shell-vertico-sidebar--snapshot-field buffer :busy-since-time)
       (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
       (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
         (puthash buffer (float-time)
                  agent-shell-vertico-sidebar--busy-since-times))
-      0.0))
+      (agent-shell-vertico-sidebar--activity-time buffer)))
 
 (defun agent-shell-vertico-sidebar--title (buffer)
   "Return a compact title for BUFFER."
@@ -472,6 +476,19 @@ activity is deliberately not a priority tie-breaker."
                   (match-string 1 name)
                 name))
           title))))
+
+(defun agent-shell-vertico-sidebar--text-lessp (left right)
+  "Return non-nil when display string LEFT sorts before RIGHT.
+
+Case never decides the order, whatever the locale is: comparing the folded
+strings keeps \"apple\" ahead of \"Zebra\" where byte order would not, and
+strings differing only in case fall back to byte order so the comparison
+stays total and deterministic."
+  (let ((fold-left (downcase left))
+        (fold-right (downcase right)))
+    (if (string= fold-left fold-right)
+        (string-lessp left right)
+      (string-lessp fold-left fold-right))))
 
 (defun agent-shell-vertico-sidebar--last-user-message (buffer)
   "Return the latest submitted user message for BUFFER, or nil."
@@ -813,12 +830,14 @@ session holding unseen output each get their own mark."
   "Return non-nil when LEFT sorts before RIGHT by SORT-BY."
   (let* ((left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
-         (left-rank (if (eq sort-by 'status)
-                        (agent-shell-vertico-sidebar--status-sort-rank left)
-                      (agent-shell-vertico-sidebar--status-rank left)))
-         (right-rank (if (eq sort-by 'status)
-                         (agent-shell-vertico-sidebar--status-sort-rank right)
-                       (agent-shell-vertico-sidebar--status-rank right)))
+         (left-rank (when (memq sort-by '(status priority))
+                      (if (eq sort-by 'status)
+                          (agent-shell-vertico-sidebar--status-sort-rank left)
+                        (agent-shell-vertico-sidebar--status-rank left))))
+         (right-rank (when (memq sort-by '(status priority))
+                       (if (eq sort-by 'status)
+                           (agent-shell-vertico-sidebar--status-sort-rank right)
+                         (agent-shell-vertico-sidebar--status-rank right))))
          (left-time (pcase sort-by
                       ('priority
                        (agent-shell-vertico-sidebar--priority-time left))
@@ -844,15 +863,17 @@ session holding unseen output each get their own mark."
                                      0.0))
                        (_ 0.0))))
     (cond
-     ((eq sort-by 'name) (string-lessp left-title right-title))
+     ((eq sort-by 'name)
+      (agent-shell-vertico-sidebar--text-lessp left-title right-title))
      ((and (eq sort-by 'status) (/= left-rank right-rank))
       (< left-rank right-rank))
      ((and (eq sort-by 'priority) (/= left-rank right-rank))
       (< left-rank right-rank))
      ((/= left-time right-time) (> left-time right-time))
      ((not (string= left-title right-title))
-      (string-lessp left-title right-title))
-     (t (string-lessp (buffer-name left) (buffer-name right))))))
+      (agent-shell-vertico-sidebar--text-lessp left-title right-title))
+     (t (agent-shell-vertico-sidebar--text-lessp
+         (buffer-name left) (buffer-name right))))))
 
 (defun agent-shell-vertico-sidebar--sort-buffers (buffers sort-by)
   "Return BUFFERS sorted by SORT-BY."
@@ -872,7 +893,7 @@ session holding unseen output each get their own mark."
     (cl-stable-sort groups
                     (lambda (left right)
                       (if (eq sort-by 'name)
-                          (string-lessp
+                          (agent-shell-vertico-sidebar--text-lessp
                            (agent-shell-vertico-sidebar--project-name
                             (car left) (cadr left))
                            (agent-shell-vertico-sidebar--project-name

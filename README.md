@@ -109,9 +109,10 @@ context line.
 The default `priority` sort puts sessions waiting for attention first, followed
 by working and ready sessions; working sessions keep the order in which their
 current turns entered the busy state, so streamed chunks do not make them
-jump.  In grouped mode, projects follow the highest-priority session they
-contain.  `s` switches between priority, activity, recency, status, and name
-sorting.
+jump, and idle sessions order by their latest activity, so reading a finished
+session no longer drops it to the bottom of the list.  In grouped mode,
+projects follow the highest-priority session they contain.  `s` switches
+between priority, activity, recency, status, and name sorting.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
 window is marked for attention.  A failed request, a session waiting for a

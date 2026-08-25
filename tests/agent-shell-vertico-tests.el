@@ -250,6 +250,63 @@ Each element in BINDINGS is of the form:
                       (list older newer) 'priority)
                      (list newer older))))))
 
+(ert-deftest agent-shell-vertico-sidebar-priority-orders-ready-by-activity ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready))))
+      ;; Ready sessions order by their latest activity, not by title: a
+      ;; session that finished work recently stays above a staler one.
+      (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
+      (puthash beta 200.0 agent-shell-vertico-sidebar--activity)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list alpha beta) 'priority)
+                     (list beta alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-priority-keeps-read-session-above-stale-idle ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((zebra "Codex Agent @ zebra" "/work/zebra/"
+              '((:session . ((:id . "z") (:title . "Zebra")))))
+       (apple "Codex Agent @ apple" "/work/apple/"
+              '((:session . ((:id . "p") (:title . "Apple"))))))
+    (let ((agent-shell-test-statuses (list (cons zebra 'ready)
+                                           (cons apple 'ready))))
+      (puthash zebra 300.0 agent-shell-vertico-sidebar--activity)
+      (puthash apple 100.0 agent-shell-vertico-sidebar--activity)
+      (puthash zebra (list :kind 'done :time 300.0)
+               agent-shell-vertico-sidebar--attention)
+      ;; Unread, the finished session leads the list.
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list apple zebra) 'priority)
+                     (list zebra apple)))
+      (agent-shell-vertico-sidebar--mark-seen zebra)
+      ;; Read, it keeps the top of the ready tier by its activity time
+      ;; instead of dropping to its alphabetical slot.
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list apple zebra) 'priority)
+                     (list zebra apple))))))
+
+(ert-deftest agent-shell-vertico-sidebar-title-tie-break-ignores-case ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((apple "Codex Agent @ apple" "/work/apple/"
+              '((:session . ((:id . "p") (:title . "apple")))))
+       (zebra "Codex Agent @ zebra" "/work/zebra/"
+              '((:session . ((:id . "z") (:title . "Zebra"))))))
+    (let ((agent-shell-test-statuses (list (cons apple 'ready)
+                                           (cons zebra 'ready))))
+      (puthash apple 150.0 agent-shell-vertico-sidebar--activity)
+      (puthash zebra 150.0 agent-shell-vertico-sidebar--activity)
+      ;; Equal times fall back to the title, where case never decides.
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list zebra apple) 'priority)
+                     (list apple zebra)))
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list zebra apple) 'name)
+                     (list apple zebra))))))
+
 (ert-deftest agent-shell-vertico-sidebar-busy-entry-time-ignores-chunks ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
