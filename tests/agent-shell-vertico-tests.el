@@ -4459,6 +4459,89 @@ that omits them."
       (should (eq opened record))
       (should-not activated))))
 
+(defmacro agent-shell-vertico-tests--with-displayed-transcript
+    (&rest body)
+  "Display a transcript in the selected window and evaluate BODY.
+BODY runs with `file' bound to the transcript, `root' to its working
+directory and `buffer' to the displayed transcript buffer."
+  (declare (indent 0) (debug t))
+  `(let* ((root (file-name-as-directory
+                 (make-temp-file "agent-shell-vertico-browse-root-" t)))
+          (file (expand-file-name "transcript.md" root))
+          buffer)
+     (unwind-protect
+         (progn
+           (with-temp-file file
+             (insert "**Agent:** Codex\n"
+                     (format "**Working Directory:** %s\n"
+                             (directory-file-name root))
+                     "**Session ID:** browse\n\n---\n\n"
+                     "## User\n\nhello\n"))
+           (switch-to-buffer "*scratch*")
+           (cl-letf (((symbol-function
+                       'agent-shell-vertico-transcript--markdown-major-mode)
+                      #'ignore))
+             (setq buffer
+                   (agent-shell-vertico-transcript--open-record
+                    (agent-shell-vertico-transcript--parse-file file root))))
+           (should (eq (window-buffer) buffer))
+           ,@body)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (set-buffer-modified-p nil))
+         (kill-buffer buffer))
+       (delete-directory root t))))
+
+(ert-deftest agent-shell-vertico-transcript-browse-from-current-survives-abort ()
+  "Aborting the browse prompt leaves the transcript on screen.
+The reader must not bury the transcript before the prompt is answered,
+or quitting the prompt drops the reader back to whatever preceded it."
+  (agent-shell-vertico-tests--with-displayed-transcript
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-transcript--records-for-project)
+               (lambda (_root) (list (agent-shell-vertico-transcript-record-create
+                                      :file file))))
+              ((symbol-function
+                'agent-shell-vertico-transcript--read-record)
+               (lambda (_prompt _records) (signal 'quit nil))))
+      ;; ERT treats a quit signal as an aborted test, so catch it here
+      ;; rather than through `should-error'.
+      (should (eq 'quit
+                  (condition-case nil
+                      (progn
+                        (agent-shell-vertico-transcript-browse-from-current)
+                        nil)
+                    (quit 'quit)))))
+    (should (eq (window-buffer) buffer))))
+
+(ert-deftest agent-shell-vertico-transcript-browse-from-current-keeps-hop-back ()
+  "A hop to another transcript leaves the previous one reachable.
+Burying the transcript also drops it from the window's history, which is
+what made `q' skip past every transcript hopped through."
+  (agent-shell-vertico-tests--with-displayed-transcript
+    (let ((other (expand-file-name "other.md" root)))
+      (with-temp-file other
+        (insert "**Agent:** Codex\n\n---\n\n## User\n\nsecond\n"))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-transcript--records-for-project)
+                 (lambda (_root) nil))
+                ((symbol-function
+                  'agent-shell-vertico-transcript--read-record)
+                 (lambda (_prompt _records)
+                   (agent-shell-vertico-transcript-record-create
+                    :file other)))
+                ((symbol-function
+                  'agent-shell-vertico-transcript--markdown-major-mode)
+                 #'ignore))
+        (agent-shell-vertico-transcript-browse-from-current))
+      (let ((opened (find-buffer-visiting other)))
+        (unwind-protect
+            (progn
+              (should (eq (window-buffer) opened))
+              (should (memq buffer (mapcar #'car (window-prev-buffers)))))
+          (when (buffer-live-p opened)
+            (kill-buffer opened)))))))
+
 (ert-deftest agent-shell-vertico-transcript-markdown-mode-prefers-view-mode ()
   "The read-only tree-sitter view mode wins when its grammars are installed."
   (cl-letf (((symbol-function 'markdown-ts-view-mode) #'ignore)

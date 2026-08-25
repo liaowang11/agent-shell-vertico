@@ -327,6 +327,10 @@ The transcript reader provides:
 - `i` manually set or repair the session ID header
 - `?` show the key reference
 
+Browsing from a transcript leaves it on screen until another one replaces it,
+so quitting the prompt returns to what you were reading and `q` walks back
+through the transcripts you hopped through.
+
 Evil's state keymaps take precedence over minor mode keymaps, so in Evil
 normal and motion states the reader binds two-key sequences instead: `gr`
 (resume), `gR` (force resume), `gc` (clean reader), `gb` (browse), `gi`

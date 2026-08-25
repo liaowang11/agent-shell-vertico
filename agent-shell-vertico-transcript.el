@@ -1241,14 +1241,18 @@ header is one the parser can never read back."
     (message "Set transcript session ID to %s" session-id)))
 
 (defun agent-shell-vertico-transcript-browse-from-current ()
-  "Browse transcripts belonging to the current transcript's project."
+  "Browse transcripts belonging to the current transcript's project.
+
+The transcript stays on screen until another one replaces it.  Burying it
+first left nothing to come back to when the prompt was quit, and dropped
+it from the window history, so `q' skipped every transcript hopped
+through and landed on whatever preceded the first one."
   (interactive)
   (let ((project-root
          (agent-shell-vertico-transcript-record-project-root
           (agent-shell-vertico-transcript--current-record))))
     (unless project-root
       (user-error "Transcript has no project directory"))
-    (quit-window)
     (agent-shell-vertico-transcript--browse-project-root
      project-root)))
 
