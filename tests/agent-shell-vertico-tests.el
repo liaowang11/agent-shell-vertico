@@ -170,6 +170,8 @@ Each element in BINDINGS is of the form:
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
                      (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--out-of-turn)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value 'agent-shell-agent-configs) nil)
@@ -7154,6 +7156,197 @@ and `records' bound to that project's parsed records."
       (should (equal (plist-get options :default) "Resume abc"))
       (should-not (plist-get options :sort))
       (should (functionp (plist-get options :state))))))
+
+;;; Out-of-turn bursts
+
+(defmacro agent-shell-vertico-tests--with-settled-timers (&rest body)
+  "Run BODY with timer creation captured instead of scheduled.
+
+The settle timer is armed from event handling, so a real timer would fire
+after the test has already finished.  Tests call
+`agent-shell-vertico-sidebar--out-of-turn-settled' themselves instead."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'run-at-time)
+              (lambda (&rest _args) 'agent-shell-test-timer))
+             ((symbol-function 'cancel-timer) #'ignore)
+             ((symbol-function 'timerp)
+              (lambda (object) (eq object 'agent-shell-test-timer))))
+     ,@body))
+
+(ert-deftest agent-shell-vertico-sidebar-out-of-turn-chunk-reads-as-working ()
+  "Output streaming with no turn in flight is work, not an idle session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
+        (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                       "Working"))
+        (should (= (gethash alpha agent-shell-vertico-sidebar--busy-since-times)
+                   10.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-out-of-turn-burst-keeps-its-start ()
+  "Later chunks push the settle back without restarting the working age."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready)))
+            (times '(10.0 20.0)))
+        (cl-letf (((symbol-function 'float-time)
+                   (lambda (&optional _) (pop times))))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . tool-call-update))))
+        (should (= (gethash alpha agent-shell-vertico-sidebar--busy-since-times)
+                   10.0))
+        (should (= (plist-get (gethash alpha
+                                       agent-shell-vertico-sidebar--out-of-turn)
+                              :time)
+                   20.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-marks-done ()
+  "A quiet burst leaves output nobody has read, so it is marked unread."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (equal (gethash alpha agent-shell-vertico-sidebar--attention)
+                       '(:kind done :time 10.0)))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (should (equal (agent-shell-vertico-sidebar--status-name alpha) "Done"))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--busy-since-times))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-clears-when-seen ()
+  "The unread mark is an ordinary `done', so reading the session clears it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-in-turn-chunk-is-not-out-of-turn ()
+  "A chunk from a running turn belongs to that turn, not to a burst."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'busy))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--out-of-turn))))))
+
+(ert-deftest agent-shell-vertico-sidebar-steering-round-trip-is-not-out-of-turn ()
+  "An injected prompt's own request is in flight, so its updates are in turn."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:active-requests . (steering)))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--out-of-turn))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-skips-read-session ()
+  "Output that streamed into the selected window has already been read."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-tests--with-frame-focus t
+          (save-window-excursion
+            (set-window-buffer (selected-window) alpha)
+            (agent-shell-vertico-sidebar--out-of-turn-settled alpha)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-keeps-blocked ()
+  "A session waiting on a permission answer must not be downgraded to done."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (puthash alpha (list :kind 'blocked :time 5.0)
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (eq (plist-get (gethash alpha
+                                        agent-shell-vertico-sidebar--attention)
+                               :kind)
+                    'blocked))))))
+
+(ert-deftest agent-shell-vertico-sidebar-new-turn-cancels-out-of-turn-settle ()
+  "A prompt submitted during the quiet window owns the session from then on."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--out-of-turn))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
+
+(ert-deftest agent-shell-vertico-sidebar-turn-complete-cancels-out-of-turn-settle ()
+  "A real turn's completion supersedes any burst that preceded it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . turn-complete)))
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--out-of-turn))))))
+
+(ert-deftest agent-shell-vertico-sidebar-out-of-turn-sorts-into-working-tier ()
+  "A burst puts its session above idle ones under priority sorting."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((quiet "Codex Agent @ quiet" "/work/quiet/"
+              '((:session . ((:id . "q") (:title . "Quiet")))))
+       (streaming "Codex Agent @ streaming" "/work/streaming/"
+                  '((:session . ((:id . "s") (:title . "Streaming"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons quiet 'ready)
+                                             (cons streaming 'ready))))
+        (puthash quiet 100.0 agent-shell-vertico-sidebar--activity)
+        (agent-shell-vertico-sidebar--handle-event
+         streaming '((:event . agent-message-chunk)))
+        (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                        (list quiet streaming) 'priority)
+                       (list streaming quiet)))))))
 
 (provide 'agent-shell-vertico-tests)
 

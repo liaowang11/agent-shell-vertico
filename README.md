@@ -119,7 +119,16 @@ The sidebar follows `agent-shell` events, so a completed turn in another
 window is marked for attention.  A failed request, a session waiting for a
 permission response, and a session holding unseen output each get their own
 mark.  Submitting a new prompt clears any of them, since the previous turn
-has by then been seen.  `o` always jumps to the session at point; the other
+has by then been seen.
+
+An agent can also produce output with no turn in flight: background tasks
+such as subagents keep streaming after a turn ends, and a prompt injected
+too late makes the agent start a turn of its own.  `agent-shell` reports
+such a session ready, because it has nothing in flight to report.  The
+sidebar shows it working while the output arrives, then marks it as
+holding unseen output once the stream has been quiet for a few seconds.
+No completion event is sent for this kind of work, so the quiet period is
+what ends it.  `o` always jumps to the session at point; the other
 keys expose the same restart, kill, interrupt, model, mode, traffic, and
 transcript operations as the Vertico Embark map.
 

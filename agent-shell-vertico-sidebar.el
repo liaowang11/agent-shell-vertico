@@ -172,6 +172,17 @@ Values are plists with `:kind' (`blocked', `done', or `error') and
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
   "Buffer to its agent-shell event subscription token.")
 
+(defvar agent-shell-vertico-sidebar--out-of-turn (make-hash-table :test #'eq)
+  "Buffer to the out-of-turn burst streaming into it.
+
+An agent can stream output with no turn in flight: background tasks such
+as subagents continue after the turn ended, and a prompt injected too late
+makes the agent start a turn of its own.  Neither is reported busy and
+neither ends with `turn-complete', so the burst is tracked here instead.
+
+Values are plists with `:timer', the timer that ends the burst after a
+quiet period, and `:time', when the burst's latest update arrived.")
+
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
 
@@ -290,10 +301,14 @@ Return an alist whose keys are roots and whose values are buffer lists."
               (cons root (nreverse (gethash root groups))))
             (nreverse roots))))
 
-(defun agent-shell-vertico-sidebar--raw-status (buffer)
-  "Return the raw status symbol for BUFFER."
-  (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
-      (when (fboundp 'agent-shell-status)
+(defun agent-shell-vertico-sidebar--live-status (buffer)
+  "Return the status agent-shell itself reports for BUFFER.
+
+This answers `ready' during an out-of-turn burst, because agent-shell
+reports whether a turn is in flight and a burst has none.  Use it to ask
+what the session is doing apart from any burst; use
+`agent-shell-vertico-sidebar--raw-status' to describe it to the reader."
+  (or (when (fboundp 'agent-shell-status)
         (condition-case nil
             (agent-shell-status :shell-buffer buffer)
           (error nil)))
@@ -303,6 +318,18 @@ Return an alist whose keys are roots and whose values are buffer lists."
           ("Ready" 'ready)
           ("Starting" 'starting)
           (_ 'unknown)))))
+
+(defun agent-shell-vertico-sidebar--raw-status (buffer)
+  "Return the raw status symbol for BUFFER."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
+      (let ((status (agent-shell-vertico-sidebar--live-status buffer)))
+        ;; The agent is working during a burst whether or not a turn asked
+        ;; for the work, so say so.  A live `busy' or `blocked' still wins:
+        ;; a real turn owns the session.
+        (if (and (eq status 'ready)
+                 (gethash buffer agent-shell-vertico-sidebar--out-of-turn))
+            'busy
+          status))))
 
 (defun agent-shell-vertico-sidebar--attention (buffer)
   "Return attention metadata for BUFFER, or nil."
@@ -1466,6 +1493,96 @@ sessions just to decide whether an age timer is needed."
         (agent-shell-vertico-sidebar--cancel-resize)
         (agent-shell-vertico-sidebar--cancel-age-refresh)))))
 
+(defconst agent-shell-vertico-sidebar--out-of-turn-events
+  '(agent-message-chunk tool-call-update)
+  "Events that carry agent output rather than turn bookkeeping.
+
+These are the public events agent-shell emits for the `session/update'
+notifications it treats as belonging to a turn, so one arriving with no
+turn in flight is what identifies an out-of-turn burst.")
+
+(defconst agent-shell-vertico-sidebar--out-of-turn-settle-margin 0.5
+  "Seconds added to agent-shell's quiet period before a burst is settled.
+
+Settling after agent-shell has dropped its own busy indicator keeps the
+sidebar from calling a session done while the shell still shows it
+working.")
+
+(defun agent-shell-vertico-sidebar--out-of-turn-settle-seconds ()
+  "Return the quiet period, in seconds, that ends an out-of-turn burst.
+
+Follows agent-shell's own debounce when that is available, so the two
+agree on when a burst has stopped."
+  (+ (if (boundp 'agent-shell--out-of-turn-idle-seconds)
+         (symbol-value 'agent-shell--out-of-turn-idle-seconds)
+       2.0)
+     agent-shell-vertico-sidebar--out-of-turn-settle-margin))
+
+(defun agent-shell-vertico-sidebar--out-of-turn-p (buffer kind)
+  "Return non-nil when a KIND event in BUFFER is out-of-turn output.
+
+Requires agent output with no request of any kind in flight.  Checking
+the status alone is not enough: an injected prompt's own request is
+tracked while `agent-shell-status' still answers `ready', and the updates
+arriving during that round trip belong to the turn it is joining."
+  (and (memq kind agent-shell-vertico-sidebar--out-of-turn-events)
+       (not (memq (agent-shell-vertico-sidebar--live-status buffer)
+                  '(busy blocked)))
+       (not (map-elt (agent-shell-vertico--state buffer) :active-requests))))
+
+(defun agent-shell-vertico-sidebar--cancel-out-of-turn (buffer)
+  "Drop any pending out-of-turn settle timer for BUFFER."
+  (when-let* ((burst (gethash buffer agent-shell-vertico-sidebar--out-of-turn))
+              (timer (plist-get burst :timer))
+              ((timerp timer)))
+    (cancel-timer timer))
+  (remhash buffer agent-shell-vertico-sidebar--out-of-turn))
+
+(defun agent-shell-vertico-sidebar--note-out-of-turn (buffer time)
+  "Record out-of-turn output in BUFFER at TIME and rearm its settle timer.
+
+The burst keeps the time of its first update as its working age, so a
+long burst rises through the working tier instead of restarting at every
+chunk."
+  (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
+  (unless (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
+    (puthash buffer time agent-shell-vertico-sidebar--busy-since-times))
+  (puthash buffer
+           (list :timer
+                 (run-at-time
+                  (agent-shell-vertico-sidebar--out-of-turn-settle-seconds)
+                  nil
+                  #'agent-shell-vertico-sidebar--out-of-turn-settled
+                  buffer)
+                 :time time)
+           agent-shell-vertico-sidebar--out-of-turn))
+
+(defun agent-shell-vertico-sidebar--out-of-turn-settled (buffer)
+  "Mark BUFFER's finished out-of-turn output as unread.
+
+A burst carries no completion event, so it counts as finished once it has
+been quiet for `agent-shell-vertico-sidebar--out-of-turn-settle-seconds'.
+A pause longer than that mid-burst settles early; the next update starts
+a fresh burst and finds this mark already in place, so the reader still
+sees one mark rather than a flicker."
+  (let ((burst (gethash buffer agent-shell-vertico-sidebar--out-of-turn)))
+    (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
+    (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
+    (when (and (buffer-live-p buffer)
+               ;; A real turn started meanwhile and owns the session now.
+               (not (memq (agent-shell-vertico-sidebar--live-status buffer)
+                          '(busy blocked)))
+               ;; Waiting or failed outrank unread output; leave them, and
+               ;; leave an earlier unread mark at its own time so the
+               ;; attention tier still orders oldest first.
+               (not (gethash buffer agent-shell-vertico-sidebar--attention))
+               (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
+      (puthash buffer
+               (list :kind 'done
+                     :time (or (plist-get burst :time) (float-time)))
+               agent-shell-vertico-sidebar--attention))
+    (agent-shell-vertico-sidebar--schedule-refresh)))
+
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
   "Update sidebar metadata for BUFFER after agent EVENT."
   (let ((kind (map-elt event :event))
@@ -1473,20 +1590,24 @@ sessions just to decide whether an age timer is needed."
     (puthash buffer now agent-shell-vertico-sidebar--activity)
     (pcase kind
       ('permission-request
+       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'blocked :time now)
                 agent-shell-vertico-sidebar--attention))
       ('error
+       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'error :time now)
                 agent-shell-vertico-sidebar--attention))
       ('turn-complete
+       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
            (remhash buffer agent-shell-vertico-sidebar--attention)
          (puthash buffer (list :kind 'done :time now)
                   agent-shell-vertico-sidebar--attention)))
       ('input-submitted
+       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
        ;; Submitting a new prompt means the user has seen whatever the
        ;; previous turn produced, so the new turn starts unmarked.  A
@@ -1502,10 +1623,13 @@ sessions just to decide whether an age timer is needed."
       ('idle
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times))
       ('clean-up
+       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--attention)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
       (_ nil))
+    (when (agent-shell-vertico-sidebar--out-of-turn-p buffer kind)
+      (agent-shell-vertico-sidebar--note-out-of-turn buffer now))
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defconst agent-shell-vertico-sidebar--subscription-refused 'refused
@@ -1520,6 +1644,7 @@ sessions just to decide whether an age timer is needed."
                         agent-shell-vertico-sidebar--subscription-refused))
                (fboundp 'agent-shell-unsubscribe))
       (ignore-errors (agent-shell-unsubscribe :subscription subscription)))
+    (agent-shell-vertico-sidebar--cancel-out-of-turn (current-buffer))
     (remhash (current-buffer) agent-shell-vertico-sidebar--subscriptions)
     (remhash (current-buffer) agent-shell-vertico-sidebar--attention)
     (remhash (current-buffer)
@@ -1580,6 +1705,7 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
                  (push buffer dead)))
              agent-shell-vertico-sidebar--subscriptions)
     (dolist (buffer dead)
+      (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
       (remhash buffer agent-shell-vertico-sidebar--subscriptions)
       (remhash buffer agent-shell-vertico-sidebar--attention)
       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
