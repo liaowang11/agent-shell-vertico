@@ -74,6 +74,13 @@
              (agent-shell-vertico-tests--package-requirement file "marginalia")
              "2.1"))))
 
+(defvar markdown-ts-inline-images)
+(defvar markdown-ts-view-mode-pre-init-hook)
+
+(defun agent-shell-vertico-tests--fail-if-run ()
+  "Signal when a hook that must be replaced is run."
+  (error "Buffer-amending hook ran"))
+
 (define-derived-mode agent-shell-vertico-tests--markdown-mode text-mode
   "Test Markdown"
   "Stand-in for a Markdown major mode.
@@ -4605,6 +4612,23 @@ to Text mode without it."
         (kill-buffer buffer))
       (delete-file file))))
 
+(ert-deftest agent-shell-vertico-transcript-open-record-leaves-file-alone ()
+  "The mode is set with the buffer-amending hook emptied.
+Its default adds a final newline, which would mark every transcript that
+ends without one modified."
+  (let ((markdown-ts-view-mode-pre-init-hook '(ignore))
+        seen)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-transcript--markdown-major-mode)
+               (lambda () 'agent-shell-vertico-tests--markdown-mode))
+              ((symbol-function 'agent-shell-vertico-tests--markdown-mode)
+               (lambda ()
+                 (setq seen markdown-ts-view-mode-pre-init-hook))))
+      (with-temp-buffer
+        (agent-shell-vertico-transcript--set-markdown-major-mode)))
+    (should-not seen)
+    (should (equal markdown-ts-view-mode-pre-init-hook '(ignore)))))
+
 (ert-deftest agent-shell-vertico-transcript-open-record-keeps-derived-mode ()
   "A mode already derived from the chosen one is left alone."
   (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
@@ -5447,6 +5471,45 @@ Polymode Markdown buffer unable to fontify."
                               #'string-match-p))
          nil))
       (should (eq seen-mode 'text-mode)))))
+
+(ert-deftest agent-shell-vertico-consult-preview-follows-reader-mode ()
+  "A preview uses the mode the reader opens a transcript in."
+  (cl-letf (((symbol-function
+              'agent-shell-vertico-transcript--markdown-major-mode)
+             (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+    (should (eq (agent-shell-vertico-consult--preview-major-mode)
+                'agent-shell-vertico-tests--markdown-mode))))
+
+(ert-deftest agent-shell-vertico-consult-preview-falls-back-to-text-mode ()
+  "Without a Markdown mode a preview is plain text."
+  (cl-letf (((symbol-function
+              'agent-shell-vertico-transcript--markdown-major-mode)
+             #'ignore))
+    (should (eq (agent-shell-vertico-consult--preview-major-mode)
+                'text-mode))))
+
+(ert-deftest agent-shell-vertico-consult-preview-turns-images-off ()
+  "A preview runs no buffer-amending hook and turns inline images off.
+Previews visit the real transcript, so the hook's default final newline
+would modify the file's buffer, and images make a scanned preview noisy."
+  (let ((markdown-ts-inline-images t)
+        (markdown-ts-view-mode-pre-init-hook
+         (list #'agent-shell-vertico-tests--fail-if-run))
+        images)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-consult--preview-major-mode)
+               (lambda () 'text-mode)))
+      (agent-shell-vertico-consult--open-preview
+       "/tmp/transcript.md"
+       (lambda (_file)
+         (with-current-buffer (generate-new-buffer " *preview*")
+           (setq-local markdown-ts-inline-images t)
+           (run-hooks 'markdown-ts-view-mode-pre-init-hook)
+           (setq images markdown-ts-inline-images)
+           (text-mode)
+           (current-buffer)))))
+    (should-not images)
+    (should markdown-ts-inline-images)))
 
 (ert-deftest agent-shell-vertico-consult-preview-sets-undetected-mode ()
   "A partial preview buffer has no file name, so set its mode explicitly."

@@ -28,6 +28,9 @@
 
 (defvar agent-shell-dot-subdir-function)
 (defvar agent-shell-transcript-file-path-function)
+;; No value: markdown-ts-mode's own `defcustom' must install the real
+;; default when it loads after this file.
+(defvar markdown-ts-view-mode-pre-init-hook)
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
 (defvar evil-local-mode)
@@ -989,10 +992,17 @@ which leaves the mode the file itself selects in place."
   "Put the current buffer in the Markdown mode transcripts are read in.
 
 A mode already built on that one is left alone, so a reader who visits
-transcripts in a mode derived from `markdown-mode' keeps it."
+transcripts in a mode derived from `markdown-mode' keeps it.
+
+`markdown-ts-view-mode-pre-init-hook' is emptied for the mode call.  It
+exists to amend buffer content, and its default adds a final newline,
+which marks the buffer modified for every transcript that ends without
+one.  A reader must not change the file it shows.  The cost is that the
+grammar can misread markup at the very end of such a transcript."
   (when-let* ((mode (agent-shell-vertico-transcript--markdown-major-mode)))
     (unless (derived-mode-p mode)
-      (funcall mode))))
+      (let ((markdown-ts-view-mode-pre-init-hook nil))
+        (funcall mode)))))
 
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)

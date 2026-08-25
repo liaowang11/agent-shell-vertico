@@ -306,7 +306,11 @@ images. It is used when Emacs ships it and both the `markdown` and
 (`M-x markdown-ts-mode-install-parsers` installs them). Emacs leaves both modes
 out of `auto-mode-alist`, so a transcript would otherwise never reach either.
 Without the mode or its grammars the reader falls back to `markdown-mode`, and
-without that to whatever mode the file itself selects. A buffer already in a
+without that to whatever mode the file itself selects.
+`markdown-ts-view-mode-pre-init-hook` is emptied for the mode call, because its
+default adds a final newline, which marks the buffer modified for every
+transcript that ends without one; the cost is that the grammar can misread
+markup at the very end of such a transcript. A buffer already in a
 mode built on the chosen one keeps it, so `markdown-mode` derivatives such as
 Polymode's `poly-markdown-mode` survive the fallback path.
 
@@ -346,11 +350,16 @@ UUIDs.
 Content search runs `rg --json` asynchronously through Consult, aggregates
 matches per transcript as they arrive, and previews the first match. A changed
 query cancels the previous search process. Loading `agent-shell-vertico-consult`
-also gives ordinary transcript browsing live preview. Previews open in plain
-`markdown-mode`: Consult previews files with `delay-mode-hooks` bound, which
-leaves a Markdown mode that finishes its setup in hooks (Polymode, for example)
-unable to fontify, and a file above `consult-preview-partial-size` is previewed
-in a buffer with no file name, where the mode cannot be detected at all. No
+also gives ordinary transcript browsing live preview. A preview opens in the
+same mode as the reader, so a candidate and the transcript it leads to look
+alike, with inline images turned off because a preview is scanned rather than
+read. The mode is named here rather than taken from `auto-mode-alist`: Consult
+previews files with `delay-mode-hooks` bound, which leaves a Markdown mode that
+finishes its setup in hooks (Polymode, for example) unable to fontify, and a
+file above `consult-preview-partial-size` is previewed in a buffer with no file
+name, where the mode cannot be detected at all. Tree-sitter fontification costs
+around a quarter of a second per screenful against near-zero for
+`markdown-mode`, so previewing a long transcript lags by about that much. No
 persistent cache or index is written.
 
 ## Session links

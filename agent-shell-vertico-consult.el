@@ -40,6 +40,11 @@
 ;; No value: Consult's own `defcustom' must install the real default.
 (defvar consult-fontify-preserve)
 
+;; No value: markdown-ts-mode's own `defcustom' must install the real
+;; default when it loads after this file.
+(defvar markdown-ts-inline-images)
+(defvar markdown-ts-view-mode-pre-init-hook)
+
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
 
@@ -145,10 +150,13 @@
           (funcall sink action)))))))
 
 (defun agent-shell-vertico-consult--preview-major-mode ()
-  "Return the major mode used to display transcript previews."
-  (if (fboundp 'markdown-mode)
-      'markdown-mode
-    'text-mode))
+  "Return the major mode used to display transcript previews.
+
+The mode the reader opens a transcript in, so a preview and the
+transcript it leads to look the same.  Text mode when there is no
+Markdown mode to use."
+  (or (agent-shell-vertico-transcript--markdown-major-mode)
+      'text-mode))
 
 (defun agent-shell-vertico-consult--open-preview (file opener)
   "Open FILE for preview with OPENER, highlighted as Markdown.
@@ -159,15 +167,24 @@ Two cases show up as an unhighlighted preview:
 
 - A Markdown mode that finishes its setup in mode hooks, such as
   Polymode's `poly-markdown-mode', installs itself as the fontification
-  engine and then never fontifies anything.  Previewing in the plain mode
-  returned by `agent-shell-vertico-consult--preview-major-mode' leaves
-  jit-lock in charge instead.
+  engine and then never fontifies anything.  Naming the mode here instead
+  of letting the user's `auto-mode-alist' pick it keeps such a mode out of
+  previews: `agent-shell-vertico-consult--preview-major-mode' returns
+  either the tree-sitter view mode, which sets itself up in the mode body,
+  or plain `markdown-mode'.  Either way jit-lock stays in charge.
 
 - A file above `consult-preview-partial-size' is read into a buffer with
   no file name, where `set-auto-mode' cannot detect Markdown and leaves
   Fundamental mode.  Set the mode there directly."
   (let* ((mode (agent-shell-vertico-consult--preview-major-mode))
          (auto-mode-alist (cons (cons "\\.md\\'" mode) auto-mode-alist))
+         ;; `markdown-ts-view-mode' turns inline images on and amends the
+         ;; buffer from this hook, whose default adds a final newline.  A
+         ;; preview is scanned, not read, and previews visit the real
+         ;; file, so neither belongs here.  The mode sets the variable
+         ;; itself, so the hook is the only place left to answer it.
+         (markdown-ts-view-mode-pre-init-hook
+          (list (lambda () (setq-local markdown-ts-inline-images nil))))
          (buffer (funcall opener file)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
