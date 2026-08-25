@@ -95,13 +95,13 @@ current sidebar buffer."
   "Sort criterion used by the agent-shell sidebar.
 
 `priority' puts sessions needing attention first, followed by working,
-ready, and starting sessions.  Within a priority tier, attention uses its
-entry time, working uses the start of its current busy turn, and every
-other session uses its latest activity; streamed chunks do not reorder
-working sessions, and a session read or finished recently stays above
-stale idle ones.  `activity' uses the latest agent event, `recency' uses
-the last display time, `status' uses only status, and `name' sorts by
-session title."
+ready, and starting sessions.  Attention and working sessions order
+oldest first, matching `agent-shell-attention-jump', so the top of the
+list is the session that has waited longest.  Ready and starting
+sessions order by their latest activity, newest first, so a session
+read or finished recently stays above stale idle ones.  `activity' uses
+the latest agent event, `recency' uses the last display time, `status'
+uses only status, and `name' sorts by session title."
   :type '(choice (const priority) (const activity) (const recency)
                  (const status) (const name))
   :group 'agent-shell-vertico-sidebar)
@@ -827,7 +827,12 @@ session holding unseen output each get their own mark."
     (_ 'agent-shell-vertico-sidebar-detail)))
 
 (defun agent-shell-vertico-sidebar--compare-buffers (left right sort-by)
-  "Return non-nil when LEFT sorts before RIGHT by SORT-BY."
+  "Return non-nil when LEFT sorts before RIGHT by SORT-BY.
+
+Under `priority' the attention and working tiers order oldest first,
+so the sidebar's first session is the one `agent-shell-attention-jump'
+visits; the remaining tiers order newest first so a session that was
+read or finished recently stays near the top of its tier."
   (let* ((left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
          (left-rank (when (memq sort-by '(status priority))
@@ -869,6 +874,11 @@ session holding unseen output each get their own mark."
       (< left-rank right-rank))
      ((and (eq sort-by 'priority) (/= left-rank right-rank))
       (< left-rank right-rank))
+     ((and (eq sort-by 'priority) (/= left-time right-time))
+      ;; Ranks are equal here, so LEFT's rank picks the tier's direction.
+      (if (<= left-rank 1)
+          (< left-time right-time)
+        (> left-time right-time)))
      ((/= left-time right-time) (> left-time right-time))
      ((not (string= left-title right-title))
       (agent-shell-vertico-sidebar--text-lessp left-title right-title))

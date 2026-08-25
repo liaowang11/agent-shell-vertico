@@ -239,16 +239,34 @@ Each element in BINDINGS is of the form:
               '((:session . ((:id . "n") (:title . "Newer"))))))
     (let ((agent-shell-test-statuses (list (cons older 'busy)
                                            (cons newer 'busy))))
-      ;; Streaming chunks can arrive in either order.  Priority must ignore
-      ;; those activity timestamps and preserve the order in which turns
-      ;; entered the working state.
+      ;; Priority orders working sessions oldest first: the turn that
+      ;; entered the busy state earliest leads.  Streaming chunks can
+      ;; arrive in either order and must not reorder them.
       (puthash older 100.0 agent-shell-vertico-sidebar--busy-since-times)
       (puthash newer 200.0 agent-shell-vertico-sidebar--busy-since-times)
       (puthash older 300.0 agent-shell-vertico-sidebar--activity)
       (puthash newer 150.0 agent-shell-vertico-sidebar--activity)
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
-                      (list older newer) 'priority)
-                     (list newer older))))))
+                      (list newer older) 'priority)
+                     (list older newer))))))
+
+(ert-deftest agent-shell-vertico-sidebar-priority-attention-oldest-first ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((older "Codex Agent @ older" "/work/older/"
+              '((:session . ((:id . "o") (:title . "Older")))))
+       (newer "Claude Agent @ newer" "/work/newer/"
+              '((:session . ((:id . "n") (:title . "Newer"))))))
+    (let ((agent-shell-test-statuses (list (cons older 'ready)
+                                           (cons newer 'ready))))
+      ;; The longest-waiting attention mark leads the list, matching what
+      ;; `agent-shell-attention-jump' visits.
+      (puthash older (list :kind 'done :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash newer (list :kind 'done :time 200.0)
+               agent-shell-vertico-sidebar--attention)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list newer older) 'priority)
+                     (list older newer))))))
 
 (ert-deftest agent-shell-vertico-sidebar-priority-orders-ready-by-activity ()
   (agent-shell-vertico-tests--with-session-buffers
