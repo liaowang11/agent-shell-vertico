@@ -961,6 +961,15 @@ and may itself be a function returning the list."
        (agent-shell-vertico-transcript--config-for-agent
         (agent-shell-vertico-transcript-record-agent record))))))
 
+(defun agent-shell-vertico-transcript--markdown-ts-view-mode-available-p ()
+  "Return non-nil when the tree-sitter Markdown view mode is usable."
+  (and (or (fboundp 'markdown-ts-view-mode)
+           (require 'markdown-ts-mode nil t))
+       (fboundp 'markdown-ts-view-mode)
+       (fboundp 'treesit-language-available-p)
+       (treesit-language-available-p 'markdown)
+       (treesit-language-available-p 'markdown-inline)))
+
 (defun agent-shell-vertico-transcript--markdown-major-mode ()
   "Return the Markdown major mode used to read a transcript, or nil.
 
@@ -978,15 +987,23 @@ warns, which is worse than the fallback.
 Fall back to `markdown-mode', and to nil when neither mode is available,
 which leaves the mode the file itself selects in place."
   (cond
-   ((and (or (fboundp 'markdown-ts-view-mode)
-             (require 'markdown-ts-mode nil t))
-         (fboundp 'markdown-ts-view-mode)
-         (fboundp 'treesit-language-available-p)
-         (treesit-language-available-p 'markdown)
-         (treesit-language-available-p 'markdown-inline))
+   ((agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
     'markdown-ts-view-mode)
    ((fboundp 'markdown-mode)
     'markdown-mode)))
+
+(defun agent-shell-vertico-transcript--markdown-view-mode ()
+  "Return the read-only Markdown mode used for a clean transcript view.
+
+Prefer the tree-sitter view mode when its grammars are available.  Fall
+back to `markdown-view-mode', loading `markdown-mode' when necessary."
+  (cond
+   ((agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
+    'markdown-ts-view-mode)
+   ((or (fboundp 'markdown-view-mode)
+        (require 'markdown-mode nil t))
+    (when (fboundp 'markdown-view-mode)
+      'markdown-view-mode))))
 
 (defun agent-shell-vertico-transcript--set-markdown-major-mode ()
   "Put the current buffer in the Markdown mode transcripts are read in.
@@ -1159,7 +1176,10 @@ SPEAKERS is a list of heading names such as (\"User\")."
             (buffer-substring-no-properties
              (point-min) (point-max)))))
         (goto-char (point-min))
-        (special-mode)))
+        (if-let* ((mode
+                   (agent-shell-vertico-transcript--markdown-view-mode)))
+            (funcall mode)
+          (special-mode))))
     (pop-to-buffer buffer)))
 
 (defun agent-shell-vertico-transcript-resume-current ()

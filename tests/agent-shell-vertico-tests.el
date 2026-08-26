@@ -5917,6 +5917,69 @@ would modify the file's buffer, and images make a scanned preview noisy."
     (should-not (string-match-p "Tool Call" clean))
     (should-not (string-match-p "Internal output" clean))))
 
+(ert-deftest agent-shell-vertico-transcript-clean-view-uses-tree-sitter-mode ()
+  "The clean view uses tree-sitter Markdown view mode when available."
+  (let ((source (generate-new-buffer "clean-source"))
+        clean-buffer
+        selected)
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (insert "## User\n\nhello\n"))
+          (cl-letf (((symbol-function 'markdown-ts-view-mode)
+                     (lambda ()
+                       (setq selected 'markdown-ts-view-mode)
+                       (text-mode)))
+                    ((symbol-function 'markdown-view-mode)
+                     (lambda ()
+                       (setq selected 'markdown-view-mode)
+                       (text-mode)))
+                    ((symbol-function 'treesit-language-available-p)
+                     (lambda (_language &optional _detail) t)))
+            (with-current-buffer source
+              (agent-shell-vertico-transcript-clean-view)))
+          (setq clean-buffer
+                (get-buffer
+                 "*Agent transcript: clean-source*"))
+          (should (eq selected 'markdown-ts-view-mode))
+          (with-current-buffer clean-buffer
+            (should (eq major-mode 'text-mode))))
+      (when (buffer-live-p clean-buffer)
+        (kill-buffer clean-buffer))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
+(ert-deftest agent-shell-vertico-transcript-clean-view-falls-back-to-markdown-mode ()
+  "The clean view falls back to the read-only Markdown mode."
+  (let ((source (generate-new-buffer "clean-source"))
+        clean-buffer
+        selected)
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (insert "## User\n\nhello\n"))
+          (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
+                    ((symbol-function 'markdown-view-mode)
+                     (lambda ()
+                       (setq selected 'markdown-view-mode)
+                       (text-mode)))
+                    ((symbol-function 'treesit-language-available-p)
+                     (lambda (_language &optional _detail) nil))
+                    ((symbol-function
+                      'agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
+                     #'ignore))
+            (with-current-buffer source
+              (agent-shell-vertico-transcript-clean-view)))
+          (setq clean-buffer
+                (get-buffer "*Agent transcript: clean-source*"))
+          (should (eq selected 'markdown-view-mode))
+          (with-current-buffer clean-buffer
+            (should (eq major-mode 'text-mode))))
+      (when (buffer-live-p clean-buffer)
+        (kill-buffer clean-buffer))
+      (when (buffer-live-p source)
+        (kill-buffer source)))))
+
 (ert-deftest agent-shell-vertico-transcript-stats-count-record-kinds ()
   (let* ((live
           (agent-shell-vertico-transcript-record-create
