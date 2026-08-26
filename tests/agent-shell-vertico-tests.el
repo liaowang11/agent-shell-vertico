@@ -175,6 +175,9 @@ Each element in BINDINGS is of the form:
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
+                    ((symbol-value
+                      'agent-shell-vertico-read-session-function)
+                     #'agent-shell-vertico--completing-read-session)
                     ((symbol-value 'agent-shell-agent-configs) nil)
                     ;; Render assertions name the plain marks, so they must
                     ;; not depend on whether nerd-icons happens to be
@@ -3103,6 +3106,29 @@ the agent also sends a `current_mode_update' notification."
                    'agent-shell-session))
     (should (functionp (cdr (assq 'affixation-function (cdr metadata)))))))
 
+(ert-deftest agent-shell-vertico-read-session-uses-completing-read ()
+  "The core session reader keeps the plain completion behavior."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((seen nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _)
+                   (setq seen (list prompt
+                                    (all-completions "" collection)))
+                   (buffer-name beta))))
+        (should (equal
+                 (agent-shell-vertico--read-session
+                  "Agent shell: " 'all)
+                 (buffer-name beta))))
+      (should (equal seen
+                     (list "Agent shell: "
+                           (list (buffer-name alpha)
+                                 (buffer-name beta))))))))
+
 (ert-deftest agent-shell-vertico-status-reports-working-while-busy ()
   "A shell with work in flight reports Working and sorts before the rest."
   (agent-shell-vertico-tests--with-session-buffers
@@ -3300,6 +3326,229 @@ The session picker's other-shell branch reads that way."
                       beta))))
       (should (equal category 'agent-shell-session)))))
 
+(ert-deftest agent-shell-vertico-consult-registers-session-reader ()
+  "Loading Consult upgrades the live-session reader to one with preview."
+  (should (equal agent-shell-vertico-read-session-function
+                 #'agent-shell-vertico-consult--read-session)))
+
+(ert-deftest
+    agent-shell-vertico-consult-session-reader-preserves-table-metadata ()
+  "The Consult reader uses the session table and its configured sorting."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let (table options)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (candidate-table &rest rest)
+                   (setq table candidate-table
+                         options rest)
+                   (buffer-name beta))))
+        (should (equal
+                 (agent-shell-vertico-consult--read-session
+                  "Agent shell: "
+                  (agent-shell-vertico--completion-table 'all))
+                 (buffer-name beta))))
+      (should (equal (all-completions "" table)
+                     (list (buffer-name alpha) (buffer-name beta))))
+      (let ((metadata (funcall table "" nil 'metadata)))
+        (should (equal (alist-get 'category (cdr metadata))
+                       'agent-shell-session))
+        (should (eq (alist-get 'display-sort-function (cdr metadata))
+                    #'agent-shell-vertico--sort-candidates)))
+      (should (equal (plist-get options :category)
+                     'agent-shell-session))
+      (should (functionp (plist-get options :state)))
+      (should-not (plist-member options :sort)))))
+
+(ert-deftest
+    agent-shell-vertico-consult-session-preview-uses-existing-viewport ()
+  "Session preview uses an existing viewport without creating one."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let ((viewport (generate-new-buffer "Alpha Agent @ alpha [viewport]"))
+          calls
+          existing-only)
+      (unwind-protect
+          (cl-letf (((symbol-function 'consult--buffer-preview)
+                     (lambda ()
+                       (lambda (action candidate)
+                         (push (list action candidate
+                                     consult--buffer-display)
+                               calls))))
+                    ((symbol-function 'agent-shell-viewport--buffer)
+                     (lambda (&rest arguments)
+                       (setq existing-only
+                             (plist-get arguments :existing-only))
+                       (and existing-only viewport))))
+            (let ((agent-shell-prefer-viewport-interaction t)
+                  (state
+                   (agent-shell-vertico-consult--session-state t)))
+              (funcall state 'preview (buffer-name alpha))
+              (funcall state 'preview nil))
+            (should (equal (caar calls) 'preview))
+            (should (null (cadar calls)))
+            (should (eq (caddar calls) #'switch-to-buffer-other-window))
+            (should existing-only)
+            (should (eq (cadadr calls) viewport)))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-consult-session-state-forwards-lifecycle ()
+  "Session preview forwards lifecycle actions without performing selection."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let (calls)
+      (cl-letf (((symbol-function 'consult--buffer-preview)
+                 (lambda ()
+                   (lambda (action candidate)
+                     (push (list action candidate consult--buffer-display)
+                           calls))))
+                ((symbol-function 'agent-shell-viewport--buffer)
+                 (lambda (&rest _)
+                   (ert-fail "Resolved a viewport while preference was nil"))))
+        (let ((agent-shell-prefer-viewport-interaction nil)
+              (state (agent-shell-vertico-consult--session-state t)))
+          (funcall state 'setup nil)
+          (funcall state 'preview (buffer-name alpha))
+          (funcall state 'preview nil)
+          (funcall state 'exit nil)
+          (funcall state 'return (buffer-name alpha))))
+      (should
+       (equal
+        (nreverse calls)
+        `((setup nil ,#'switch-to-buffer-other-window)
+          (preview ,alpha ,#'switch-to-buffer-other-window)
+          (preview nil ,#'switch-to-buffer-other-window)
+          (exit nil ,#'switch-to-buffer-other-window)
+          (return nil ,#'switch-to-buffer-other-window)))))))
+
+(ert-deftest agent-shell-vertico-consult-session-preview-falls-back-to-shell ()
+  "Viewport preference does not create a viewport just for preview."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (let (candidate arguments)
+      (cl-letf (((symbol-function 'consult--buffer-preview)
+                 (lambda ()
+                   (lambda (action value)
+                     (when (eq action 'preview)
+                       (setq candidate value)))))
+                ((symbol-function 'agent-shell-viewport--buffer)
+                 (lambda (&rest rest)
+                   (setq arguments rest)
+                   nil)))
+        (let ((agent-shell-prefer-viewport-interaction t)
+              (state (agent-shell-vertico-consult--session-state)))
+          (funcall state 'preview (buffer-name alpha))))
+      (should (eq candidate alpha))
+      (should (eq (plist-get arguments :shell-buffer) alpha))
+      (should (eq (plist-get arguments :existing-only) t)))))
+
+(ert-deftest
+    agent-shell-vertico-consult-session-preview-reset-restores-buffer ()
+  "Resetting a live-session preview restores the original buffer."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (save-window-excursion
+      (let ((original (generate-new-buffer "preview origin")))
+        (unwind-protect
+            (progn
+              (switch-to-buffer original)
+              (let ((agent-shell-prefer-viewport-interaction nil)
+                    (state (agent-shell-vertico-consult--session-state)))
+                (funcall state 'preview (buffer-name alpha))
+                (should (eq (window-buffer) alpha))
+                (funcall state 'preview nil)
+                (should (eq (window-buffer) original))))
+          (kill-buffer original))))))
+
+(ert-deftest agent-shell-vertico-consult-switch-defers-final-action ()
+  "Previewing does not display or clear attention before selection."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a"))))))
+    (setq agent-shell-test-buffers (list alpha))
+    (let ((agent-shell-vertico-read-session-function
+           #'agent-shell-vertico-consult--read-session)
+          (agent-shell-prefer-viewport-interaction nil)
+          cleared
+          preview-calls)
+      (cl-letf (((symbol-function 'consult--buffer-preview)
+                 (lambda ()
+                   (lambda (action candidate)
+                     (push (list action candidate) preview-calls))))
+                ((symbol-function 'consult--read)
+                 (lambda (table &rest options)
+                   (should (equal (all-completions "" table)
+                                  (list (buffer-name alpha))))
+                   (let ((state (plist-get options :state)))
+                     (funcall state 'setup nil)
+                     (funcall state 'preview (buffer-name alpha))
+                     (should-not agent-shell-test-displayed-buffer)
+                     (should-not cleared)
+                     (funcall state 'preview nil)
+                     (funcall state 'exit nil)
+                     (funcall state 'return (buffer-name alpha)))
+                   (buffer-name alpha)))
+                ((symbol-function 'agent-shell-attention--clear-buffer)
+                 (lambda (buffer) (setq cleared buffer)))
+                ((symbol-function 'agent-shell-attention--permission-pending-p)
+                 (lambda (_buffer) nil)))
+        (agent-shell-vertico-switch))
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (should (eq cleared alpha))
+      (should
+       (equal
+        (nreverse preview-calls)
+        `((setup nil) (preview ,alpha) (preview nil) (exit nil)
+          (return nil)))))))
+
+(ert-deftest agent-shell-vertico-consult-shell-buffer-reader-previews-subset ()
+  "The Consult shell-buffer reader keeps the caller's buffer subset."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (let ((agent-shell-vertico-read-session-function
+           #'agent-shell-vertico-consult--read-session)
+          (offered nil))
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (table &rest _)
+                   (setq offered (all-completions "" table))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--read-shell-buffer
+                     :prompt "Switch to shell buffer: "
+                     :buffers (list beta))
+                    beta)))
+      (should (equal offered (list (buffer-name beta)))))))
+
+(ert-deftest
+    agent-shell-vertico-consult-shell-buffer-reader-drops-dead-buffer ()
+  "A caller's buffer can die after the Consult prompt starts."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (let ((agent-shell-vertico-read-session-function
+           #'agent-shell-vertico-consult--read-session)
+          offered)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (table &rest _)
+                   (kill-buffer alpha)
+                   (setq offered (all-completions "" table))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--read-shell-buffer
+                     :buffers (list alpha beta))
+                    beta)))
+      (should (equal offered (list (buffer-name beta)))))))
+
 (ert-deftest agent-shell-vertico-shell-buffer-picker-setup-installs-advice ()
   "Setup installs the reader advice once."
   (agent-shell-vertico-tests--with-shell-buffer-picker
@@ -3331,6 +3580,22 @@ beta, with every shell live and `default-directory' in project alpha."
      (setq agent-shell-test-project-buffers (list alpha-one alpha-two))
      (let ((default-directory "/work/alpha/"))
        ,@body)))
+
+(ert-deftest agent-shell-vertico-consult-switch-project-keeps-project-scope ()
+  "The Consult project switch offers and selects only project shells."
+  (agent-shell-vertico-tests--with-project-shells
+    (let ((agent-shell-vertico-read-session-function
+           #'agent-shell-vertico-consult--read-session)
+          (agent-shell-prefer-viewport-interaction nil)
+          offered)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (table &rest _)
+                   (setq offered (all-completions "" table))
+                   (buffer-name alpha-two))))
+        (agent-shell-vertico-switch-project))
+      (should (equal offered (list (buffer-name alpha-one)
+                                   (buffer-name alpha-two))))
+      (should (eq agent-shell-test-displayed-buffer alpha-two)))))
 
 (ert-deftest agent-shell-vertico-target-shell-uses-the-only-project-shell ()
   "One shell in the project answers without asking."

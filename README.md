@@ -22,6 +22,13 @@ locations are resolved through `agent-shell-dot-subdir-function`.
 Candidates keep the recent ordering from `agent-shell-buffers` and show
 consult-style annotations for status, model, mode, title, and path.
 
+Loading `agent-shell-vertico-consult` adds live previews to these commands,
+project-scoped send commands when they ask for a session, and the shell picker
+used by `agent-shell` commands. A preview reuses an existing viewport when
+viewport interaction is preferred, but does not create one. The other-window
+command previews in that window. Selecting a session still uses the normal
+switch path, including attention handling.
+
 ## Prompt queue
 
 `agent-shell` queues a prompt whenever the shell is busy and sends the

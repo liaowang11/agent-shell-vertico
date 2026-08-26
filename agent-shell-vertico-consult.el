@@ -28,6 +28,7 @@
 (require 'map)
 (require 'subr-x)
 
+(declare-function consult--buffer-preview "consult" ())
 (declare-function consult--file-action "consult" (file))
 (declare-function consult--jump-preview "consult" ())
 (declare-function consult--lookup-member "consult" (&rest args))
@@ -37,8 +38,9 @@
 (declare-function consult--read "consult" (table &rest options))
 (declare-function consult--temporary-files "consult" ())
 
-;; No value: Consult's own `defcustom' must install the real default.
+;; No value: Consult's own definitions must install the real defaults.
 (defvar consult-fontify-preserve)
+(defvar consult--buffer-display)
 
 ;; No value: markdown-ts-mode's own `defcustom' must install the real
 ;; default when it loads after this file.
@@ -234,6 +236,67 @@ the caller decides what to open once the minibuffer is gone."
             (agent-shell-vertico-consult--open-preview file open))))
         (unless candidate
           (funcall open))))))
+
+(defun agent-shell-vertico-consult--session-preview-buffer (candidate)
+  "Return the buffer previewed for session CANDIDATE.
+
+When viewport interaction is preferred, use an existing viewport when
+there is one.  Do not create a viewport just because completion moved
+over a candidate; fall back to the shell buffer when none exists."
+  (when-let* ((buffer (get-buffer (substring-no-properties candidate))))
+    (or (and agent-shell-prefer-viewport-interaction
+             (agent-shell-viewport--buffer
+              :shell-buffer buffer :existing-only t))
+        buffer)))
+
+(defun agent-shell-vertico-consult--session-state (&optional other-window)
+  "Return a Consult state function for live session previews.
+
+OTHER-WINDOW makes the preview use the same window direction as the
+command that runs after selection.  Consult reads
+`consult--buffer-display' while the preview runs, not while this closure
+is built, so the binding wraps each call, the way
+`consult--man-preview' does it.
+
+Previewing performs no part of the command that follows: it neither
+clears attention state nor displays the session the way the switch
+commands do."
+  (let ((display (if other-window
+                     #'switch-to-buffer-other-window
+                   #'switch-to-buffer))
+        (preview (consult--buffer-preview)))
+    (lambda (action candidate)
+      (let ((consult--buffer-display display))
+        (funcall
+         preview action
+         (when (and (eq action 'preview) candidate)
+           (agent-shell-vertico-consult--session-preview-buffer
+            candidate)))))))
+
+(defun agent-shell-vertico-consult--read-session
+    (prompt table &optional other-window)
+  "Read a live session from TABLE with PROMPT, previewing each candidate.
+
+OTHER-WINDOW matches the final display direction, for the reader
+`agent-shell-vertico-switch-other-window' uses.
+
+TABLE is the same completion table the plain reader uses, so candidate
+annotations and sorting come from its metadata.  Consult merges its own
+metadata behind the table's, and its default lookup returns the selected
+string, which is the buffer name the caller expects."
+  (let ((selection
+         (consult--read
+          table
+          :prompt prompt
+          :state (agent-shell-vertico-consult--session-state other-window)
+          :require-match t
+          :category 'agent-shell-session
+          :history 'agent-shell-vertico-history)))
+    (or (and selection (substring-no-properties selection))
+        (user-error "Nothing selected"))))
+
+(setq agent-shell-vertico-read-session-function
+      #'agent-shell-vertico-consult--read-session)
 
 (defun agent-shell-vertico-consult--read-record (prompt records)
   "Read one transcript from RECORDS with PROMPT and live preview."

@@ -490,9 +490,14 @@ buffer name plus the viewport suffix."
                    (length agent-shell-viewport--suffix)))))
     (get-buffer shell-name)))
 
-(cl-defun agent-shell-viewport--buffer (&key shell-buffer _existing-only)
-  "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER."
-  (or agent-shell-test-viewport-buffer shell-buffer))
+(cl-defun agent-shell-viewport--buffer (&key shell-buffer existing-only)
+  "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER.
+
+`agent-shell-test-viewport-buffer' stands in for a viewport that already
+exists.  With EXISTING-ONLY, return nil when there is none, as the real
+resolver does instead of creating one."
+  (or agent-shell-test-viewport-buffer
+      (unless existing-only shell-buffer)))
 
 (defvar agent-shell-test-opened-link nil
   "Stub: last URL passed to `agent-shell-markdown--open-link'.")

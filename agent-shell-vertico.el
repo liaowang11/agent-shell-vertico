@@ -88,6 +88,16 @@ so the ellipsis stays visible and item annotations are not crowded."
 (defvar agent-shell-vertico-history nil
   "Minibuffer history for `agent-shell-vertico' commands.")
 
+(defvar agent-shell-vertico-read-session-function
+  #'agent-shell-vertico--completing-read-session
+  "Function used to read a live agent-shell session.
+
+It receives a prompt, the completion table of sessions to offer, and an
+optional OTHER-WINDOW flag saying where the caller will display the
+chosen session.  The core implementation reads with `completing-read';
+loading `agent-shell-vertico-consult' replaces it with a reader that
+previews the session under point.")
+
 (defvar agent-shell-vertico--imenu-fallback-annotator
   #'marginalia-annotate-imenu
   "Annotator used for imenu candidates not created by this package.")
@@ -316,10 +326,36 @@ dies while the prompt is open leaves the list."
   (agent-shell-vertico--table
    (lambda () (agent-shell-vertico--buffers scope))))
 
-(defun agent-shell-vertico--read-session (prompt scope)
-  "Read an agent shell session with PROMPT for SCOPE."
-  (completing-read prompt (agent-shell-vertico--completion-table scope)
-                   nil t nil 'agent-shell-vertico-history))
+(defun agent-shell-vertico--completing-read-session
+    (prompt table &optional _other-window)
+  "Read a live session with PROMPT from TABLE.
+
+The reader interface passes OTHER-WINDOW so a previewing reader knows
+where the session will be displayed.  This reader only returns a
+candidate, so it ignores it."
+  (completing-read prompt table nil t nil 'agent-shell-vertico-history))
+
+(defun agent-shell-vertico--read-session (prompt scope &optional other-window)
+  "Read an agent shell session with PROMPT for SCOPE.
+
+OTHER-WINDOW tells a previewing reader where the selected session will
+be displayed.  It does not affect the returned candidate."
+  (funcall agent-shell-vertico-read-session-function
+           prompt
+           (agent-shell-vertico--completion-table scope)
+           other-window))
+
+(defun agent-shell-vertico--read-session-buffers
+    (prompt buffers &optional other-window)
+  "Read a live session with PROMPT from BUFFERS.
+
+BUFFERS is the caller's own set of choices rather than a scope.  Dead
+buffers still drop out whenever the table is queried, so a session that
+dies while the prompt is open leaves the list."
+  (funcall agent-shell-vertico-read-session-function
+           prompt
+           (agent-shell-vertico--table (lambda () buffers))
+           other-window))
 
 (defun agent-shell-vertico--maybe-resolve-viewport (buffer)
   "Return viewport buffer for BUFFER when viewport is preferred.
@@ -451,7 +487,7 @@ shell for a viewport."
 (defun agent-shell-vertico-switch-other-window (buffer-name)
   "Switch to agent shell session BUFFER-NAME in another window."
   (interactive
-   (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+   (list (agent-shell-vertico--read-session "Agent shell: " 'all t)))
   (agent-shell-vertico--display-session-other-window buffer-name))
 
 ;;;###autoload
@@ -490,10 +526,9 @@ shell to offer or none was chosen, as the reader it replaces does."
   (let* ((candidates (or (seq-filter #'buffer-live-p
                                      (or buffers (agent-shell-buffers)))
                          (user-error "No agent-shell buffers")))
-         (selection (completing-read
-                     (or prompt "Agent shell buffer: ")
-                     (agent-shell-vertico--table (lambda () candidates))
-                     nil t nil 'agent-shell-vertico-history)))
+         (selection
+          (agent-shell-vertico--read-session-buffers
+           (or prompt "Agent shell buffer: ") candidates)))
     (or (get-buffer (substring-no-properties selection))
         (user-error "Nothing selected"))))
 
