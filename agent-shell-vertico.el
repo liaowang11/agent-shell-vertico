@@ -159,6 +159,15 @@ so the ellipsis stays visible and item annotations are not crowded."
         model-id
         "-")))
 
+(defun agent-shell-vertico--agent-name (buffer)
+  "Return the agent display name for BUFFER, or nil.
+
+Mirrors the choice `agent-shell' itself makes for its mode line: the
+configuration's `:mode-line-name' when set, otherwise its `:buffer-name'."
+  (let ((state (agent-shell-vertico--state buffer)))
+    (or (map-nested-elt state '(:agent-config :mode-line-name))
+        (map-nested-elt state '(:agent-config :buffer-name)))))
+
 (defun agent-shell-vertico--status (buffer)
   "Return a short status string for BUFFER."
   (with-current-buffer buffer

@@ -102,10 +102,13 @@ packages such as `persp-mode` restore layouts that way, and the restore drops
 the preserved size that held the width, which is why the sidebar is measured
 again rather than pinned once.
 Customize the ordered `agent-shell-vertico-sidebar-extra-info` list to choose
-which expanded-session values are shown: `status`, `activity`, `project`,
-`model`, `mode`, and `last-user-message`.  Values are packed two per row; the
-default omits `last-user-message`.  Removing `project` also removes the flat
-context line.
+which expanded-session values are shown: `agent`, `status`, `activity`,
+`project`, `model`, `mode`, and `last-user-message`.  Values are packed two
+per row.  `status` and `last-user-message` are off by default: the row icon
+already carries the status, and the latest prompt is usually visible in the
+session itself.  Removing `project` also removes the flat context line.
+Activating an agent value starts a new session with that agent in the same
+project.
 The default `priority` sort puts sessions waiting for attention first, followed
 by working and ready sessions.  Attention and working sessions order oldest
 first, so the same session `agent-shell-attention-jump` visits leads the
@@ -213,7 +216,7 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-expand-by-default nil)
   (agent-shell-vertico-sidebar-show-details nil)
   (agent-shell-vertico-sidebar-extra-info
-   '(status project model mode activity))
+   '(agent project model mode activity))
   (agent-shell-vertico-sidebar-sort-by 'priority)
   (agent-shell-vertico-sidebar-follow-workspaces t))
 ```

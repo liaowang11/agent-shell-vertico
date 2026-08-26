@@ -31,6 +31,8 @@
 (declare-function agent-shell-subscribe-to "agent-shell"
                   (&key shell-buffer event on-event))
 (declare-function agent-shell-unsubscribe "agent-shell" (&key subscription))
+(declare-function agent-shell--new-shell "agent-shell"
+                  (&key location config no-display))
 (declare-function evil-local-set-key "evil" (state key def))
 (declare-function evil-get-auxiliary-keymap "evil"
                   (map state &optional create ignore-parent))
@@ -117,15 +119,20 @@ levels and sets this default to the level it reaches."
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-extra-info
-    '(status project model mode activity)
+    '(agent project model mode activity)
   "Ordered extra information shown for expanded sessions.
 
 Each selected symbol contributes one value, and values are packed two per
 compact row.  In flat mode, `project' is also shown as the session's compact
-working-directory context line.  Available symbols are `status', `activity',
-`project', `model', `mode', and `last-user-message'.  The latter shows the
-latest submitted prompt and is omitted by default."
-  :type '(repeat (choice (const :tag "Status" status)
+working-directory context line.  Available symbols are `agent', `status',
+`activity', `project', `model', `mode', and `last-user-message'.
+
+The agent value names the configuration the session runs; activating it
+starts a new session with that agent in this session's project.  `status'
+and `last-user-message' are left out of the default: the row's icon already
+carries the status, and a prompt is usually visible in the session itself."
+  :type '(repeat (choice (const :tag "Agent" agent)
+                         (const :tag "Status" status)
                          (const :tag "Activity age" activity)
                          (const :tag "Project" project)
                          (const :tag "Model" model)
@@ -459,6 +466,7 @@ repeating those queries during one redisplay."
           :recency-time recency-time
           :model (agent-shell-vertico--model-name buffer)
           :mode (agent-shell-vertico--mode-name buffer)
+          :agent (agent-shell-vertico--agent-name buffer)
           :details-visible
           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))))
 
@@ -549,6 +557,7 @@ stays total and deterministic."
 (defun agent-shell-vertico-sidebar--field-help-echo (field)
   "Return the activation hint for metadata FIELD."
   (pcase field
+    ('agent "RET/mouse-1: new session with this agent")
     ('project "RET/mouse-1: open project")
     ('model "RET/mouse-1: set model")
     ('mode "RET/mouse-1: set mode")
@@ -579,6 +588,12 @@ stays total and deterministic."
             (agent-shell-vertico-sidebar--last-user-message buffer)))
          (values
           (list
+           (cons 'agent
+                 (agent-shell-vertico-sidebar--field-text
+                  'agent
+                  (or (agent-shell-vertico-sidebar--snapshot-field
+                       buffer :agent)
+                      (agent-shell-vertico--agent-name buffer))))
            (cons 'status
                  (agent-shell-vertico-sidebar--field-text
                   'status
@@ -1906,6 +1921,7 @@ the list."
   (pcase (agent-shell-vertico-sidebar--field-at-point)
     ('model (agent-shell-vertico-sidebar-set-model))
     ('mode (agent-shell-vertico-sidebar-set-mode))
+    ('agent (agent-shell-vertico-sidebar-new-with-agent))
     ('project (agent-shell-vertico-sidebar-open-project))
     (_ (agent-shell-vertico-sidebar-open))))
 
@@ -1981,6 +1997,21 @@ With a mouse EVENT, move to the clicked position before dispatching."
   (interactive)
   (agent-shell-vertico-new-shell)
   (agent-shell-vertico-sidebar-refresh))
+
+(defun agent-shell-vertico-sidebar-new-with-agent ()
+  "Start a session with the agent of the session at point.
+
+The new session shares the selected session's project and agent
+configuration, so it runs alongside it rather than replacing it."
+  (interactive)
+  (let* ((buffer (agent-shell-vertico-sidebar--session-at-point))
+         (config (map-elt (agent-shell-vertico--state buffer) :agent-config)))
+    (unless config
+      (user-error "Session %s has no agent configuration" (buffer-name buffer)))
+    (agent-shell--new-shell
+     :location (agent-shell-vertico-sidebar--project-root buffer)
+     :config config)
+    (agent-shell-vertico-sidebar-refresh)))
 
 (defun agent-shell-vertico-sidebar-set-sort ()
   "Choose the sidebar sorting criterion."
@@ -2192,7 +2223,8 @@ statuses themselves are separated by the lighter middle dot."
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
    "Metadata values are individually clickable.  Project values open their\n"
-   "working directory; model and mode values open their selectors.\n"
+   "working directory; model and mode values open their selectors; agent\n"
+   "values start a new session with that agent.\n"
    "Press ? in the sidebar to show this help again.\n"))
 
 (defun agent-shell-vertico-sidebar-help ()

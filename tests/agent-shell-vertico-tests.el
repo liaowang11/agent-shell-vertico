@@ -632,10 +632,107 @@ Each element in BINDINGS is of the form:
 (ert-deftest agent-shell-vertico-sidebar-default-extra-info ()
   (should (equal
            (default-value 'agent-shell-vertico-sidebar-extra-info)
-           '(status project model mode activity)))
+           '(agent project model mode activity)))
   (should-not
    (memq 'last-user-message
+         (default-value 'agent-shell-vertico-sidebar-extra-info)))
+  ;; The row icon already carries the status, so the default leaves the
+  ;; textual status value out.
+  (should-not
+   (memq 'status
          (default-value 'agent-shell-vertico-sidebar-extra-info))))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-shares-row-with-model ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:agent-config . ((:buffer-name . "Codex")))
+                (:session . ((:id . "a")
+                             (:title . "Review alpha")
+                             (:model-id . "gpt-5")
+                             (:models . [((:model-id . "gpt-5")
+                                          (:name . "GPT-5"))]))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(agent model)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (equal
+                 (split-string (substring-no-properties (buffer-string))
+                               "\n" t)
+                 '("✓ Review alpha" "Codex · GPT-5")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-value-is-identifiable ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:agent-config . ((:buffer-name . "Codex")))
+                (:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(agent)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Codex")
+        (should (eq (get-text-property (1- (point))
+                                       'agent-shell-vertico-sidebar-field)
+                    'agent))
+        (should (eq (get-text-property (1- (point)) 'mouse-face)
+                    'highlight))
+        (should (equal (get-text-property (1- (point)) 'help-echo)
+                       "RET/mouse-1: new session with this agent"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-omits-agent-without-name ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(agent model)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (should (equal
+                 (split-string (substring-no-properties (buffer-string))
+                               "\n" t)
+                 '("✓ Review alpha" "-")))))))
+
+(ert-deftest agent-shell-vertico-agent-name-prefers-mode-line-name ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((named "Gemini Agent @ alpha" "/work/alpha/"
+              '((:agent-config . ((:mode-line-name . "Gemini CLI")
+                                  (:buffer-name . "Gemini Agent")))
+                (:session . ((:id . "a") (:title . "Alpha")))))
+       (plain "Codex Agent @ beta" "/work/beta/"
+              '((:agent-config . ((:buffer-name . "Codex")))
+                (:session . ((:id . "b") (:title . "Beta")))))
+       (bare "Agent @ gamma" "/work/gamma/"
+             '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (should (equal (agent-shell-vertico--agent-name named) "Gemini CLI"))
+    (should (equal (agent-shell-vertico--agent-name plain) "Codex"))
+    (should-not (agent-shell-vertico--agent-name bare))))
+
+(ert-deftest agent-shell-vertico-sidebar-activates-agent-with-new-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:agent-config . ((:buffer-name . "Codex")))
+                (:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(agent)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (search-forward "Codex")
+        (agent-shell-vertico-sidebar-activate)
+        (should (eq agent-shell-test-last-command 'agent-shell--new-shell))
+        (should (equal (plist-get agent-shell-test-last-args :location)
+                       "/work/alpha/"))
+        (should (equal (map-elt (plist-get agent-shell-test-last-args :config)
+                                :buffer-name)
+                       "Codex"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-selects-fields ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -766,7 +863,8 @@ Each element in BINDINGS is of the form:
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
-          (agent-shell-vertico-sidebar-show-details nil))
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
@@ -785,7 +883,8 @@ Each element in BINDINGS is of the form:
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
-          (agent-shell-vertico-sidebar-show-details nil))
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
@@ -825,7 +924,8 @@ Each element in BINDINGS is of the form:
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
           (agent-shell-vertico-sidebar-expand-by-default nil)
-          (agent-shell-vertico-sidebar-show-details nil))
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (should (string-match-p "alpha" (buffer-string)))
@@ -872,7 +972,8 @@ Each element in BINDINGS is of the form:
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by nil)
           (agent-shell-vertico-sidebar-expand-by-default nil)
-          (agent-shell-vertico-sidebar-show-details nil))
+          (agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (should-not (string-match-p "Ready" (buffer-string)))
