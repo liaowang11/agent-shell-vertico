@@ -779,6 +779,24 @@ It receives a prompt and a list of transcript records.")
 (defvar-local agent-shell-vertico-transcript--last-navigation nil
   "Last speaker heading reached by transcript navigation.")
 
+(defconst agent-shell-vertico-transcript--clean-invisibility
+  'agent-shell-vertico-transcript-clean
+  "Invisibility category used by the clean transcript view.")
+
+(defvar-local agent-shell-vertico-transcript--clean-overlays nil
+  "Overlays hiding non-message text in the current transcript buffer.")
+
+(defvar-local agent-shell-vertico-transcript--clean-view-p nil
+  "Non-nil while the current transcript shows its clean view.")
+
+(defun agent-shell-vertico-transcript--show-full-view ()
+  "Restore the full transcript in the current buffer."
+  (mapc #'delete-overlay agent-shell-vertico-transcript--clean-overlays)
+  (setq agent-shell-vertico-transcript--clean-overlays nil
+        agent-shell-vertico-transcript--clean-view-p nil)
+  (remove-from-invisibility-spec
+   agent-shell-vertico-transcript--clean-invisibility))
+
 (defvar-keymap agent-shell-vertico-transcript-mode-map
   :doc "Keymap for `agent-shell-vertico-transcript-mode'."
   "r" #'agent-shell-vertico-transcript-resume-current
@@ -848,7 +866,7 @@ Does nothing when Evil is not loaded."
    "======================\n\n"
    "Keys\n"
    "  r / R       Resume / resume in a new shell\n"
-   "  c           Clean reader view (messages only)\n"
+   "  c           Toggle clean/full content\n"
    "  b           Browse this project's transcripts\n"
    "  i           Set the session ID header\n"
    "  n / p       Next / previous user message\n"
@@ -857,7 +875,7 @@ Does nothing when Evil is not loaded."
    "  ?           This help\n\n"
    "Keys in Evil normal and motion states\n"
    "  gr / gR     Resume / resume in a new shell\n"
-   "  gc          Clean reader view (messages only)\n"
+   "  gc          Toggle clean/full content\n"
    "  gb          Browse this project's transcripts\n"
    "  gi          Set the session ID header\n"
    "  ]u / [u     Next / previous user message\n"
@@ -899,7 +917,9 @@ that is how they are reached in Evil states."
                       "g"
                     "")))
       (format
-       " %s · %s · %s    [%sr] Resume  [%sR] Force  [%sc] Clean  [%sb] Browse"
+       (concat
+        " %s · %s · %s    [%sr] Resume  [%sR] Force  "
+        "[%sc] %s  [%sb] Browse")
        (or
         (agent-shell-vertico-transcript-record-agent record)
         "Unknown agent")
@@ -907,7 +927,9 @@ that is how they are reached in Evil states."
         (agent-shell-vertico-transcript-record-project-name record)
         "Unscoped")
        (agent-shell-vertico-transcript--record-status record)
-       prefix prefix prefix prefix))))
+       prefix prefix prefix
+       (if agent-shell-vertico-transcript--clean-view-p "Full" "Clean")
+       prefix))))
 
 (define-minor-mode agent-shell-vertico-transcript-mode
   "Read and act on an `agent-shell' transcript."
@@ -922,6 +944,7 @@ that is how they are reached in Evil states."
         (read-only-mode 1))
     (setq-local header-line-format nil)
     (agent-shell-vertico-transcript--unbind-evil-keys)
+    (agent-shell-vertico-transcript--show-full-view)
     (read-only-mode -1)))
 
 (defun agent-shell-vertico-transcript--config-for-agent (agent)
@@ -991,19 +1014,6 @@ which leaves the mode the file itself selects in place."
     'markdown-ts-view-mode)
    ((fboundp 'markdown-mode)
     'markdown-mode)))
-
-(defun agent-shell-vertico-transcript--markdown-view-mode ()
-  "Return the read-only Markdown mode used for a clean transcript view.
-
-Prefer the tree-sitter view mode when its grammars are available.  Fall
-back to `markdown-view-mode', loading `markdown-mode' when necessary."
-  (cond
-   ((agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
-    'markdown-ts-view-mode)
-   ((or (fboundp 'markdown-view-mode)
-        (require 'markdown-mode nil t))
-    (when (fboundp 'markdown-view-mode)
-      'markdown-view-mode))))
 
 (defun agent-shell-vertico-transcript--set-markdown-major-mode ()
   "Put the current buffer in the Markdown mode transcripts are read in.
@@ -1128,59 +1138,48 @@ SPEAKERS is a list of heading names such as (\"User\")."
   (interactive)
   (agent-shell-vertico-transcript--move-to-speaker '("User" "Agent") -1))
 
-(defun agent-shell-vertico-transcript--clean-text (text)
-  "Return user and agent sections extracted from transcript TEXT."
-  (with-temp-buffer
-    (insert text)
+(defun agent-shell-vertico-transcript--hide-clean-region (start end)
+  "Hide the transcript region from START to END in the clean view."
+  (when (< start end)
+    (let ((overlay (make-overlay start end nil nil t)))
+      (overlay-put overlay 'invisible
+                   agent-shell-vertico-transcript--clean-invisibility)
+      (push overlay agent-shell-vertico-transcript--clean-overlays))))
+
+(defun agent-shell-vertico-transcript--show-clean-view ()
+  "Show only user and agent messages in the current transcript buffer."
+  (add-to-invisibility-spec
+   agent-shell-vertico-transcript--clean-invisibility)
+  (save-excursion
     (goto-char (point-min))
-    (let (sections)
+    (let ((hidden-start (point-min)))
       (while
           (re-search-forward
            "^## \\(?:User\\|Agent\\)\\(?:[ \t(].*\\)?$"
            nil t)
-        (let* ((start (match-beginning 0))
-               (end
+        (let ((message-start (match-beginning 0)))
+          (agent-shell-vertico-transcript--hide-clean-region
+           hidden-start message-start)
+          (setq hidden-start
                 (save-excursion
                   (goto-char (match-end 0))
-                  (if
-                      (re-search-forward
-                       "^\\(?:## \\|### Tool Call\\)"
-                       nil t)
+                  (if (re-search-forward
+                       "^\\(?:## \\|### Tool Call\\)" nil t)
                       (match-beginning 0)
-                    (point-max)))))
-          (push
-           (string-trim-right
-            (buffer-substring-no-properties start end))
-           sections)
-          (goto-char end)))
-      (concat
-       (mapconcat #'identity (nreverse sections) "\n\n")
-       "\n"))))
+                    (point-max))))
+          (goto-char hidden-start)))
+      (agent-shell-vertico-transcript--hide-clean-region
+       hidden-start (point-max))))
+  (setq agent-shell-vertico-transcript--clean-view-p t))
 
 (defun agent-shell-vertico-transcript-clean-view ()
-  "Display a clean view containing only user and agent messages."
+  "Toggle between clean and full content in this transcript buffer.
+The clean view hides everything except user and agent messages without
+changing the buffer's text."
   (interactive)
-  (let* ((source (current-buffer))
-         (name
-          (format "*Agent transcript: %s*"
-                  (file-name-base
-                   (or (buffer-file-name source)
-                       (buffer-name source)))))
-         (buffer (get-buffer-create name)))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert
-         (with-current-buffer source
-           (agent-shell-vertico-transcript--clean-text
-            (buffer-substring-no-properties
-             (point-min) (point-max)))))
-        (goto-char (point-min))
-        (if-let* ((mode
-                   (agent-shell-vertico-transcript--markdown-view-mode)))
-            (funcall mode)
-          (special-mode))))
-    (pop-to-buffer buffer)))
+  (if agent-shell-vertico-transcript--clean-view-p
+      (agent-shell-vertico-transcript--show-full-view)
+    (agent-shell-vertico-transcript--show-clean-view)))
 
 (defun agent-shell-vertico-transcript-resume-current ()
   "Smart-resume the current transcript or switch to its live session."
@@ -1336,7 +1335,8 @@ through and landed on whatever preceded the first one."
   "Open transcript CANDIDATE and display its clean view."
   (agent-shell-vertico-transcript--open-record
    (agent-shell-vertico-transcript--embark-record candidate))
-  (agent-shell-vertico-transcript-clean-view))
+  (unless agent-shell-vertico-transcript--clean-view-p
+    (agent-shell-vertico-transcript--show-clean-view)))
 
 (defun agent-shell-vertico-transcript-embark-copy-session-id
     (candidate)

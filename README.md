@@ -395,7 +395,7 @@ The transcript reader provides:
 
 - `r` smart resume or switch to the live session
 - `R` force a new resumed shell
-- `c` show only user and agent messages
+- `c` toggle between clean content and the full transcript
 - `b` browse other transcripts from the same project
 - `n`/`p` move between user messages
 - `N`/`P` move between agent messages
@@ -409,11 +409,15 @@ through the transcripts you hopped through.
 
 Evil's state keymaps take precedence over minor mode keymaps, so in Evil
 normal and motion states the reader binds two-key sequences instead: `gr`
-(resume), `gR` (force resume), `gc` (clean reader), `gb` (browse), `gi`
+(resume), `gR` (force resume), `gc` (clean/full toggle), `gb` (browse), `gi`
 (session ID), `g?` (key reference), and the vim-unimpaired style motions
 `]]`/`[[` (either speaker), `]u`/`[u` (user messages) and `]a`/`[a` (agent
 messages). Evil's own `g`, `]` and `[` commands and all text motions keep
 working, and the header line shows whichever key set applies.
+
+The clean view stays in the transcript buffer. It hides metadata, tool calls,
+and tool output with overlays, so toggling back restores the full view without
+changing the file's text or modified state.
 
 Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
 Session IDs are treated as opaque strings, so providers are not restricted to

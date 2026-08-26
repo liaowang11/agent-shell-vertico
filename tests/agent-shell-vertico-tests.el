@@ -5951,6 +5951,15 @@ ends without one modified."
           (should
            (string-match-p
             "\\[r\\] Resume"
+            (agent-shell-vertico-transcript--header-line)))
+          (should
+           (string-match-p
+            "\\[c\\] Clean"
+            (agent-shell-vertico-transcript--header-line)))
+          (setq-local agent-shell-vertico-transcript--clean-view-p t)
+          (should
+           (string-match-p
+            "\\[c\\] Full"
             (agent-shell-vertico-transcript--header-line))))
         (let ((evil-local-mode t)
               (evil-state 'normal))
@@ -6215,85 +6224,57 @@ would modify the file's buffer, and images make a scanned preview noisy."
                       'emacs-lisp-mode)))
       (kill-buffer buffer))))
 
-(ert-deftest agent-shell-vertico-transcript-clean-text-removes-tool-sections ()
-  (let ((clean
-         (agent-shell-vertico-transcript--clean-text
-          (concat
-           "# Agent Shell Transcript\n\n---\n\n"
-           "## User (one)\n\nQuestion\n\n"
-           "## Agent (one)\n\nAnswer\n\n"
-           "### Tool Call: rg\n\nInternal output\n\n"
-           "## User (two)\n\nFollow-up\n\n"
-           "## Agent (two)\n\nFinal\n"))))
-    (should (string-match-p "Question" clean))
-    (should (string-match-p "Answer" clean))
-    (should (string-match-p "Follow-up" clean))
-    (should (string-match-p "Final" clean))
-    (should-not (string-match-p "Tool Call" clean))
-    (should-not (string-match-p "Internal output" clean))))
+(ert-deftest agent-shell-vertico-transcript-clean-view-toggles-in-place ()
+  "The clean view hides text without replacing or modifying the buffer."
+  (with-temp-buffer
+    (insert "# Agent Shell Transcript\n\n---\n\n"
+            "## User (one)\n\nQuestion\n\n"
+            "## Agent (one)\n\nAnswer\n\n"
+            "### Tool Call: rg\n\nInternal output\n\n"
+            "## User (two)\n\nFollow-up\n")
+    (text-mode)
+    (set-buffer-modified-p nil)
+    (let ((buffer (current-buffer))
+          (contents (buffer-string))
+          (mode major-mode))
+      (agent-shell-vertico-transcript-clean-view)
+      (should (eq (current-buffer) buffer))
+      (should (equal (buffer-string) contents))
+      (should-not (buffer-modified-p))
+      (should (eq major-mode mode))
+      (goto-char (point-min))
+      (should (invisible-p (point)))
+      (re-search-forward "Question")
+      (should-not (invisible-p (match-beginning 0)))
+      (re-search-forward "Tool Call")
+      (should (invisible-p (match-beginning 0)))
+      (re-search-forward "Internal output")
+      (should (invisible-p (match-beginning 0)))
+      (re-search-forward "Follow-up")
+      (should-not (invisible-p (match-beginning 0)))
+      (agent-shell-vertico-transcript-clean-view)
+      (should (equal (buffer-string) contents))
+      (should-not (buffer-modified-p))
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (should-not (invisible-p (point)))
+        (goto-char (next-overlay-change (point)))))))
 
-(ert-deftest agent-shell-vertico-transcript-clean-view-uses-tree-sitter-mode ()
-  "The clean view uses tree-sitter Markdown view mode when available."
-  (let ((source (generate-new-buffer "clean-source"))
-        clean-buffer
-        selected)
-    (unwind-protect
-        (progn
-          (with-current-buffer source
-            (insert "## User\n\nhello\n"))
-          (cl-letf (((symbol-function 'markdown-ts-view-mode)
-                     (lambda ()
-                       (setq selected 'markdown-ts-view-mode)
-                       (text-mode)))
-                    ((symbol-function 'markdown-view-mode)
-                     (lambda ()
-                       (setq selected 'markdown-view-mode)
-                       (text-mode)))
-                    ((symbol-function 'treesit-language-available-p)
-                     (lambda (_language &optional _detail) t)))
-            (with-current-buffer source
-              (agent-shell-vertico-transcript-clean-view)))
-          (setq clean-buffer
-                (get-buffer
-                 "*Agent transcript: clean-source*"))
-          (should (eq selected 'markdown-ts-view-mode))
-          (with-current-buffer clean-buffer
-            (should (eq major-mode 'text-mode))))
-      (when (buffer-live-p clean-buffer)
-        (kill-buffer clean-buffer))
-      (when (buffer-live-p source)
-        (kill-buffer source)))))
-
-(ert-deftest agent-shell-vertico-transcript-clean-view-falls-back-to-markdown-mode ()
-  "The clean view falls back to the read-only Markdown mode."
-  (let ((source (generate-new-buffer "clean-source"))
-        clean-buffer
-        selected)
-    (unwind-protect
-        (progn
-          (with-current-buffer source
-            (insert "## User\n\nhello\n"))
-          (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
-                    ((symbol-function 'markdown-view-mode)
-                     (lambda ()
-                       (setq selected 'markdown-view-mode)
-                       (text-mode)))
-                    ((symbol-function 'treesit-language-available-p)
-                     (lambda (_language &optional _detail) nil))
-                    ((symbol-function
-                      'agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
-                     #'ignore))
-            (with-current-buffer source
-              (agent-shell-vertico-transcript-clean-view)))
-          (setq clean-buffer
-                (get-buffer "*Agent transcript: clean-source*"))
-          (should (eq selected 'markdown-view-mode))
-          (with-current-buffer clean-buffer
-            (should (eq major-mode 'text-mode))))
-      (when (buffer-live-p clean-buffer)
-        (kill-buffer clean-buffer))
-      (when (buffer-live-p source)
-        (kill-buffer source)))))
+(ert-deftest agent-shell-vertico-transcript-embark-clean-view-is-idempotent ()
+  "The Embark clean action keeps an existing clean view clean."
+  (with-temp-buffer
+    (insert "# Header\n\n## User\n\nQuestion\n")
+    (agent-shell-vertico-transcript-clean-view)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-transcript--embark-record)
+               #'identity)
+              ((symbol-function
+                'agent-shell-vertico-transcript--open-record)
+               #'ignore))
+      (agent-shell-vertico-transcript-embark-clean-view 'record))
+    (should agent-shell-vertico-transcript--clean-view-p)
+    (goto-char (point-min))
+    (should (invisible-p (point)))))
 
 (ert-deftest agent-shell-vertico-transcript-stats-count-record-kinds ()
   (let* ((live
