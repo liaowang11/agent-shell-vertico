@@ -415,8 +415,9 @@ normal and motion states the reader binds two-key sequences instead: `gr`
 messages). Evil's own `g`, `]` and `[` commands and all text motions keep
 working, and the header line shows whichever key set applies.
 
-The clean view stays in the transcript buffer. It hides metadata, tool calls,
-and tool output with overlays, so toggling back restores the full view without
+The clean view stays in the transcript buffer. It hides metadata, thoughts,
+tool calls, and tool output with overlays. Markdown headings inside user and
+agent messages remain visible. Toggling back restores the full view without
 changing the file's text or modified state.
 
 Both current `**Session ID:**` and legacy `**Session:**` headers are understood.

@@ -783,6 +783,31 @@ It receives a prompt and a list of transcript records.")
   'agent-shell-vertico-transcript-clean
   "Invisibility category used by the clean transcript view.")
 
+(defconst agent-shell-vertico-transcript--event-timestamp-regexp
+  (concat
+   "[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} "
+   "[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}")
+  "Timestamp format used in transcript event headings.")
+
+(defconst agent-shell-vertico-transcript--message-heading-regexp
+  (concat
+   "^## \\(?:Agent\\|User\\(?: (injected)\\)?\\)"
+   "\\(?: ("
+   agent-shell-vertico-transcript--event-timestamp-regexp
+   ")\\)?[ \t]*$")
+  "Heading that begins visible user or agent transcript content.")
+
+(defconst agent-shell-vertico-transcript--thought-heading-regexp
+  (concat
+   "^## Agent's Thoughts\\(?: ("
+   agent-shell-vertico-transcript--event-timestamp-regexp
+   ")\\)?[ \t]*$")
+  "Heading that begins hidden agent thought transcript content.")
+
+(defconst agent-shell-vertico-transcript--tool-heading-regexp
+  "^### Tool Call \\[[^]\n]+\\]:.*$"
+  "Heading that begins hidden tool transcript content.")
+
 (defvar-local agent-shell-vertico-transcript--clean-overlays nil
   "Overlays hiding non-message text in the current transcript buffer.")
 
@@ -1146,30 +1171,65 @@ SPEAKERS is a list of heading names such as (\"User\")."
                    agent-shell-vertico-transcript--clean-invisibility)
       (push overlay agent-shell-vertico-transcript--clean-overlays))))
 
+(defun agent-shell-vertico-transcript--clean-event-at-point ()
+  "Return the transcript visibility event at the current line."
+  (cond
+   ((looking-at-p agent-shell-vertico-transcript--message-heading-regexp)
+    'visible)
+   ((or
+     (looking-at-p agent-shell-vertico-transcript--thought-heading-regexp)
+     (looking-at-p agent-shell-vertico-transcript--tool-heading-regexp))
+    'hidden)))
+
+(defun agent-shell-vertico-transcript--clean-fence-at-point ()
+  "Return Markdown fence information for the current line, or nil.
+The return value is (CHARACTER LENGTH CLOSING-P)."
+  (when (looking-at "^[ \t]\\{0,3\\}\\(```+\\|~~~+\\)")
+    (let ((run (match-string-no-properties 1)))
+      (list
+       (aref run 0)
+       (length run)
+       (string-match-p
+        "\\`[ \t]*\\'"
+        (buffer-substring-no-properties
+         (match-end 1) (line-end-position)))))))
+
 (defun agent-shell-vertico-transcript--show-clean-view ()
   "Show only user and agent messages in the current transcript buffer."
   (add-to-invisibility-spec
    agent-shell-vertico-transcript--clean-invisibility)
   (save-excursion
     (goto-char (point-min))
-    (let ((hidden-start (point-min)))
-      (while
-          (re-search-forward
-           "^## \\(?:User\\|Agent\\)\\(?:[ \t(].*\\)?$"
-           nil t)
-        (let ((message-start (match-beginning 0)))
-          (agent-shell-vertico-transcript--hide-clean-region
-           hidden-start message-start)
-          (setq hidden-start
-                (save-excursion
-                  (goto-char (match-end 0))
-                  (if (re-search-forward
-                       "^\\(?:## \\|### Tool Call\\)" nil t)
-                      (match-beginning 0)
-                    (point-max))))
-          (goto-char hidden-start)))
-      (agent-shell-vertico-transcript--hide-clean-region
-       hidden-start (point-max))))
+    (let ((hidden-start (point-min))
+          (visible nil)
+          fence)
+      (while (not (eobp))
+        (let ((fence-info
+               (agent-shell-vertico-transcript--clean-fence-at-point)))
+          (cond
+           (fence
+            (when (and fence-info
+                       (= (car fence-info) (car fence))
+                       (>= (cadr fence-info) (cdr fence))
+                       (caddr fence-info))
+              (setq fence nil)))
+           (fence-info
+            (setq fence (cons (car fence-info) (cadr fence-info))))
+           (t
+            (pcase (agent-shell-vertico-transcript--clean-event-at-point)
+              ('visible
+               (unless visible
+                 (agent-shell-vertico-transcript--hide-clean-region
+                  hidden-start (point)))
+               (setq visible t))
+              ('hidden
+               (when visible
+                 (setq hidden-start (point)))
+               (setq visible nil))))))
+        (forward-line 1))
+      (unless visible
+        (agent-shell-vertico-transcript--hide-clean-region
+         hidden-start (point-max)))))
   (setq agent-shell-vertico-transcript--clean-view-p t))
 
 (defun agent-shell-vertico-transcript-clean-view ()

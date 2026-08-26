@@ -6228,10 +6228,10 @@ would modify the file's buffer, and images make a scanned preview noisy."
   "The clean view hides text without replacing or modifying the buffer."
   (with-temp-buffer
     (insert "# Agent Shell Transcript\n\n---\n\n"
-            "## User (one)\n\nQuestion\n\n"
-            "## Agent (one)\n\nAnswer\n\n"
-            "### Tool Call: rg\n\nInternal output\n\n"
-            "## User (two)\n\nFollow-up\n")
+            "## User (2026-08-26 22:40:58)\n\nQuestion\n\n"
+            "## Agent (2026-08-26 22:41:14)\n\nAnswer\n\n"
+            "### Tool Call [completed]: rg\n\nInternal output\n\n"
+            "## User (2026-08-26 23:14:27)\n\nFollow-up\n")
     (text-mode)
     (set-buffer-modified-p nil)
     (let ((buffer (current-buffer))
@@ -6259,6 +6259,62 @@ would modify the file's buffer, and images make a scanned preview noisy."
       (while (< (point) (point-max))
         (should-not (invisible-p (point)))
         (goto-char (next-overlay-change (point)))))))
+
+(ert-deftest agent-shell-vertico-transcript-clean-view-keeps-message-headings ()
+  "Markdown headings inside an agent message remain visible."
+  (with-temp-buffer
+    (insert "# Agent Shell Transcript\n\n---\n\n"
+            "## Agent (2026-08-26 22:42:38)\n\n"
+            "Opening sentence.\n\n"
+            "## Summary\n\nSubstantive response.\n\n"
+            "## The one correction\n\nCorrection.\n\n"
+            "## Proposed change\n\nImplementation.\n\n"
+            "#### Current-format heading\n\nCurrent body.\n\n"
+            "## User (2026-08-26 23:14:27)\n\nNext question.\n")
+    (agent-shell-vertico-transcript-clean-view)
+    (dolist (text '("Opening sentence"
+                    "Summary"
+                    "Substantive response"
+                    "The one correction"
+                    "Correction"
+                    "Proposed change"
+                    "Implementation"
+                    "Current-format heading"
+                    "Current body"
+                    "Next question"))
+      (goto-char (point-min))
+      (re-search-forward text)
+      (should-not (invisible-p (match-beginning 0))))))
+
+(ert-deftest agent-shell-vertico-transcript-clean-view-ignores-fenced-events ()
+  "Transcript-like headings inside fenced message content remain visible."
+  (with-temp-buffer
+    (insert "# Agent Shell Transcript\n\n---\n\n"
+            "## Agent (2026-08-26 22:42:38)\n\nBefore fence.\n\n"
+            "````markdown\n"
+            "## User (2026-08-26 22:42:39)\n"
+            "### Tool Call [completed]: fake\n"
+            "````\n\nAfter fence.\n\n"
+            "### Tool Call [completed]: real\n\nHidden output.\n\n"
+            "## Agent's Thoughts (2026-08-26 22:42:40)\n\n"
+            "Hidden thought.\n\n"
+            "## Agent (2026-08-26 22:42:41)\n\nFinal answer.\n")
+    (agent-shell-vertico-transcript-clean-view)
+    (dolist (text '("Before fence"
+                    "## User (2026-08-26 22:42:39)"
+                    "### Tool Call [completed]: fake"
+                    "After fence"
+                    "Final answer"))
+      (goto-char (point-min))
+      (re-search-forward (regexp-quote text))
+      (should-not (invisible-p (match-beginning 0))))
+    (dolist (text '("### Tool Call [completed]: real"
+                    "Hidden output"
+                    "Agent's Thoughts"
+                    "Hidden thought"))
+      (goto-char (point-min))
+      (re-search-forward (regexp-quote text))
+      (should (invisible-p (match-beginning 0))))))
 
 (ert-deftest agent-shell-vertico-transcript-embark-clean-view-is-idempotent ()
   "The Embark clean action keeps an existing clean view clean."
