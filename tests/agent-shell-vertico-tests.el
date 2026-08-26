@@ -3200,6 +3200,117 @@ and every annotation would lose its columns for real users too."
            (candidates (all-completions "" table)))
       (should (equal candidates '("Beta Agent @ beta"))))))
 
+;;; Shell buffer picker
+
+(defmacro agent-shell-vertico-tests--with-shell-buffer-picker (&rest body)
+  "Evaluate BODY with the shell buffer picker advice installed."
+  (declare (indent 0))
+  `(unwind-protect
+       (progn (agent-shell-vertico-setup-shell-buffer-picker)
+              ,@body)
+     (advice-remove 'agent-shell--read-shell-buffer
+                    #'agent-shell-vertico--read-shell-buffer)))
+
+(ert-deftest agent-shell-vertico-read-shell-buffer-annotates-candidates ()
+  "The prompt asking which shell to act on reads through the session table."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b") (:title . "Fix beta"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((seen nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _)
+                   (setq seen (list prompt
+                                    (all-completions "" collection)
+                                    (funcall collection "" nil 'metadata)))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--read-shell-buffer
+                     :prompt "Send region to shell: ")
+                    beta)))
+      (pcase-let ((`(,prompt ,candidates ,metadata) seen))
+        (should (equal prompt "Send region to shell: "))
+        (should (equal candidates
+                       (list (buffer-name alpha) (buffer-name beta))))
+        (should (equal (alist-get 'category (cdr metadata))
+                       'agent-shell-session))
+        (should (string-match-p
+                 "Review alpha"
+                 (caddr (car (funcall (alist-get 'affixation-function
+                                                 (cdr metadata))
+                                      (list (buffer-name alpha)))))))))))
+
+(ert-deftest agent-shell-vertico-read-shell-buffer-keeps-callers-buffers ()
+  "A caller naming the shells to choose from is offered only those, alive.
+The session picker's other-shell branch reads that way."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/" '((:session . ((:id . "b"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((dead (generate-new-buffer "Gone Agent @ gone"))
+          (candidates nil))
+      (kill-buffer dead)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq candidates (all-completions "" collection))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--read-shell-buffer
+                     :prompt "Switch to shell buffer: "
+                     :buffers (list beta dead))
+                    beta)))
+      (should (equal candidates (list (buffer-name beta)))))))
+
+(ert-deftest agent-shell-vertico-read-shell-buffer-without-shells-errors ()
+  "With no shell to offer, the reader reports it rather than prompting."
+  (let ((agent-shell-test-buffers nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Prompted with nothing to choose"))))
+      (should-error (agent-shell-vertico--read-shell-buffer)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-read-shell-buffer-without-selection-errors ()
+  "Leaving the prompt without choosing a shell is an error, not a nil buffer."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (setq agent-shell-test-buffers (list alpha))
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+      (should-error (agent-shell-vertico--read-shell-buffer)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-shell-buffer-picker-serves-agent-shell ()
+  "End to end: agent-shell's own reader hands the prompt to the table."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b") (:title . "Fix beta"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((category nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq category
+                         (alist-get 'category
+                                    (cdr (funcall collection "" nil 'metadata))))
+                   (buffer-name beta))))
+        (agent-shell-vertico-tests--with-shell-buffer-picker
+          (should (eq (agent-shell--read-shell-buffer
+                       :prompt "Send region to shell: ")
+                      beta))))
+      (should (equal category 'agent-shell-session)))))
+
+(ert-deftest agent-shell-vertico-shell-buffer-picker-setup-installs-advice ()
+  "Setup installs the reader advice once."
+  (agent-shell-vertico-tests--with-shell-buffer-picker
+    (agent-shell-vertico-setup-shell-buffer-picker)
+    (let ((installed 0))
+      (advice-mapc
+       (lambda (function _properties)
+         (when (eq function #'agent-shell-vertico--read-shell-buffer)
+           (cl-incf installed)))
+       'agent-shell--read-shell-buffer)
+      (should (= installed 1)))))
+
 (ert-deftest agent-shell-vertico-loading-does-not-prebind-embark-keymap-alist ()
   "Loading the package must not bind `embark-keymap-alist'.
 A top-level `defvar' with a value would pre-bind it to nil, which

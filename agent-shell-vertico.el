@@ -294,11 +294,13 @@ the text alone."
                         (/ remaining agent-shell-vertico--key-range)))))
     (propertize key 'invisible t)))
 
-(defun agent-shell-vertico--completion-table (scope)
-  "Return a completion table for SCOPE."
+(defun agent-shell-vertico--table (buffers-function)
+  "Return a completion table over the buffers BUFFERS-FUNCTION returns.
+
+BUFFERS-FUNCTION is called on each completion request, so a session that
+dies while the prompt is open leaves the list."
   (lambda (string pred action)
-    (let ((buffers (seq-filter #'buffer-live-p
-                               (agent-shell-vertico--buffers scope))))
+    (let ((buffers (seq-filter #'buffer-live-p (funcall buffers-function))))
       (if (eq action 'metadata)
           `(metadata
             (category . agent-shell-session)
@@ -308,6 +310,11 @@ the text alone."
         (complete-with-action action
                               (mapcar #'buffer-name buffers)
                               string pred)))))
+
+(defun agent-shell-vertico--completion-table (scope)
+  "Return a completion table for SCOPE."
+  (agent-shell-vertico--table
+   (lambda () (agent-shell-vertico--buffers scope))))
 
 (defun agent-shell-vertico--read-session (prompt scope)
   "Read an agent shell session with PROMPT for SCOPE."
@@ -453,6 +460,52 @@ shell for a viewport."
   (interactive)
   (agent-shell-vertico--display-session
    (agent-shell-vertico--read-session "Project agent shell: " 'project)))
+
+;;; Shell buffer picker
+;;
+;; Every `agent-shell' command that asks which shell to act on reads through
+;; one function: `agent-shell-send-region' and the other senders under a prefix
+;; argument, `agent-shell-switch-buffer', the DWIM commands asked to pick a
+;; shell, and the session picker's other-shell branch.  That reader builds its
+;; own padded columns and declares no completion category, so those prompts
+;; show neither the annotations nor the Embark actions the switch commands
+;; have.  Reading them through the table above gives every one of them the
+;; same list.
+
+(cl-defun agent-shell-vertico--read-shell-buffer
+    (&key prompt buffers force-short-names)
+  "Read one `agent-shell' buffer, annotated as the switch commands are.
+
+PROMPT and BUFFERS keep the meaning they have in the `agent-shell'
+reader this replaces: PROMPT is the prompt string, and BUFFERS the
+shells to choose from, defaulting to `agent-shell-buffers'.
+
+FORCE-SHORT-NAMES is accepted and ignored.  Candidates are whole buffer
+names, the names `agent-shell-vertico-switch' shows, so a shell reads the
+same wherever it is picked.
+
+Returns the chosen buffer.  Signals a `user-error' when there is no
+shell to offer or none was chosen, as the reader it replaces does."
+  (ignore force-short-names)
+  (let* ((candidates (or (seq-filter #'buffer-live-p
+                                     (or buffers (agent-shell-buffers)))
+                         (user-error "No agent-shell buffers")))
+         (selection (completing-read
+                     (or prompt "Agent shell buffer: ")
+                     (agent-shell-vertico--table (lambda () candidates))
+                     nil t nil 'agent-shell-vertico-history)))
+    (or (get-buffer (substring-no-properties selection))
+        (user-error "Nothing selected"))))
+
+;;;###autoload
+(defun agent-shell-vertico-setup-shell-buffer-picker ()
+  "Annotate every `agent-shell' prompt asking which shell to act on.
+
+The reader those prompts share offers no way in, so this advises it."
+  (interactive)
+  (advice-add 'agent-shell--read-shell-buffer :override
+              #'agent-shell-vertico--read-shell-buffer))
+
 
 ;;; Markdown links
 ;;

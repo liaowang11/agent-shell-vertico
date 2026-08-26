@@ -120,6 +120,17 @@ transcript module layers its own: the plain reader lives in
 `agent-shell-vertico-resume-read-choice-function`, and loading the Consult
 module replaces it with the previewing one.
 
+**Enriching the shell buffer prompts.** Every `agent-shell` command that asks
+which shell to act on reads through `agent-shell--read-shell-buffer`, which
+takes no hook, so `agent-shell-vertico-setup-shell-buffer-picker` advises it
+`:override` with `agent-shell-vertico--read-shell-buffer`. The replacement
+completes over `agent-shell-vertico--table`, the same table the switch commands
+read, so those prompts gain the annotations, the sort, and the
+`agent-shell-session` category (hence the Embark actions). It keeps upstream's
+contract: `:buffers` still names the shells to offer, the chosen buffer is
+returned, and no shells or no selection is a `user-error`. `:force-short-names`
+is accepted and ignored, because candidates are whole buffer names.
+
 ## Critical constraint: do not pre-bind host-package variables
 
 External variables (`embark-keymap-alist`, `marginalia-annotators`,

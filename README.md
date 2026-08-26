@@ -240,6 +240,23 @@ transcript and `T` shows traffic.  `q` closes the sidebar, while `=`, `s`,
 Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
 prefix remains available as a fallback (for example, `C-c k` kills).
 
+## Shell buffer prompts
+
+Several `agent-shell` commands ask which shell to act on: `agent-shell-send-region`
+and the other senders under a prefix argument, `agent-shell-switch-buffer`, the
+DWIM commands asked to pick a shell, and the session picker's "switch to another
+shell" branch. They all read through one function, which builds its own columns
+and declares no completion category.
+
+- `M-x agent-shell-vertico-setup-shell-buffer-picker`
+  Read those prompts through the same annotated list the switch commands use.
+
+Candidates become whole buffer names annotated with status, model, mode, title,
+and path, sorted by `agent-shell-vertico-sort-by`, and carrying the
+`agent-shell-session` category, so `agent-shell-vertico-setup-embark` actions
+work there too. The shells offered are unchanged: a command that names its own
+buffers still gets exactly those.
+
 ## Session picker
 
 `agent-shell` shows a session picker when `agent-shell-session-strategy` is

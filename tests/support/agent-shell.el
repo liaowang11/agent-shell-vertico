@@ -74,6 +74,24 @@ children lose their `invisible' property when COLLAPSED is nil."
   "Return stubbed project agent shell buffers."
   agent-shell-test-project-buffers)
 
+(cl-defun agent-shell--read-shell-buffer (&key prompt buffers force-short-names)
+  "Read one shell buffer among BUFFERS with PROMPT.
+
+Stands in for the reader `agent-shell' uses for every command that asks
+which shell to act on.  Like the real one, it completes over buffer
+names, returns the chosen buffer, and refuses a call with no shells to
+offer or no shell chosen.  FORCE-SHORT-NAMES is accepted and ignored:
+the stub does not shorten names."
+  (ignore force-short-names)
+  (let* ((candidates (or buffers
+                         (agent-shell-buffers)
+                         (user-error "No agent-shell buffers")))
+         (selection (completing-read (or prompt "Agent shell buffer: ")
+                                     (mapcar #'buffer-name candidates)
+                                     nil t)))
+    (or (get-buffer selection)
+        (user-error "Nothing selected"))))
+
 (defun agent-shell-cwd ()
   "Return the current buffer directory."
   default-directory)
