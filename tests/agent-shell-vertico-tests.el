@@ -3229,6 +3229,56 @@ and every annotation would lose its columns for real users too."
 
 ;;; Shell buffer picker
 
+(ert-deftest agent-shell-vertico-setup-enables-integrations-once ()
+  "The main setup command installs every package integration once."
+  (let ((agent-shell-mode-hook nil)
+        (agent-shell-viewport-view-mode-hook nil)
+        (minibuffer-setup-hook nil)
+        (consult-after-jump-hook nil)
+        (marginalia-annotators '((imenu builtin none)))
+        (after-load-alist nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-setup)
+          (agent-shell-vertico-setup)
+          (should (= 1 (seq-count
+                        (lambda (function)
+                          (eq function #'agent-shell-vertico--imenu-setup))
+                        agent-shell-mode-hook)))
+          (should (= 1 (seq-count
+                        (lambda (function)
+                          (eq function #'agent-shell-vertico--imenu-setup))
+                        agent-shell-viewport-view-mode-hook)))
+          (should (= 1 (seq-count
+                        (lambda (function)
+                          (eq function
+                              #'agent-shell-vertico-consult--plain-candidates))
+                        minibuffer-setup-hook)))
+          (should (= 1 (seq-count
+                        (lambda (function)
+                          (eq function
+                              #'agent-shell-vertico-consult--expand-fold))
+                        consult-after-jump-hook)))
+          (should (string-match-p
+                   "agent-shell-vertico--setup-embark-integrations"
+                   (prin1-to-string after-load-alist)))
+          (dolist (spec
+                   '((agent-shell--read-shell-buffer
+                      agent-shell-vertico--read-shell-buffer)
+                     (agent-shell--prompt-select-session
+                      agent-shell-vertico-resume--select-session)))
+            (let ((installed 0))
+              (advice-mapc
+               (lambda (function _properties)
+                 (when (eq function (cadr spec))
+                   (cl-incf installed)))
+               (car spec))
+              (should (= installed 1)))))
+      (advice-remove 'agent-shell--read-shell-buffer
+                     #'agent-shell-vertico--read-shell-buffer)
+      (advice-remove 'agent-shell--prompt-select-session
+                     #'agent-shell-vertico-resume--select-session))))
+
 (defmacro agent-shell-vertico-tests--with-shell-buffer-picker (&rest body)
   "Evaluate BODY with the shell buffer picker advice installed."
   (declare (indent 0))

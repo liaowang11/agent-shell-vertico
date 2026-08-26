@@ -16,8 +16,8 @@ locations are resolved through `agent-shell-dot-subdir-function`.
 - `M-x agent-shell-vertico-switch-project`
   Switch across `agent-shell` buffers in the current project via
   `agent-shell-project-buffers`.
-- `M-x agent-shell-vertico-setup-embark`
-  Register the `agent-shell-session` Embark category.
+- `M-x agent-shell-vertico-setup`
+  Enable every Agent Shell Vertico integration.
 
 Candidates keep the recent ordering from `agent-shell-buffers` and show
 consult-style annotations for status, model, mode, title, and path.
@@ -40,8 +40,9 @@ actions.
   Act on a prompt queued in the current session. Works from the shell
   buffer, from its viewport, and from any other buffer in a project that
   has a shell.
-- `M-x agent-shell-vertico-prompt-queue-setup-embark`
-  Register the `agent-shell-prompt-queue` Embark category.
+
+`agent-shell-vertico-setup` registers the `agent-shell-prompt-queue`
+Embark category.
 
 Candidates are the pending prompts in queue order, each showing its
 first line, annotated with the line count and whatever of the prompt the
@@ -290,14 +291,14 @@ DWIM commands asked to pick a shell, and the session picker's "switch to another
 shell" branch. They all read through one function, which builds its own columns
 and declares no completion category.
 
-- `M-x agent-shell-vertico-setup-shell-buffer-picker`
-  Read those prompts through the same annotated list the switch commands use.
+`agent-shell-vertico-setup` reads those prompts through the same annotated list
+the switch commands use.
 
 Candidates become whole buffer names annotated with status, model, mode, title,
 and path, sorted by `agent-shell-vertico-sort-by`, and carrying the
-`agent-shell-session` category, so `agent-shell-vertico-setup-embark` actions
-work there too. The shells offered are unchanged: a command that names its own
-buffers still gets exactly those.
+`agent-shell-session` category, so the registered Embark actions work there
+too. The shells offered are unchanged: a command that names its own buffers
+still gets exactly those.
 
 ## Session picker
 
@@ -306,8 +307,8 @@ buffers still gets exactly those.
 current directory. The picker reports what `session/list` returns, which is
 the directory, the session title, and the date.
 
-- `M-x agent-shell-vertico-resume-setup`
-  Annotate that picker with what the local transcripts know.
+`agent-shell-vertico-setup` annotates that picker with what the local
+transcripts know.
 
 Each listed session is joined to its transcript by session ID, and annotated
 with whether a shell already holds it, the agent, the model, and the first
@@ -317,9 +318,9 @@ lists and still resumes; its columns are empty.
 With `agent-shell-vertico-consult` loaded, moving through the picker previews
 the joined transcript, in the same way transcript search previews its matches.
 
-The picker offers no hook for this, so `agent-shell-vertico-resume-setup`
-advises `agent-shell--prompt-select-session`. It replaces only how the choice
-is read: which sessions are offered, what a choice means, and any
+The picker offers no hook for this, so the setup advises
+`agent-shell--prompt-select-session`. It replaces only how the choice is read:
+which sessions are offered, what a choice means, and any
 `agent-shell-session-choices-function` you have configured all keep working
 unchanged.
 
@@ -470,11 +471,8 @@ a folded body with an `invisible` text property, Consult copies that
 property onto its candidates, and the minibuffer hides the text there too.
 Consult can only open folds built from overlays.
 
-```elisp
-(agent-shell-vertico-consult-setup-buffer-search)
-```
-
-After that, matches inside a collapsed block show their text, and both
+`agent-shell-vertico-setup` enables this integration when Consult is available.
+Matches inside a collapsed block then show their text, and both
 previewing and selecting one expands the block. Candidates in
 `agent-shell` buffers lose their buffer faces, which is the trade for
 reading them. Blocks opened while previewing stay open, because Consult's
@@ -487,39 +485,16 @@ preview restores only the folds it opened itself.
   :load-path "/path/to/agent-shell-vertico"
   :after agent-shell
   :bind (("C-c a b" . agent-shell-vertico-switch)
-         ("C-c a p" . agent-shell-vertico-switch-project))
-  :config
-  (with-eval-after-load 'embark
-    (agent-shell-vertico-setup-embark)))
-
-(use-package agent-shell-vertico-prompt-queue
-  :after agent-shell-vertico
-  :bind (("C-c a q" . agent-shell-vertico-prompt-queue))
-  :config
-  (with-eval-after-load 'embark
-    (agent-shell-vertico-prompt-queue-setup-embark)))
+         ("C-c a p" . agent-shell-vertico-switch-project)
+         ("C-c a q" . agent-shell-vertico-prompt-queue)
+         ("C-c a r" . agent-shell-vertico-transcript-browse-project)
+         ("C-c a R" . agent-shell-vertico-transcript-resume-project)
+         ("C-c a s" . agent-shell-vertico-transcript-search-project))
+  :config (agent-shell-vertico-setup))
 
 (use-package agent-shell-vertico-sidebar
   :after agent-shell-vertico
   :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)))
-
-(use-package agent-shell-vertico-transcript
-  :after agent-shell-vertico
-  :bind (("C-c a r" . agent-shell-vertico-transcript-browse-project)
-         ("C-c a R" . agent-shell-vertico-transcript-resume-project)))
-
-(use-package agent-shell-vertico-resume
-  :after agent-shell-vertico-transcript
-  :config (agent-shell-vertico-resume-setup))
-
-(use-package agent-shell-vertico-consult
-  :after (agent-shell-vertico-transcript agent-shell-vertico-prompt-queue
-          agent-shell-vertico-resume consult)
-  :bind (("C-c a s" . agent-shell-vertico-transcript-search-project))
-  :config
-  (agent-shell-vertico-consult-setup-buffer-search)
-  (with-eval-after-load 'embark
-    (agent-shell-vertico-transcript-setup-embark)))
 
 (use-package agent-shell-vertico-links
   :after agent-shell-vertico
@@ -540,9 +515,9 @@ session actions follow `agent-shell-manager` closely:
 
 Normal `embark-buffer-map` actions stay available too.
 
-`agent-shell-vertico-setup-embark` also teaches Embark about the
-rendered Markdown links agent-shell prints in a session buffer. With
-point on a link, `embark-act` (or `embark-dwim`) offers:
+The unified setup also teaches Embark about the rendered Markdown links
+agent-shell prints in a session buffer. With point on a link, `embark-act`
+(or `embark-dwim`) offers:
 
 - `RET` open the link — a file link opens in Emacs, jumping to any
   `#Lnnn` line; a binary prompts to open externally; anything else goes

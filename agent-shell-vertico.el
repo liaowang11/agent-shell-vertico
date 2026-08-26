@@ -48,6 +48,14 @@
 (declare-function agent-shell-ui--set-group-collapsed "agent-shell-ui"
                   (group-qualified-id collapsed))
 (declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
+(declare-function agent-shell-vertico-consult-setup-buffer-search
+                  "agent-shell-vertico-consult" ())
+(declare-function agent-shell-vertico-prompt-queue-setup-embark
+                  "agent-shell-vertico-prompt-queue" ())
+(declare-function agent-shell-vertico-resume-setup
+                  "agent-shell-vertico-resume" ())
+(declare-function agent-shell-vertico-transcript-setup-embark
+                  "agent-shell-vertico-transcript" ())
 (declare-function embark-open-externally "embark")
 (declare-function comint-send-eof "comint" ())
 
@@ -1129,6 +1137,35 @@ effect for buffers created afterwards."
                    `(,mode :types ((?r "Request" font-lock-keyword-face)
                                    (?a "Activity" font-lock-function-name-face)
                                    (?p "Response" font-lock-string-face)))))))
+
+;;; Unified setup
+
+(defun agent-shell-vertico--setup-embark-integrations ()
+  "Register every Agent Shell Vertico category with Embark."
+  (agent-shell-vertico-setup-embark)
+  (agent-shell-vertico-transcript-setup-embark)
+  (agent-shell-vertico-prompt-queue-setup-embark))
+
+;;;###autoload
+(defun agent-shell-vertico-setup ()
+  "Enable all Agent Shell Vertico integrations.
+
+This installs the shared shell picker, session imenu, transcript-backed
+session picker, and Consult readers and buffer search when Consult is
+available.  It also registers every completion category after Embark
+loads.  Repeated calls are safe."
+  (interactive)
+  (require 'agent-shell-vertico-transcript)
+  (require 'agent-shell-vertico-prompt-queue)
+  (require 'agent-shell-vertico-resume)
+  (agent-shell-vertico-setup-shell-buffer-picker)
+  (agent-shell-vertico-setup-imenu)
+  (agent-shell-vertico-resume-setup)
+  (when (require 'consult nil t)
+    (require 'agent-shell-vertico-consult)
+    (agent-shell-vertico-consult-setup-buffer-search))
+  (with-eval-after-load 'embark
+    (agent-shell-vertico--setup-embark-integrations)))
 
 (provide 'agent-shell-vertico)
 
