@@ -15,6 +15,8 @@
 (defvar agent-shell-test-last-buffer nil)
 (defvar agent-shell-test-last-args nil)
 (defvar agent-shell-agent-configs nil)
+(defvar agent-shell-test-last-target nil
+  "Shell buffer the last recorded command resolved through agent-shell.")
 (defvar agent-shell-test-statuses nil)
 (defvar agent-shell-test-project-names nil)
 (defvar agent-shell-test-buffer-query-count 0)
@@ -91,6 +93,68 @@ the stub does not shorten names."
                                      nil t)))
     (or (get-buffer selection)
         (user-error "Nothing selected"))))
+
+(cl-defun agent-shell--shell-buffer (&key viewport-buffer no-error no-create)
+  "Return the stubbed shell buffer for the current project.
+
+Mirrors the real resolver closely enough for callers to observe it: the
+first project shell wins, VIEWPORT-BUFFER is ignored, and with none to
+find NO-CREATE reports it (or returns nil under NO-ERROR) while the
+creating path returns `agent-shell-test-start-buffer'."
+  (ignore viewport-buffer)
+  (or (seq-first (agent-shell-project-buffers))
+      (if no-create
+          (unless no-error
+            (user-error "No agent shell buffers available for current project"))
+        (setq agent-shell-test-last-command 'agent-shell--shell-buffer-created)
+        agent-shell-test-start-buffer)))
+
+(defun agent-shell-test--record-send (command &rest args)
+  "Record COMMAND and ARGS, resolving the shell the way the real one does."
+  (setq agent-shell-test-last-command command
+        agent-shell-test-last-args args
+        agent-shell-test-last-target (agent-shell--shell-buffer)))
+
+(defun agent-shell-send-region (&optional pick-shell)
+  "Record a send region action for PICK-SHELL."
+  (interactive)
+  (agent-shell-test--record-send 'agent-shell-send-region pick-shell))
+
+(defun agent-shell-send-file (&optional prompt-for-file pick-shell)
+  "Record a send file action for PROMPT-FOR-FILE and PICK-SHELL."
+  (interactive "P")
+  (agent-shell-test--record-send 'agent-shell-send-file
+                                 prompt-for-file pick-shell))
+
+(defun agent-shell-send-screenshot (&optional pick-shell)
+  "Record a send screenshot action for PICK-SHELL."
+  (interactive)
+  (agent-shell-test--record-send 'agent-shell-send-screenshot pick-shell))
+
+(defun agent-shell-send-clipboard-image (&optional pick-shell)
+  "Record a send clipboard image action for PICK-SHELL."
+  (interactive)
+  (agent-shell-test--record-send 'agent-shell-send-clipboard-image pick-shell))
+
+(defun agent-shell-prompt-send-dwim (&optional arg)
+  "Record a prompt send action for ARG."
+  (interactive "P")
+  (agent-shell-test--record-send 'agent-shell-prompt-send-dwim arg))
+
+(defun agent-shell-prompt-queue-dwim (&optional arg)
+  "Record a prompt queue action for ARG."
+  (interactive "P")
+  (agent-shell-test--record-send 'agent-shell-prompt-queue-dwim arg))
+
+(defun agent-shell-prompt-inject-dwim (&optional arg)
+  "Record a prompt inject action for ARG."
+  (interactive "P")
+  (agent-shell-test--record-send 'agent-shell-prompt-inject-dwim arg))
+
+(defun agent-shell-prompt-compose ()
+  "Record a compose action."
+  (interactive)
+  (agent-shell-test--record-send 'agent-shell-prompt-compose))
 
 (defun agent-shell-cwd ()
   "Return the current buffer directory."

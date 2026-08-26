@@ -240,6 +240,41 @@ transcript and `T` shows traffic.  `q` closes the sidebar, while `=`, `s`,
 Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
 prefix remains available as a fallback (for example, `C-c k` kills).
 
+## Project-scoped shell commands
+
+`agent-shell` splits every send in two: `agent-shell-send-region` takes the
+first shell in the current project without asking, and `agent-shell-send-region-to`
+(or a prefix argument elsewhere) reads one instead. You choose between the two
+before every send, and the silent one picks arbitrarily when a project holds
+several shells.
+
+These commands make one binding decide. The project's only shell is used; when
+the project has several, they ask which one; with a prefix argument they ask
+across every shell, whatever project it belongs to.
+
+- `M-x agent-shell-vertico-send-region`
+- `M-x agent-shell-vertico-send-file`
+- `M-x agent-shell-vertico-send-other-file`
+- `M-x agent-shell-vertico-send-screenshot`
+- `M-x agent-shell-vertico-send-clipboard-image`
+- `M-x agent-shell-vertico-send-prompt`
+- `M-x agent-shell-vertico-queue-prompt`
+- `M-x agent-shell-vertico-inject-prompt`
+- `M-x agent-shell-vertico-compose`
+
+Each replaces a pair of `agent-shell` commands, so nine bindings cover what
+took seventeen.
+
+The shell at point is deliberately not preferred: standing in one session and
+sending a region to another is the reason the prompt exists. That also means
+composing inside a shell that has text at its prompt can move that text into
+another shell's compose buffer, which is `agent-shell-prompt-compose`'s own
+transfer behavior applied to the shell you chose.
+
+Every command resolves the shell, then runs the `agent-shell` command it stands
+for with resolution pinned to that shell, so what is sent, how a busy shell is
+handled, and whether a viewport composes it all stay `agent-shell`'s.
+
 ## Shell buffer prompts
 
 Several `agent-shell` commands ask which shell to act on: `agent-shell-send-region`

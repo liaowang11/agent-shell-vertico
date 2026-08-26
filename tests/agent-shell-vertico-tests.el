@@ -156,6 +156,7 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-command) nil)
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
+                    ((symbol-value 'agent-shell-test-last-target) nil)
                     ((symbol-value 'agent-shell-test-statuses) nil)
                     ((symbol-value 'agent-shell-test-project-names) nil)
                     ((symbol-value 'agent-shell-test-buffer-query-count) 0)
@@ -3310,6 +3311,153 @@ The session picker's other-shell branch reads that way."
            (cl-incf installed)))
        'agent-shell--read-shell-buffer)
       (should (= installed 1)))))
+
+;;; Project-scoped shell commands
+
+(defmacro agent-shell-vertico-tests--with-project-shells (&rest body)
+  "Evaluate BODY with two shells in one project and one in another.
+
+Binds `alpha-one' and `alpha-two' in project alpha and `beta' in project
+beta, with every shell live and `default-directory' in project alpha."
+  (declare (indent 0))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha-one "Alpha Agent @ one" "/work/alpha/"
+                   '((:session . ((:id . "a1") (:title . "Alpha one")))))
+        (alpha-two "Alpha Agent @ two" "/work/alpha/"
+                   '((:session . ((:id . "a2") (:title . "Alpha two")))))
+        (beta "Beta Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b") (:title . "Beta"))))))
+     (setq agent-shell-test-buffers (list alpha-one alpha-two beta))
+     (setq agent-shell-test-project-buffers (list alpha-one alpha-two))
+     (let ((default-directory "/work/alpha/"))
+       ,@body)))
+
+(ert-deftest agent-shell-vertico-target-shell-uses-the-only-project-shell ()
+  "One shell in the project answers without asking."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers (list alpha-one))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Asked with nothing to choose between"))))
+      (should (eq (agent-shell-vertico--target-shell) alpha-one)))))
+
+(ert-deftest agent-shell-vertico-target-shell-asks-within-the-project ()
+  "Several shells in the project mean a prompt, offering only those shells."
+  (agent-shell-vertico-tests--with-project-shells
+    (let ((offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered (all-completions "" collection))
+                   (buffer-name alpha-two))))
+        (should (eq (agent-shell-vertico--target-shell) alpha-two)))
+      (should (equal offered (list (buffer-name alpha-one)
+                                   (buffer-name alpha-two)))))))
+
+(ert-deftest agent-shell-vertico-target-shell-without-project-shells ()
+  "No shell in the project leaves the answer to the command's own fallback."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers nil)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Asked with no project shell"))))
+      (should-not (agent-shell-vertico--target-shell)))))
+
+(ert-deftest agent-shell-vertico-target-shell-prefix-offers-every-shell ()
+  "The escape hatch reaches shells outside the current project."
+  (agent-shell-vertico-tests--with-project-shells
+    (let ((offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered (all-completions "" collection))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--target-shell t) beta)))
+      (should (equal offered (list (buffer-name alpha-one)
+                                   (buffer-name alpha-two)
+                                   (buffer-name beta)))))))
+
+(ert-deftest agent-shell-vertico-target-shell-prefix-without-any-shell ()
+  "The escape hatch with no shell at all also falls back rather than asking."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-buffers nil
+          agent-shell-test-project-buffers nil)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Asked with no shell to offer"))))
+      (should-not (agent-shell-vertico--target-shell t)))))
+
+(ert-deftest agent-shell-vertico-target-shell-ignores-the-buffer-at-point ()
+  "Standing in one shell does not decide the target for another project's work.
+Sending from one session to another is the point of asking."
+  (agent-shell-vertico-tests--with-project-shells
+    (with-current-buffer beta
+      (let ((default-directory "/work/alpha/"))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (car (all-completions "" collection)))))
+          (should (eq (agent-shell-vertico--target-shell) alpha-one)))))))
+
+(ert-deftest agent-shell-vertico-with-target-shell-pins-resolution ()
+  "The body sees the resolved shell wherever agent-shell resolves one."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers (list alpha-two))
+    (should (eq (agent-shell-vertico--with-target-shell nil
+                  (agent-shell--shell-buffer :no-create t))
+                alpha-two))))
+
+(ert-deftest agent-shell-vertico-with-target-shell-leaves-fallback-alone ()
+  "With no shell to pin, the body resolves as agent-shell would on its own."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers nil)
+    (should-error (agent-shell-vertico--with-target-shell nil
+                    (agent-shell--shell-buffer :no-create t))
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-commands-send-to-the-resolved-shell ()
+  "Each command delegates to agent-shell with the resolved shell in place."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers (list alpha-two))
+    (dolist (spec '((agent-shell-vertico-send-region
+                     agent-shell-send-region (nil))
+                    (agent-shell-vertico-send-file
+                     agent-shell-send-file (nil nil))
+                    (agent-shell-vertico-send-other-file
+                     agent-shell-send-file (t nil))
+                    (agent-shell-vertico-send-screenshot
+                     agent-shell-send-screenshot (nil))
+                    (agent-shell-vertico-send-clipboard-image
+                     agent-shell-send-clipboard-image (nil))
+                    (agent-shell-vertico-send-prompt
+                     agent-shell-prompt-send-dwim (nil))
+                    (agent-shell-vertico-queue-prompt
+                     agent-shell-prompt-queue-dwim (nil))
+                    (agent-shell-vertico-inject-prompt
+                     agent-shell-prompt-inject-dwim (nil))
+                    (agent-shell-vertico-compose
+                     agent-shell-prompt-compose ())))
+      (pcase-let ((`(,command ,delegate ,arguments) spec))
+        (setq agent-shell-test-last-command nil
+              agent-shell-test-last-args nil
+              agent-shell-test-last-target nil)
+        (call-interactively command)
+        (should (equal (list command agent-shell-test-last-command)
+                       (list command delegate)))
+        (should (equal (list command agent-shell-test-last-args)
+                       (list command arguments)))
+        (should (equal (list command agent-shell-test-last-target)
+                       (list command alpha-two)))))))
+
+(ert-deftest agent-shell-vertico-commands-take-the-prefix-as-the-escape-hatch ()
+  "A prefix argument sends to a shell chosen from every project."
+  (agent-shell-vertico-tests--with-project-shells
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (car (last (all-completions "" collection))))))
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'agent-shell-vertico-send-region))
+      (should (eq agent-shell-test-last-target beta))
+      ;; The prefix picks the shell; it never reaches the delegate, where
+      ;; `agent-shell-send-file' would read it as "prompt for a file".
+      (let ((current-prefix-arg '(4)))
+        (call-interactively #'agent-shell-vertico-send-file))
+      (should (equal agent-shell-test-last-args '(nil nil)))
+      (should (eq agent-shell-test-last-target beta)))))
 
 (ert-deftest agent-shell-vertico-loading-does-not-prebind-embark-keymap-alist ()
   "Loading the package must not bind `embark-keymap-alist'.

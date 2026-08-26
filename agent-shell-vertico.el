@@ -507,6 +507,125 @@ The reader those prompts share offers no way in, so this advises it."
               #'agent-shell-vertico--read-shell-buffer))
 
 
+;;; Project-scoped shell commands
+;;
+;; `agent-shell' asks which shell to act on in two steps: a command such as
+;; `agent-shell-send-region' takes the first shell in the current project, and
+;; a second command (`agent-shell-send-region-to') or a prefix argument reads
+;; one instead.  Choosing between the two before every send is work, and the
+;; silent branch picks arbitrarily when a project holds several shells.
+;;
+;; These commands make one binding decide: the project's only shell is used,
+;; several mean a prompt, and a prefix argument reads from every shell,
+;; whatever project it belongs to.  The shell at point is deliberately not
+;; preferred, so a region in one session can be sent to another.
+;;
+;; Each command resolves the shell, pins `agent-shell' resolution to it, and
+;; then calls the `agent-shell' command, which keeps owning what is sent, how
+;; a busy shell is handled, and whether a viewport composes it.
+
+(defun agent-shell-vertico--target-shell (&optional all)
+  "Return the `agent-shell' buffer to act on, or nil to leave it open.
+
+With ALL non-nil, read from every live shell.  Otherwise take the
+current project's only shell, or read one of them when it has several.
+
+Returns nil when there is nothing to offer, which leaves the choice to
+the `agent-shell' command being run: it creates a shell, or reports that
+the project has none, exactly as it does when called on its own."
+  (if all
+      (when (agent-shell-buffers)
+        (agent-shell-vertico--session-buffer
+         (agent-shell-vertico--read-session "Agent shell: " 'all)))
+    (let ((project-shells (seq-filter #'buffer-live-p
+                                      (agent-shell-project-buffers))))
+      (pcase (length project-shells)
+        (0 nil)
+        (1 (car project-shells))
+        (_ (agent-shell-vertico--session-buffer
+            (agent-shell-vertico--read-session
+             "Project agent shell: " 'project)))))))
+
+(defmacro agent-shell-vertico--with-target-shell (all &rest body)
+  "Run BODY with `agent-shell' resolution pinned to the target shell.
+
+ALL is passed to `agent-shell-vertico--target-shell'.  BODY is an
+`agent-shell' command, which resolves the shell it acts on through
+`agent-shell--shell-buffer'; pinning that is what carries the answer in,
+without BODY having to accept one.
+
+With no shell to pin, BODY runs untouched and resolves as it would on
+its own."
+  (declare (indent 1) (debug t))
+  `(let ((target (agent-shell-vertico--target-shell ,all)))
+     (if (not target)
+         (progn ,@body)
+       (cl-letf (((symbol-function 'agent-shell--shell-buffer)
+                  (lambda (&rest _) target)))
+         ,@body))))
+
+(defmacro agent-shell-vertico--define-shell-command (name docstring &rest body)
+  "Define command NAME running BODY against the project's shell.
+
+DOCSTRING documents what BODY sends; how the shell is chosen is the same
+for every one of these commands and is appended to it."
+  (declare (indent 2) (doc-string 2) (debug t))
+  `(defun ,name (&optional all)
+     ,(concat docstring "
+
+Sends to the current project's shell, asking which one when the project
+has several.  With a prefix argument ALL, asks across every shell,
+whatever project it belongs to.")
+     (interactive "P")
+     (agent-shell-vertico--with-target-shell all
+       ,@body)))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-region "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-region
+    "Send the region to an `agent-shell'."
+  (agent-shell-send-region))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-file "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-file
+    "Send the current file, or the files at point, to an `agent-shell'."
+  (agent-shell-send-file nil nil))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-other-file "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-other-file
+    "Select a project file and send it to an `agent-shell'."
+  (agent-shell-send-file t nil))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-screenshot "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-screenshot
+    "Capture a screenshot and send it to an `agent-shell'."
+  (agent-shell-send-screenshot))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-clipboard-image "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-clipboard-image
+    "Send the clipboard image to an `agent-shell'."
+  (agent-shell-send-clipboard-image))
+
+;;;###autoload (autoload 'agent-shell-vertico-send-prompt "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-send-prompt
+    "Read a prompt with the context at point and send it to an `agent-shell'."
+  (agent-shell-prompt-send-dwim nil))
+
+;;;###autoload (autoload 'agent-shell-vertico-queue-prompt "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-queue-prompt
+    "Read a prompt with the context at point and queue it for an `agent-shell'."
+  (agent-shell-prompt-queue-dwim nil))
+
+;;;###autoload (autoload 'agent-shell-vertico-inject-prompt "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-inject-prompt
+    "Read a prompt with the context at point and inject it into a running turn."
+  (agent-shell-prompt-inject-dwim nil))
+
+;;;###autoload (autoload 'agent-shell-vertico-compose "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-compose
+    "Compose a prompt for an `agent-shell' in its own buffer."
+  (agent-shell-prompt-compose))
+
+
 ;;; Markdown links
 ;;
 ;; `agent-shell' renders `[title](url)' Markdown links, stamping each link's
