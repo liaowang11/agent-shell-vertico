@@ -2404,7 +2404,7 @@ while normal and motion states get the same direct mnemonic commands."
                     (preserve-size . (t . nil))
                     (window-parameters
                      . ((no-delete-other-windows . t)
-                        (no-other-window . t)))))))
+                        (no-other-window . nil)))))))
     (set-window-dedicated-p window t)
     (with-current-buffer buffer
       (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)

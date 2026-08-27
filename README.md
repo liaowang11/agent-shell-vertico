@@ -88,8 +88,8 @@ project name and fall back to the directory basename.  Hover shows the full
 working directory.
 
 `agent-shell-vertico-sidebar-toggle` shows a hidden sidebar without selecting
-its window and closes a visible sidebar.  Ordinary window navigation skips the
-sidebar; use `agent-shell-vertico-sidebar-focus` to enter it.
+its window and closes a visible sidebar; use
+`agent-shell-vertico-sidebar-focus` to enter it.
 
 `TAB` folds or expands a project header, or toggles metadata for only the
 session at point.  `RET`/mouse-1 activates the selected row or metadata field;
