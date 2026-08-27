@@ -2404,7 +2404,7 @@ while normal and motion states get the same direct mnemonic commands."
                     (preserve-size . (t . nil))
                     (window-parameters
                      . ((no-delete-other-windows . t)
-                        (no-other-window . nil)))))))
+                        (no-other-window . t)))))))
     (set-window-dedicated-p window t)
     (with-current-buffer buffer
       (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
@@ -2414,13 +2414,17 @@ while normal and motion states get the same direct mnemonic commands."
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-toggle ()
-  "Toggle the compact agent-shell session sidebar."
+  "Focus, close, or open the compact agent-shell session sidebar.
+Focus a visible sidebar unless it is selected, in which case close it."
   (interactive)
   (let* ((buffer (get-buffer "*Agent Shell Sessions*"))
          (window (and buffer (get-buffer-window buffer))))
-    (if (window-live-p window)
-        (delete-window window)
-      (select-window (agent-shell-vertico-sidebar--display-buffer)))))
+    (cond ((not (window-live-p window))
+           (select-window (agent-shell-vertico-sidebar--display-buffer)))
+          ((eq window (selected-window))
+           (delete-window window))
+          (t
+           (select-window window)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-focus ()

@@ -1197,6 +1197,39 @@ Each element in BINDINGS is of the form:
         (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
+(ert-deftest agent-shell-vertico-sidebar-toggle-skips-window-navigation ()
+  "Opening the sidebar excludes its window from ordinary navigation."
+  (let ((agent-shell-test-buffers nil)
+        (original (selected-window)))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-sidebar-toggle)
+          (let ((window (get-buffer-window "*Agent Shell Sessions*")))
+            (should (window-live-p window))
+            (should (window-parameter window 'no-other-window))))
+      (when (window-live-p original)
+        (select-window original))
+      (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (kill-buffer sidebar)))))
+
+(ert-deftest agent-shell-vertico-sidebar-toggle-focuses-visible-window ()
+  "Toggling an unfocused visible sidebar selects it without closing it."
+  (let ((agent-shell-test-buffers nil)
+        (original (selected-window)))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-sidebar-toggle)
+          (let ((window (get-buffer-window "*Agent Shell Sessions*")))
+            (should (window-live-p window))
+            (select-window original)
+            (agent-shell-vertico-sidebar-toggle)
+            (should (window-live-p window))
+            (should (eq (selected-window) window))))
+      (when (window-live-p original)
+        (select-window original))
+      (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (kill-buffer sidebar)))))
+
 (ert-deftest agent-shell-vertico-sidebar-focus-opens-and-selects ()
   "Focusing opens the sidebar when it is closed and selects its window."
   (agent-shell-vertico-tests--with-session-buffers

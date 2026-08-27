@@ -86,6 +86,12 @@ metadata entry is promoted to a compact context line below each title (for
 example, `⌂ agent-shell-vertico`); labels prefer agent-shell's configured
 project name and fall back to the directory basename.  Hover shows the full
 working directory.
+
+`agent-shell-vertico-sidebar-toggle` opens and selects a hidden sidebar,
+selects a visible sidebar from another window, and closes it when it is
+already selected.  Ordinary window navigation skips the sidebar; use the
+toggle command or `agent-shell-vertico-sidebar-focus` to enter it.
+
 `TAB` folds or expands a project header, or toggles metadata for only the
 session at point.  `RET`/mouse-1 activates the selected row or metadata field;
 the model and mode values open their selectors, while a project value opens
