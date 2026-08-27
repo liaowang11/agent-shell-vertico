@@ -2414,17 +2414,15 @@ while normal and motion states get the same direct mnemonic commands."
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-toggle ()
-  "Focus, close, or open the compact agent-shell session sidebar.
-Focus a visible sidebar unless it is selected, in which case close it."
+  "Show or close the compact agent-shell session sidebar.
+Show it without selecting its window, or close it when it is visible."
   (interactive)
   (let* ((buffer (get-buffer "*Agent Shell Sessions*"))
          (window (and buffer (get-buffer-window buffer))))
-    (cond ((not (window-live-p window))
-           (select-window (agent-shell-vertico-sidebar--display-buffer)))
-          ((eq window (selected-window))
-           (delete-window window))
-          (t
-           (select-window window)))))
+    (if (window-live-p window)
+        (delete-window window)
+      (save-selected-window
+        (agent-shell-vertico-sidebar--display-buffer)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-focus ()

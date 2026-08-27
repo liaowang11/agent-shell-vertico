@@ -1186,7 +1186,7 @@ Each element in BINDINGS is of the form:
             (let* ((sidebar (get-buffer "*Agent Shell Sessions*"))
                    (window (get-buffer-window sidebar)))
               (should (window-live-p window))
-              (should (eq (selected-window) window))
+              (should (eq (selected-window) original))
               (should (string-match-p
                        "Review alpha"
                        (with-current-buffer sidebar (buffer-string))))
@@ -1212,8 +1212,8 @@ Each element in BINDINGS is of the form:
       (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
         (kill-buffer sidebar)))))
 
-(ert-deftest agent-shell-vertico-sidebar-toggle-focuses-visible-window ()
-  "Toggling an unfocused visible sidebar selects it without closing it."
+(ert-deftest agent-shell-vertico-sidebar-toggle-closes-visible-window ()
+  "Toggling an unfocused visible sidebar closes it without selecting it."
   (let ((agent-shell-test-buffers nil)
         (original (selected-window)))
     (unwind-protect
@@ -1223,8 +1223,8 @@ Each element in BINDINGS is of the form:
             (should (window-live-p window))
             (select-window original)
             (agent-shell-vertico-sidebar-toggle)
-            (should (window-live-p window))
-            (should (eq (selected-window) window))))
+            (should-not (window-live-p window))
+            (should (eq (selected-window) original))))
       (when (window-live-p original)
         (select-window original))
       (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
