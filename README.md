@@ -361,7 +361,7 @@ without asking for one.
   Report missing tools, undiscovered projects, and transcript metadata issues.
 - `M-x agent-shell-vertico-transcript-open-session`
   Open the transcript of the session at hand, from its shell buffer or from
-  a viewport showing it.
+  a viewport showing it. With a prefix argument, in another window.
 
 Browse and search selections open the transcript file. Resume commands switch
 to a matching live shell when possible, otherwise they resume the recorded

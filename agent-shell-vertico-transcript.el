@@ -1200,7 +1200,7 @@ so that directory wins whenever the file has one."
    (user-error "Current buffer is not an agent-shell transcript")))
 
 ;;;###autoload
-(defun agent-shell-vertico-transcript-open-session ()
+(defun agent-shell-vertico-transcript-open-session (&optional other-window)
   "Open the transcript of the current session in the transcript reader.
 
 Reads the session from an `agent-shell' buffer or from a viewport
@@ -1208,8 +1208,11 @@ showing one.  `agent-shell-open-transcript' visits the same file and
 leaves the mode to the file itself, which for a transcript is no mode at
 all.  This opens it the way `agent-shell-vertico-transcript-browse'
 does: the Markdown reader, the header line, speaker navigation, the
-clean view, and resume."
-  (interactive)
+clean view, and resume.
+
+With OTHER-WINDOW, or interactively with a prefix argument, open it in
+another window and leave the session in the window showing it."
+  (interactive "P")
   (let* ((shell (or (agent-shell--current-shell)
                     (user-error "Not in an agent-shell session")))
          (file (buffer-local-value 'agent-shell--transcript-file shell)))
@@ -1219,7 +1222,8 @@ clean view, and resume."
       (user-error "Transcript file does not exist: %s" file))
     (agent-shell-vertico-transcript--open-record
      (agent-shell-vertico-transcript--record-from-file
-      file (buffer-local-value 'default-directory shell)))))
+      file (buffer-local-value 'default-directory shell))
+     other-window)))
 
 (defun agent-shell-vertico-transcript--move-to-speaker
     (speakers direction)

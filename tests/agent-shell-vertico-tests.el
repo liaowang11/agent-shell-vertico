@@ -5413,11 +5413,11 @@ ends without one modified."
   "Evaluate BODY with a shell buffer holding a transcript file.
 
 Binds `shell' to the shell buffer, `file' to its transcript file, and
-`opened' to the record `agent-shell-vertico-transcript--open-record' was
-called with."
+`opened' and `opened-other-window' to the arguments
+`agent-shell-vertico-transcript--open-record' was called with."
   (declare (indent 0) (debug t))
   `(let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
-         opened)
+         opened opened-other-window)
      (unwind-protect
          (progn
            (with-temp-file file
@@ -5430,8 +5430,9 @@ called with."
                (setq-local agent-shell--transcript-file file))
              (cl-letf (((symbol-function
                          'agent-shell-vertico-transcript--open-record)
-                        (lambda (record &optional _other-window)
-                          (setq opened record))))
+                        (lambda (record &optional other-window)
+                          (setq opened record
+                                opened-other-window other-window))))
                ,@body)))
        (delete-file file))))
 
@@ -5442,7 +5443,16 @@ called with."
       (agent-shell-vertico-transcript-open-session))
     (should (equal (agent-shell-vertico-transcript-record-file opened) file))
     (should (equal (agent-shell-vertico-transcript-record-project-root opened)
-                   "/work/project/"))))
+                   "/work/project/"))
+    (should-not opened-other-window)))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-in-other-window ()
+  "A prefix argument leaves the session in the window it is shown in."
+  (agent-shell-vertico-tests--with-session-transcript
+    (with-current-buffer shell
+      (agent-shell-vertico-transcript-open-session t))
+    (should (equal (agent-shell-vertico-transcript-record-file opened) file))
+    (should opened-other-window)))
 
 (ert-deftest agent-shell-vertico-transcript-open-session-reads-through-viewport ()
   "A viewport opens the transcript of the shell behind it."
