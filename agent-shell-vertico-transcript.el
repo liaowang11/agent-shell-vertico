@@ -1164,12 +1164,25 @@ SPEAKERS is a list of heading names such as (\"User\")."
   (agent-shell-vertico-transcript--move-to-speaker '("User" "Agent") -1))
 
 (defun agent-shell-vertico-transcript--hide-clean-region (start end)
-  "Hide the transcript region from START to END in the clean view."
-  (when (< start end)
-    (let ((overlay (make-overlay start end nil nil t)))
-      (overlay-put overlay 'invisible
-                   agent-shell-vertico-transcript--clean-invisibility)
-      (push overlay agent-shell-vertico-transcript--clean-overlays))))
+  "Hide the transcript region from START to END in the clean view.
+
+START and END are line beginnings.  The region is moved back over the
+newline on each side, so that it covers the newline ending the last
+visible line and stops before the newline ending the last hidden line.
+This is how `outline-flag-region' hides a subtree, and it leaves the
+heading at END at the start of its own display line.
+
+Hiding through END instead would put that heading on a display line
+beginning at START.  Emacs would then have to scan and fontify the whole
+hidden region to find where that display line starts, which is what
+`vertical-motion' does on every line move and every pixel scroll."
+  (let ((start (if (eq (char-before start) ?\n) (1- start) start))
+        (end (if (eq (char-before end) ?\n) (1- end) end)))
+    (when (< start end)
+      (let ((overlay (make-overlay start end nil nil t)))
+        (overlay-put overlay 'invisible
+                     agent-shell-vertico-transcript--clean-invisibility)
+        (push overlay agent-shell-vertico-transcript--clean-overlays)))))
 
 (defun agent-shell-vertico-transcript--clean-event-at-point ()
   "Return the transcript visibility event at the current line."

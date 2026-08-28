@@ -6334,6 +6334,40 @@ would modify the file's buffer, and images make a scanned preview noisy."
       (re-search-forward (regexp-quote text))
       (should (invisible-p (match-beginning 0))))))
 
+(ert-deftest agent-shell-vertico-transcript-clean-view-starts-heading-lines ()
+  "Every visible heading begins its own display line in the clean view.
+
+A hidden region that reaches the heading's own line beginning puts the
+heading on a display line that starts where the hidden region starts.
+Emacs then has to scan and fontify the whole hidden region to find that
+display line's start, which stalls `vertical-motion' and every command
+built on it."
+  (with-temp-buffer
+    (insert "# Agent Shell Transcript\n\n---\n\n"
+            "## Agent (2026-08-26 22:42:38)\n\nAnswer.\n\n"
+            "### Tool Call [completed]: rg\n\nHidden output.\n\n"
+            "## User (2026-08-26 23:14:27)\n\nFollow-up.\n")
+    (agent-shell-vertico-transcript-clean-view)
+    (save-window-excursion
+      (set-window-buffer (selected-window) (current-buffer))
+      (dolist (heading '("## Agent (2026-08-26 22:42:38)"
+                         "## User (2026-08-26 23:14:27)"))
+        (goto-char (point-min))
+        (re-search-forward (regexp-quote heading))
+        (goto-char (match-beginning 0))
+        (let ((heading-start (point)))
+          (vertical-motion 0)
+          (should (equal (point) heading-start)))))))
+
+(ert-deftest agent-shell-vertico-transcript-clean-view-hides-unterminated-tail ()
+  "A hidden region reaching an unterminated last line hides all of it."
+  (with-temp-buffer
+    (insert "## User (2026-08-26 23:14:27)\n\nQuestion.\n\n"
+            "### Tool Call [completed]: rg\n\nHidden output.")
+    (agent-shell-vertico-transcript-clean-view)
+    (goto-char (point-max))
+    (should (invisible-p (1- (point))))))
+
 (ert-deftest agent-shell-vertico-transcript-embark-clean-view-is-idempotent ()
   "The Embark clean action keeps an existing clean view clean."
   (with-temp-buffer
