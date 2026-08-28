@@ -1815,15 +1815,18 @@ involved."
   (agent-shell-vertico-sidebar--mark-selected-seen frame-or-window))
 
 (defun agent-shell-vertico-sidebar--focus-change ()
-  "Mark the session in a refocused frame's selected window as seen.
+  "Mark the session in a refocused graphical frame as seen.
 
 A turn that finishes while Emacs has no input focus stays unread, so
 returning to a frame is the moment its selected session has been read.
 No window is selected then, so `window-selection-change-functions' does
-not run for it."
+not run for it.  Terminal frames do not report a useful focus state, so
+their selected windows are handled only by
+`window-selection-change-functions'."
   (dolist (frame (frame-list))
     (when (and (frame-live-p frame)
-               (agent-shell-vertico-sidebar--frame-focused-p frame))
+               (display-graphic-p frame)
+               (eq (frame-focus-state frame) t))
       (agent-shell-vertico-sidebar--mark-selected-seen frame))))
 
 (defun agent-shell-vertico-sidebar--session-at-point ()

@@ -2578,6 +2578,55 @@ soon as a second frame is involved."
         (should-not (gethash alpha
                             agent-shell-vertico-sidebar--attention))))))
 
+(ert-deftest agent-shell-vertico-sidebar-focus-change-ignores-terminal-frame ()
+  "A GUI focus callback must not read a session selected in a terminal frame.
+
+The terminal frame can report no focus while the package treats it as
+focused for completion-time checks.  That exception must not make an
+unrelated GUI focus change clear its unread mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*"))
+          (other (generate-new-buffer " *other*"))
+          (gui-frame (make-symbol "gui-frame"))
+          (terminal-frame (make-symbol "terminal-frame"))
+          (gui-window (make-symbol "gui-window"))
+          (terminal-window (make-symbol "terminal-window"))
+          (attention (make-hash-table :test #'eq)))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport)
+                (agent-shell-vertico-sidebar--attention attention))
+            (puthash alpha (list :kind 'done :time 10.0) attention)
+            (cl-letf (((symbol-function 'frame-list)
+                       (lambda () (list gui-frame terminal-frame)))
+                      ((symbol-function 'frame-live-p)
+                       (lambda (frame)
+                         (memq frame (list gui-frame terminal-frame))))
+                      ((symbol-function 'display-graphic-p)
+                       (lambda (frame) (eq frame gui-frame)))
+                      ((symbol-function 'frame-focus-state)
+                       (lambda (frame) (eq frame gui-frame)))
+                      ((symbol-function 'window-live-p)
+                       (lambda (window)
+                         (memq window (list gui-window terminal-window))))
+                      ((symbol-function 'frame-selected-window)
+                       (lambda (frame)
+                         (if (eq frame gui-frame)
+                             gui-window
+                           terminal-window)))
+                      ((symbol-function 'window-buffer)
+                       (lambda (window)
+                         (if (eq window gui-window)
+                             other
+                           viewport))))
+              (agent-shell-vertico-sidebar--focus-change)
+              (should (eq (plist-get (gethash alpha attention) :kind)
+                          'done))))
+        (kill-buffer viewport)
+        (kill-buffer other)))))
+
 (ert-deftest agent-shell-vertico-sidebar-regained-focus-marks-seen ()
   "Returning to Emacs marks the session in the selected window seen.
 
