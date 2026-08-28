@@ -4571,6 +4571,87 @@ label it with someone else's agent or title."
       (concat "In agent-shell-vertico-transcript.el"
               (agent-shell-vertico--candidate-key 0))))))
 
+(defun agent-shell-vertico-tests--visible (string)
+  "Return STRING without the parts a completion UI hides.
+Mirrors what `vertico--display-string' shows of a candidate."
+  (let ((pos 0) (parts nil))
+    (while (< pos (length string))
+      (let ((next (or (next-single-property-change pos 'invisible string)
+                      (length string))))
+        (unless (get-text-property pos 'invisible string)
+          (push (substring-no-properties string pos next) parts))
+        (setq pos next)))
+    (apply #'concat (nreverse parts))))
+
+(defun agent-shell-vertico-tests--project-records ()
+  "Return two same-titled records belonging to different projects."
+  (list (agent-shell-vertico-transcript-record-create
+         :file "/tmp/transcripts/alpha.md"
+         :project-name "alpha"
+         :title "Fix the parser")
+        (agent-shell-vertico-transcript-record-create
+         :file "/tmp/transcripts/beta.md"
+         :project-name "beta"
+         :title "Fix the parser")))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-matches-project-name ()
+  "Typing a project name reaches its transcripts, whose titles never say it."
+  (let* ((records (agent-shell-vertico-tests--project-records))
+         (candidates
+          (agent-shell-vertico-transcript--record-candidates records 60))
+         (completion-styles '(substring))
+         (matches (completion-all-completions "beta" candidates nil 4)))
+    (should (= (safe-length matches) 1))
+    (should (eq (agent-shell-vertico-transcript--record-from-candidate
+                 (car matches))
+                (nth 1 records)))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-hides-the-project ()
+  "The project is matched but never shown: the row reads as it always did."
+  (let* ((records (agent-shell-vertico-tests--project-records))
+         (candidate
+          (car (agent-shell-vertico-transcript--record-candidates
+                records 60))))
+    (should (string-match-p "alpha" (substring-no-properties candidate)))
+    (should (equal (agent-shell-vertico-tests--visible candidate)
+                   "Fix the parser"))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-keeps-one-project-bare ()
+  "Records of one project carry nothing hidden: typing it selects them all."
+  (let* ((records
+          (list (agent-shell-vertico-transcript-record-create
+                 :file "/tmp/transcripts/alpha.md"
+                 :project-name "alpha"
+                 :title "Fix the parser")))
+         (candidate
+          (car (agent-shell-vertico-transcript--record-candidates
+                records 60))))
+    (should (equal (substring-no-properties candidate)
+                   (concat "Fix the parser"
+                           (agent-shell-vertico--candidate-key 0))))))
+
+(ert-deftest agent-shell-vertico-transcript-candidate-pays-for-what-it-hides ()
+  "A hidden project costs the title its columns, never the annotation.
+
+`marginalia--align' measures a candidate with `string-width', which counts
+invisible text, so a candidate over its width would push every annotation
+right and off the end of the row."
+  (let* ((records
+          (list (agent-shell-vertico-transcript-record-create
+                 :file "/tmp/transcripts/alpha.md"
+                 :project-name "a-very-long-project-name"
+                 :title (make-string 200 ?x))
+                (agent-shell-vertico-transcript-record-create
+                 :file "/tmp/transcripts/beta.md"
+                 :project-name "beta"
+                 :title (make-string 200 ?x))))
+         (candidates
+          (agent-shell-vertico-transcript--record-candidates records 60)))
+    (dolist (candidate candidates)
+      ;; One column over the width, for the invisible key character the
+      ;; width the reader is given never counted.
+      (should (<= (string-width (substring-no-properties candidate)) 61)))))
+
 (ert-deftest agent-shell-vertico-transcript-candidates-stay-distinct ()
   "Records sharing a title must stay separately selectable.
 

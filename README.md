@@ -365,7 +365,15 @@ session is shown in its viewport rather than in the shell buffer.
 
 Each candidate is the session title, taken from the transcript's `**Title:**`
 header, and falls back to the first user message for transcripts written
-without one. Sessions are listed newest first by last change. Annotations run
+without one. Sessions are listed newest first by last change.
+
+Completion matches the candidate and never the annotation, so a list spanning
+more than one project carries each candidate's project name hidden on it:
+typing a project name reaches its transcripts, and the row reads as it always
+did. Those columns come off the title, because Marginalia measures hidden text
+too and an annotation pushed right runs off the end of the row, so titles are
+cut earlier in a list that spans projects. A list within one project carries
+nothing hidden and is unchanged. Annotations run
 from most to least identifying: project, first user message, agent,
 availability, last change, and start time. They are rendered by a Marginalia
 annotator registered for the `agent-shell-transcript` category, so
