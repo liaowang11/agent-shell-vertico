@@ -4547,32 +4547,28 @@ label it with someone else's agent or title."
   (let ((titled
          (agent-shell-vertico-transcript-record-create
           :file "/tmp/transcripts/titled.md"
-          :project-name "alpha"
           :started "2026-08-04 10:43:15"
           :title "Understand session list display"
           :preview "In agent-shell-vertico-transcript.el"))
         (untitled
          (agent-shell-vertico-transcript-record-create
           :file "/tmp/transcripts/untitled.md"
-          :project-name "alpha"
           :started "2026-08-04 10:43:15"
           :preview "In agent-shell-vertico-transcript.el")))
-    ;; The project leads, then the title, with no timestamp: the list is
-    ;; ordered by last change and the annotation carries the times.
+    ;; The title is the candidate, with no timestamp: the list is ordered
+    ;; by last change and the annotation carries the times.
     (should
      (equal
       (substring-no-properties
        (agent-shell-vertico-transcript--record-candidate titled 0))
-      (concat "alpha" (make-string 15 ?\s) "  "
-              "Understand session list display"
+      (concat "Understand session list display"
               (agent-shell-vertico--candidate-key 0))))
     ;; Without a title the first user message stands in.
     (should
      (equal
       (substring-no-properties
        (agent-shell-vertico-transcript--record-candidate untitled 0))
-      (concat "alpha" (make-string 15 ?\s) "  "
-              "In agent-shell-vertico-transcript.el"
+      (concat "In agent-shell-vertico-transcript.el"
               (agent-shell-vertico--candidate-key 0))))))
 
 (ert-deftest agent-shell-vertico-transcript-candidates-stay-distinct ()
@@ -4605,9 +4601,8 @@ agent gave the same summary would leave one of them unreachable."
           "[\x100000-\x10fffd]+\\'" ""
           (substring-no-properties candidate)))
        candidates)
-      (let ((project (concat "-" (make-string 19 ?\s) "  ")))
-        (list (concat project "Set up emacsclient configuration")
-              (concat project "Set up emacsclient configuration")))))
+      '("Set up emacsclient configuration"
+        "Set up emacsclient configuration")))
     ;; Each candidate still resolves to its own record.
     (should
      (eq (agent-shell-vertico-transcript--record-from-candidate
@@ -4670,7 +4665,8 @@ agent gave the same summary would leave one of them unreachable."
     (let ((positions
            (mapcar (lambda (value) (string-match-p (regexp-quote value)
                                                    annotation))
-                   (list "Claude"
+                   (list "agent-shell-vertico"
+                         "Claude"
                          "Resumable"
                          (marginalia--time-relative
                           (encode-time 30 45 19 4 8 2026))
@@ -4701,9 +4697,9 @@ whenever a transcript has no title, and the reader shows it in full."
     (should-not
      (string-match-p "In agent-shell-vertico-transcript" annotation))))
 
-(defun agent-shell-vertico-tests--candidate-for (project-name)
-  "Return the candidate of a record belonging to PROJECT-NAME."
-  (substring-no-properties
+(defun agent-shell-vertico-tests--annotation-for (project-name)
+  "Return the annotation of a record named PROJECT-NAME."
+  (agent-shell-vertico-transcript--record-annotation
    (agent-shell-vertico-transcript--record-candidate
     (agent-shell-vertico-transcript-record-create
      :file "/tmp/transcripts/session.md"
@@ -4711,111 +4707,31 @@ whenever a transcript has no title, and the reader shows it in full."
      :agent "Claude"
      :session-id "abc-123"
      :title "Bootstrap the eval harness"
-     :modified-time (encode-time 30 45 19 4 8 2026))
-    0 60)))
-
-(ert-deftest agent-shell-vertico-transcript-candidate-leads-with-project ()
-  "A candidate names the project it belongs to, then the session.
-
-Completion matches the candidate and not the annotation, so a project a
-reader can type has to be part of the candidate itself."
-  (let ((candidate (agent-shell-vertico-tests--candidate-for "alpha")))
-    (should (string-prefix-p "alpha" candidate))
-    (should (string-match-p "Bootstrap the eval harness" candidate))))
-
-(ert-deftest agent-shell-vertico-transcript-candidate-titles-line-up ()
-  "Every title starts at the same offset whatever the project is called."
-  (let ((short (agent-shell-vertico-tests--candidate-for "lyra"))
-        (long (agent-shell-vertico-tests--candidate-for
-               "agent-shell-vertico")))
-    (should (equal (string-match-p "Bootstrap" short)
-                   (string-match-p "Bootstrap" long)))))
-
-(ert-deftest agent-shell-vertico-transcript-candidate-keeps-room-for-title ()
-  "The project column never takes more than half of a narrow candidate."
-  (let ((candidate
-         (substring-no-properties
-          (agent-shell-vertico-transcript--record-candidate
-           (agent-shell-vertico-transcript-record-create
-            :file "/tmp/transcripts/session.md"
-            :project-name "a-very-long-project-name"
-            :title "Boot")
-           0 20))))
-    (should (string-match-p "Boot" candidate))
-    (should (<= (string-width candidate) 21))))
-
-(ert-deftest agent-shell-vertico-transcript-candidate-keeps-cut-project ()
-  "A project name too long for its column stays readable through help-echo."
-  (let ((candidate
-         (agent-shell-vertico-transcript--record-candidate
-          (agent-shell-vertico-transcript-record-create
-           :file "/tmp/transcripts/session.md"
-           :project-name "a-very-long-project-name"
-           :title "Bootstrap the eval harness")
-          0 60)))
-    (should (equal (get-text-property 0 'help-echo candidate)
-                   "a-very-long-project-name"))))
-
-(ert-deftest agent-shell-vertico-transcript-candidate-matches-project-name ()
-  "Typing a project name reaches its transcripts, whose titles never say it."
-  (let* ((alpha (agent-shell-vertico-transcript-record-create
-                 :file "/tmp/transcripts/alpha.md"
-                 :project-name "alpha"
-                 :title "Fix the parser"))
-         (beta (agent-shell-vertico-transcript-record-create
-                :file "/tmp/transcripts/beta.md"
-                :project-name "beta"
-                :title "Fix the parser"))
-         (candidates
-          (agent-shell-vertico-transcript--record-candidates
-           (list alpha beta) 60))
-         (completion-styles '(substring))
-         (matches (completion-all-completions "beta" candidates nil 4)))
-    (should (= (safe-length matches) 1))
-    (should (eq (agent-shell-vertico-transcript--record-from-candidate
-                 (car matches))
-                beta))))
-
-(ert-deftest agent-shell-vertico-transcript-annotation-omits-project ()
-  "The annotation does not repeat the project the candidate already names."
-  (should-not
-   (string-match-p
-    "lyra"
-    (substring-no-properties
-     (agent-shell-vertico-tests--annotation-for "Claude")))))
-
-(defun agent-shell-vertico-tests--annotation-for (agent)
-  "Return the annotation of a record whose agent is AGENT."
-  (agent-shell-vertico-transcript--record-annotation
-   (agent-shell-vertico-transcript--record-candidate
-    (agent-shell-vertico-transcript-record-create
-     :file "/tmp/transcripts/session.md"
-     :project-name "lyra"
-     :agent agent
-     :session-id "abc-123"
-     :title "Bootstrap the eval harness"
      :started "2025-04-11 09:03:22"
      :modified-time (encode-time 30 45 19 4 8 2026))
     0)))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-columns-line-up ()
-  "Every column starts at the same offset whatever the agent is called.
+  "Every column starts at the same offset whatever the project is called.
 
 The columns are padded here rather than by `marginalia--fields', which is
 a macro: compiling this package against the marginalia test stub would
 otherwise freeze the stub's plain concatenation into the compiled file,
 and every annotation would lose its padding, faces and alignment."
   (let* ((short (substring-no-properties
-                 (agent-shell-vertico-tests--annotation-for "Pi")))
+                 (agent-shell-vertico-tests--annotation-for "lyra")))
          (long (substring-no-properties
-                (agent-shell-vertico-tests--annotation-for "Gemini CLI"))))
+                (agent-shell-vertico-tests--annotation-for
+                 "agent-shell-vertico"))))
+    (should (equal (string-match-p "Claude" short)
+                   (string-match-p "Claude" long)))
     (should (equal (string-match-p "Resumable" short)
                    (string-match-p "Resumable" long)))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-carries-faces ()
   "Each column keeps the face that tells it apart from its neighbours."
-  (let ((annotation (agent-shell-vertico-tests--annotation-for "Claude")))
-    (should (eq (get-text-property (string-match-p "Claude" annotation)
+  (let ((annotation (agent-shell-vertico-tests--annotation-for "lyra")))
+    (should (eq (get-text-property (string-match-p "lyra" annotation)
                                    'face annotation)
                 'marginalia-value))
     (should (eq (get-text-property (string-match-p "Resumable" annotation)
@@ -4824,7 +4740,7 @@ and every annotation would lose its padding, faces and alignment."
 
 (ert-deftest agent-shell-vertico-transcript-annotation-marks-alignment ()
   "The annotation carries the marker marginalia aligns candidates by."
-  (let ((annotation (agent-shell-vertico-tests--annotation-for "Claude")))
+  (let ((annotation (agent-shell-vertico-tests--annotation-for "lyra")))
     (should (get-text-property 0 'marginalia--align annotation))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-keeps-change-relative ()
@@ -4871,8 +4787,11 @@ unbounded title left every column off screen."
 
 Names of about twenty characters are the common case, and the column
 used to cut them at sixteen on a wide frame."
-  (should (>= (agent-shell-vertico-transcript--candidate-project-width 200)
-              20)))
+  (let* ((field (min (/ 236 2) marginalia-field-width))
+         (columns
+          (round (* (agent-shell-vertico-transcript--column-width 'project)
+                    field))))
+    (should (>= columns 20))))
 
 (ert-deftest agent-shell-vertico-transcript-candidate-width-has-a-floor ()
   "A window too narrow for both keeps the candidate readable.
@@ -4896,12 +4815,10 @@ The annotation is cut there rather than the title shrinking to nothing."
            "[\x100000-\x10fffd]+\\'" ""
            (substring-no-properties candidate))))
     (should (<= (string-width text) 39))
+    (should (string-prefix-p "Investigate why for this pair" text))
     (should (< (string-width text) (string-width title)))
     ;; The whole title stays reachable, which is what `help-echo' is for.
-    (let ((start (string-match-p "Investigate" text)))
-      (should start)
-      (should (equal (get-text-property start 'help-echo candidate)
-                     title)))))
+    (should (equal (get-text-property 0 'help-echo candidate) title))))
 
 (ert-deftest agent-shell-vertico-transcript-annotation-falls-back-to-file-time ()
   "A transcript with no start header shows its file time as created."

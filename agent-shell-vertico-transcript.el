@@ -478,7 +478,8 @@ time with the newest first."
    (t "Transcript only")))
 
 (defconst agent-shell-vertico-transcript--annotation-columns
-  '((agent . 0.14)
+  '((project . 0.3)
+    (agent . 0.14)
     (status . 16)
     (changed . 12)
     (created . 16))
@@ -486,13 +487,12 @@ time with the newest first."
 
 A float is a fraction of `marginalia-field-width', which marginalia
 resolves against the window width, so those columns shrink on a narrow
-frame.  The two time columns are fixed, because a timestamp cut in half
-tells the reader nothing.  `--record-annotation' renders these columns
+frame.  The project takes the widest fraction, because repository names
+run to about twenty characters and it is the column readers scan first.
+The two time columns are fixed, because a timestamp cut in half tells the
+reader nothing.  `--record-annotation' renders these columns
 and `--candidate-width' subtracts them from the window, so the two stay
-in step.
-
-The project is not among them: it leads the candidate instead, which is
-what lets a reader type it.")
+in step.")
 
 (defun agent-shell-vertico-transcript--column-width (name)
   "Return the truncation width of the annotation column NAME."
@@ -597,38 +597,6 @@ when the reader points at the candidate."
       (put-text-property 0 (length short) 'help-echo string short)
       short)))
 
-(defconst agent-shell-vertico-transcript--candidate-project-max-width 20
-  "Widest the project column of a candidate grows.
-Repository names run to about twenty characters.")
-
-(defun agent-shell-vertico-transcript--candidate-project-width (width)
-  "Return the columns a candidate's project column may use inside WIDTH.
-Never more than half of what the candidate has, so a long project name
-cannot leave the session with nothing.  WIDTH is nil when the caller sets
-no limit, and the column then takes its full width."
-  (if width
-      (min agent-shell-vertico-transcript--candidate-project-max-width
-           (max 1 (/ width 2)))
-    agent-shell-vertico-transcript--candidate-project-max-width))
-
-(defun agent-shell-vertico-transcript--candidate-project (record width)
-  "Return RECORD's project as the column leading its candidate, in WIDTH.
-
-Padded, so the sessions beside it line up, and plain: a face here would
-compete with the completion UI's own marking of what the reader typed.
-A name cut to fit keeps the whole of it on `help-echo', the way an
-annotation column does."
-  (let* ((name
-          (or (agent-shell-vertico-transcript-record-project-name record) "-"))
-         (column
-          (truncate-string-to-width
-           name
-           (agent-shell-vertico-transcript--candidate-project-width width)
-           0 ?\s (truncate-string-ellipsis))))
-    (unless (string-prefix-p name column)
-      (put-text-property 0 (length column) 'help-echo name column))
-    column))
-
 (defun agent-shell-vertico-transcript--candidate-text (record &optional width)
   "Return the text shown for RECORD in completion.
 
@@ -646,36 +614,16 @@ the text may use."
         (agent-shell-vertico-transcript--truncate text width)
       text)))
 
-(defconst agent-shell-vertico-transcript--candidate-separator "  "
-  "What separates a candidate's project column from the session.")
-
 (defun agent-shell-vertico-transcript--record-candidate
     (record &optional index width)
   "Return a completion candidate for RECORD.
-
-The candidate is the project the transcript belongs to, then the session
-title or first message.  Completion matches the candidate and not the
-annotation, so the project has to be here for a reader to type it.
-
 With INDEX, append the invisible key that keeps candidates distinct.
-WIDTH, when given, is how many columns the candidate may use, project
-column and separator included."
-  (let* ((project
-          (agent-shell-vertico-transcript--candidate-project record width))
-         (separator agent-shell-vertico-transcript--candidate-separator)
-         (text-width
-          (and width
-               (max 1 (- width
-                         (string-width project)
-                         (string-width separator)))))
-         (candidate
-          (concat
-           project
-           separator
-           (agent-shell-vertico-transcript--candidate-text
-            record text-width)
-           (when index
-             (agent-shell-vertico--candidate-key index)))))
+WIDTH, when given, is how many columns the candidate text may use."
+  (let ((candidate
+         (concat
+          (agent-shell-vertico-transcript--candidate-text record width)
+          (when index
+            (agent-shell-vertico--candidate-key index)))))
     (put-text-property
      0 (length candidate) 'agent-shell-vertico-transcript-record
      record candidate)
@@ -716,13 +664,13 @@ minibuffer leaves once the annotation has its room."
 (defun agent-shell-vertico-transcript--record-annotation (candidate)
   "Return an annotation for transcript CANDIDATE.
 
-Columns run from most to least identifying: the agent and whether the
-session can be reached, then when it last changed and when it started.
+Columns run from most to least identifying: the project, the agent, and
+whether the session can be reached, then when it last changed and when it
+started.
 
-Neither the project nor the first user message is a column.  The project
-leads the candidate, where completion can match it.  The first message
-claimed up to a third of the row, and the candidate itself shows it
-whenever a transcript has no title.
+The first user message is not a column.  It claimed up to a third of the
+row, and the candidate itself shows it whenever a transcript has no
+title.
 
 The last change is always a relative age and the start is always a
 stamp, and the two carry different faces, so the columns never read as
@@ -733,6 +681,9 @@ two weeks, which is what made them hard to tell apart."
                 candidate)))
     (agent-shell-vertico-transcript--fields
      (list
+      (list (or (agent-shell-vertico-transcript-record-project-name record) "-")
+            (agent-shell-vertico-transcript--column-width 'project)
+            'marginalia-value)
       (list (or (agent-shell-vertico-transcript-record-agent record) "-")
             (agent-shell-vertico-transcript--column-width 'agent)
             'marginalia-value)

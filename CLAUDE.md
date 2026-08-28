@@ -197,18 +197,6 @@ plain functions in stubs wherever a macro is not required.
 building its annotation columns itself (`--field`/`--fields`) instead of using
 the macro.
 
-## What a candidate carries, and why
-
-Completion matches the candidate string; annotations are never matched.
-Anything a reader should be able to type has to be in the candidate.
-That is why a transcript candidate leads with its project
-(`--candidate-project`) and the annotation does not repeat it, and why
-`--annotation-columns` and `--candidate-width` stay in step: the width
-the project column takes comes out of the same row. Hiding matchable
-text on the candidate instead was rejected: `marginalia--align` measures
-`string-width` of the whole candidate, invisible text included, so every
-annotation would shift right by the longest hidden name.
-
 ## Beware stale `.elc` files when running a focused test
 
 `emacs -Q --batch -L .` loads `agent-shell-vertico.elc` in preference to the
