@@ -345,7 +345,9 @@ table's affixation function also uses, so the two cannot drift apart."
   "Narrowing keys offered for live sessions, before the agent keys.")
 
 (defun agent-shell-vertico--narrow-keys (keys)
-  "Return category KEYS followed by the configured agent keys."
+  "Return a category's own narrowing KEYS followed by the agent keys.
+Every category that lists more than one agent offers the agent keys; a
+prompt queue belongs to one session, so it passes its own keys alone."
   (append keys agent-shell-vertico-narrow-agent-keys))
 
 (defun agent-shell-vertico--narrow-agent-match-p (name key)
@@ -369,11 +371,6 @@ as needing attention."
 (defun agent-shell-vertico--queued-prompts-p (buffer)
   "Return non-nil when BUFFER holds prompts waiting to be sent."
   (and (map-elt (agent-shell-vertico--state buffer) :pending-prompts) t))
-
-(defun agent-shell-vertico--session-narrow-keys ()
-  "Return the narrowing keys offered for live sessions."
-  (agent-shell-vertico--narrow-keys
-   agent-shell-vertico--session-narrow-keys))
 
 (defun agent-shell-vertico--session-narrow-context ()
   "Return what a session narrowing predicate needs from the current buffer.

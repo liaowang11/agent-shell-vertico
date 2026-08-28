@@ -212,10 +212,6 @@ drift apart."
 
 No agent keys: a queue belongs to one session, and so to one agent.")
 
-(defun agent-shell-vertico-prompt-queue--narrow-keys ()
-  "Return the narrowing keys offered for a prompt queue."
-  agent-shell-vertico-prompt-queue--narrow-keys)
-
 (defun agent-shell-vertico-prompt-queue--narrow-p (key candidate _context)
   "Return non-nil when queue CANDIDATE belongs to narrowing KEY.
 A nil KEY is no narrowing at all, so every candidate belongs to it."

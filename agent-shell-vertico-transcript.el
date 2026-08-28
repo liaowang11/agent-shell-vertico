@@ -714,11 +714,6 @@ two weeks, which is what made them hard to tell apart."
 The first three are named after the availability they select, which is
 what `agent-shell-vertico-transcript--record-status' answers.")
 
-(defun agent-shell-vertico-transcript--narrow-keys ()
-  "Return the narrowing keys offered for transcripts."
-  (agent-shell-vertico--narrow-keys
-   agent-shell-vertico-transcript--narrow-keys))
-
 (defun agent-shell-vertico-transcript--narrow-context ()
   "Return what a transcript narrowing predicate needs from the caller.
 

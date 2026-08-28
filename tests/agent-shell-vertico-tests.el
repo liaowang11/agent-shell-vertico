@@ -8194,7 +8194,8 @@ after the test has already finished.  Tests call
 (ert-deftest agent-shell-vertico-narrow-keys-end-with-the-agent-keys ()
   "A category offers its own keys first, then every configured agent."
   (let* ((agent-shell-vertico-narrow-agent-keys '((?c . "Claude")))
-         (keys (agent-shell-vertico--session-narrow-keys)))
+         (keys (agent-shell-vertico--narrow-keys
+                agent-shell-vertico--session-narrow-keys)))
     (should (equal (alist-get ?r keys) "Ready"))
     (should (equal (alist-get ?c keys) "Claude"))
     (should (equal (car (last keys)) '(?c . "Claude")))))

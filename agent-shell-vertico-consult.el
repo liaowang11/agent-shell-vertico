@@ -321,7 +321,8 @@ string, which is the buffer name the caller expects."
           :require-match t
           :category 'agent-shell-session
           :narrow (agent-shell-vertico-consult--narrow
-                   (agent-shell-vertico--session-narrow-keys)
+                   (agent-shell-vertico--narrow-keys
+                    agent-shell-vertico--session-narrow-keys)
                    #'agent-shell-vertico--session-narrow-p
                    (agent-shell-vertico--session-narrow-context))
           :group (agent-shell-vertico-consult--group
@@ -350,7 +351,8 @@ string, which is the buffer name the caller expects."
            :require-match t
            :category 'agent-shell-transcript
            :narrow (agent-shell-vertico-consult--narrow
-                    (agent-shell-vertico-transcript--narrow-keys)
+                    (agent-shell-vertico--narrow-keys
+                     agent-shell-vertico-transcript--narrow-keys)
                     #'agent-shell-vertico-transcript--narrow-p
                     (agent-shell-vertico-transcript--narrow-context))
            :group (agent-shell-vertico-consult--group
@@ -378,7 +380,8 @@ a choice with no transcript behind it previews nothing."
    :require-match t
    :category 'agent-shell-session-choice
    :narrow (agent-shell-vertico-consult--narrow
-            (agent-shell-vertico-resume--narrow-keys)
+            (agent-shell-vertico--narrow-keys
+             agent-shell-vertico-resume--narrow-keys)
             #'agent-shell-vertico-resume--narrow-p)
    :group (agent-shell-vertico-consult--group
            #'agent-shell-vertico-resume--group)
@@ -415,7 +418,8 @@ a choice with no transcript behind it previews nothing."
            :require-match t
            :category 'agent-shell-transcript
            :narrow (agent-shell-vertico-consult--narrow
-                    (agent-shell-vertico-transcript--narrow-keys)
+                    (agent-shell-vertico--narrow-keys
+                     agent-shell-vertico-transcript--narrow-keys)
                     #'agent-shell-vertico-transcript--narrow-p
                     (agent-shell-vertico-transcript--narrow-context))
            :group (agent-shell-vertico-consult--group
@@ -481,7 +485,7 @@ it would do instead of leaving the previous prompt on screen."
           :require-match t
           :category 'agent-shell-prompt-queue
           :narrow (agent-shell-vertico-consult--narrow
-                   (agent-shell-vertico-prompt-queue--narrow-keys)
+                   agent-shell-vertico-prompt-queue--narrow-keys
                    #'agent-shell-vertico-prompt-queue--narrow-p)
           :sort nil)))
     (or (agent-shell-vertico-prompt-queue--record-from-candidate selection)

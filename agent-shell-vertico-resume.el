@@ -239,11 +239,6 @@ sessions this machine has a transcript for from the ones it does not,
 which is what decides whether a choice previews and how much of its
 annotation is filled in.")
 
-(defun agent-shell-vertico-resume--narrow-keys ()
-  "Return the narrowing keys offered for picker choices."
-  (agent-shell-vertico--narrow-keys
-   agent-shell-vertico-resume--narrow-keys))
-
 (defun agent-shell-vertico-resume--narrow-p (key candidate _context)
   "Return non-nil when picker CANDIDATE belongs to narrowing KEY.
 
