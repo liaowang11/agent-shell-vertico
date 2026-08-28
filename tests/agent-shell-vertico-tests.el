@@ -3692,13 +3692,19 @@ beta, with every shell live and `default-directory' in project alpha."
       (should (equal offered (list (buffer-name alpha-one)
                                    (buffer-name alpha-two)))))))
 
-(ert-deftest agent-shell-vertico-target-shell-without-project-shells ()
-  "No shell in the project leaves the answer to the command's own fallback."
+(ert-deftest agent-shell-vertico-target-shell-falls-back-to-every-shell ()
+  "No shell in the project asks across every live shell instead."
   (agent-shell-vertico-tests--with-project-shells
     (setq agent-shell-test-project-buffers nil)
-    (cl-letf (((symbol-function 'completing-read)
-               (lambda (&rest _) (error "Asked with no project shell"))))
-      (should-not (agent-shell-vertico--target-shell)))))
+    (let ((offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered (all-completions "" collection))
+                   (buffer-name beta))))
+        (should (eq (agent-shell-vertico--target-shell) beta)))
+      (should (equal offered (list (buffer-name alpha-one)
+                                   (buffer-name alpha-two)
+                                   (buffer-name beta)))))))
 
 (ert-deftest agent-shell-vertico-target-shell-prefix-offers-every-shell ()
   "The escape hatch reaches shells outside the current project."
@@ -3713,14 +3719,15 @@ beta, with every shell live and `default-directory' in project alpha."
                                    (buffer-name alpha-two)
                                    (buffer-name beta)))))))
 
-(ert-deftest agent-shell-vertico-target-shell-prefix-without-any-shell ()
-  "The escape hatch with no shell at all also falls back rather than asking."
+(ert-deftest agent-shell-vertico-target-shell-without-any-shell ()
+  "No live shell anywhere signals; these commands never start one."
   (agent-shell-vertico-tests--with-project-shells
     (setq agent-shell-test-buffers nil
           agent-shell-test-project-buffers nil)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (&rest _) (error "Asked with no shell to offer"))))
-      (should-not (agent-shell-vertico--target-shell t)))))
+      (should-error (agent-shell-vertico--target-shell t)
+                    :type 'user-error))))
 
 (ert-deftest agent-shell-vertico-target-shell-ignores-the-buffer-at-point ()
   "Standing in one shell does not decide the target for another project's work.
@@ -3741,13 +3748,16 @@ Sending from one session to another is the point of asking."
                   (agent-shell--shell-buffer :no-create t))
                 alpha-two))))
 
-(ert-deftest agent-shell-vertico-with-target-shell-leaves-fallback-alone ()
-  "With no shell to pin, the body resolves as agent-shell would on its own."
+(ert-deftest agent-shell-vertico-with-target-shell-signals-without-a-shell ()
+  "No live shell anywhere signals before the body runs, starting nothing."
   (agent-shell-vertico-tests--with-project-shells
-    (setq agent-shell-test-project-buffers nil)
-    (should-error (agent-shell-vertico--with-target-shell nil
-                    (agent-shell--shell-buffer :no-create t))
-                  :type 'user-error)))
+    (setq agent-shell-test-buffers nil
+          agent-shell-test-project-buffers nil)
+    (let ((ran nil))
+      (should-error (agent-shell-vertico--with-target-shell nil
+                      (setq ran t))
+                    :type 'user-error)
+      (should-not ran))))
 
 (ert-deftest agent-shell-vertico-commands-send-to-the-resolved-shell ()
   "Each command delegates to agent-shell with the resolved shell in place."
@@ -3798,6 +3808,20 @@ Sending from one session to another is the point of asking."
         (call-interactively #'agent-shell-vertico-send-file))
       (should (equal agent-shell-test-last-args '(nil nil)))
       (should (eq agent-shell-test-last-target beta)))))
+
+(ert-deftest agent-shell-vertico-commands-signal-without-any-shell ()
+  "No live shell anywhere signals before the delegate could start one."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-buffers nil
+          agent-shell-test-project-buffers nil
+          agent-shell-test-last-command nil)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Asked with no shell to offer"))))
+      (dolist (command '(agent-shell-vertico-send-region
+                         agent-shell-vertico-send-prompt
+                         agent-shell-vertico-compose))
+        (should-error (call-interactively command) :type 'user-error)))
+    (should-not agent-shell-test-last-command)))
 
 (ert-deftest agent-shell-vertico-loading-does-not-prebind-embark-keymap-alist ()
   "Loading the package must not bind `embark-keymap-alist'.

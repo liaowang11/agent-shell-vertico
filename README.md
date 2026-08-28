@@ -262,8 +262,10 @@ before every send, and the silent one picks arbitrarily when a project holds
 several shells.
 
 These commands make one binding decide. The project's only shell is used; when
-the project has several, they ask which one; with a prefix argument they ask
-across every shell, whatever project it belongs to.
+the project has several, they ask which one; with no shell in the project, or
+with a prefix argument, they ask across every shell, whatever project it
+belongs to. They pick an existing shell and never start one; `agent-shell` and
+the `agent-shell-*-start-client` commands start sessions.
 
 - `M-x agent-shell-vertico-send-region`
 - `M-x agent-shell-vertico-send-file`

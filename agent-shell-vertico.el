@@ -693,31 +693,39 @@ The reader those prompts share offers no way in, so this advises it."
 ;; silent branch picks arbitrarily when a project holds several shells.
 ;;
 ;; These commands make one binding decide: the project's only shell is used,
-;; several mean a prompt, and a prefix argument reads from every shell,
-;; whatever project it belongs to.  The shell at point is deliberately not
-;; preferred, so a region in one session can be sent to another.
+;; several mean a prompt, no shell in the project reads from every live
+;; shell, and a prefix argument reads that way from the start.  The shell at
+;; point is deliberately not preferred, so a region in one session can be
+;; sent to another.
 ;;
 ;; Each command resolves the shell, pins `agent-shell' resolution to it, and
 ;; then calls the `agent-shell' command, which keeps owning what is sent, how
-;; a busy shell is handled, and whether a viewport composes it.
+;; a busy shell is handled, and whether a viewport composes it.  None of them
+;; starts a shell: with nothing live anywhere, resolving signals instead, and
+;; session creation belongs to `agent-shell' and the
+;; `agent-shell-*-start-client' commands.
+
+(defun agent-shell-vertico--read-any-shell ()
+  "Read one shell from every live one, whatever project it belongs to.
+Signals a `user-error' when no shell is live anywhere: these commands
+choose an existing shell and never start one."
+  (unless (agent-shell-buffers)
+    (user-error "No agent shell buffers available"))
+  (agent-shell-vertico--session-buffer
+   (agent-shell-vertico--read-session "Agent shell: " 'all)))
 
 (defun agent-shell-vertico--target-shell (&optional all)
-  "Return the `agent-shell' buffer to act on, or nil to leave it open.
+  "Return the `agent-shell' buffer to act on.
 
 With ALL non-nil, read from every live shell.  Otherwise take the
-current project's only shell, or read one of them when it has several.
-
-Returns nil when there is nothing to offer, which leaves the choice to
-the `agent-shell' command being run: it creates a shell, or reports that
-the project has none, exactly as it does when called on its own."
+current project's only shell, or read one of them when it has several;
+with none in the project, read from every live shell."
   (if all
-      (when (agent-shell-buffers)
-        (agent-shell-vertico--session-buffer
-         (agent-shell-vertico--read-session "Agent shell: " 'all)))
+      (agent-shell-vertico--read-any-shell)
     (let ((project-shells (seq-filter #'buffer-live-p
                                       (agent-shell-project-buffers))))
       (pcase (length project-shells)
-        (0 nil)
+        (0 (agent-shell-vertico--read-any-shell))
         (1 (car project-shells))
         (_ (agent-shell-vertico--session-buffer
             (agent-shell-vertico--read-session
@@ -726,20 +734,16 @@ the project has none, exactly as it does when called on its own."
 (defmacro agent-shell-vertico--with-target-shell (all &rest body)
   "Run BODY with `agent-shell' resolution pinned to the target shell.
 
-ALL is passed to `agent-shell-vertico--target-shell'.  BODY is an
+ALL is passed to `agent-shell-vertico--target-shell', which signals
+before BODY runs when no shell is live anywhere.  BODY is an
 `agent-shell' command, which resolves the shell it acts on through
 `agent-shell--shell-buffer'; pinning that is what carries the answer in,
-without BODY having to accept one.
-
-With no shell to pin, BODY runs untouched and resolves as it would on
-its own."
+without BODY having to accept one."
   (declare (indent 1) (debug t))
   `(let ((target (agent-shell-vertico--target-shell ,all)))
-     (if (not target)
-         (progn ,@body)
-       (cl-letf (((symbol-function 'agent-shell--shell-buffer)
-                  (lambda (&rest _) target)))
-         ,@body))))
+     (cl-letf (((symbol-function 'agent-shell--shell-buffer)
+                (lambda (&rest _) target)))
+       ,@body)))
 
 (defmacro agent-shell-vertico--define-shell-command (name docstring &rest body)
   "Define command NAME running BODY against the project's shell.
@@ -751,8 +755,9 @@ for every one of these commands and is appended to it."
      ,(concat docstring "
 
 Sends to the current project's shell, asking which one when the project
-has several.  With a prefix argument ALL, asks across every shell,
-whatever project it belongs to.")
+has several.  With no shell in the project, or with a prefix argument
+ALL, asks across every shell, whatever project it belongs to.  No shell
+is started: these commands pick an existing one.")
      (interactive "P")
      (agent-shell-vertico--with-target-shell all
        ,@body)))
