@@ -226,6 +226,69 @@ drift apart."
 
 ;;; Reading
 
+(defconst agent-shell-vertico-resume--narrow-keys
+  '((?l . "Live")
+    (?r . "Resumable")
+    (?h . "Transcript here")
+    (?n . "No transcript"))
+  "Narrowing keys offered for picker choices, before the agent keys.
+
+The first two are named after what
+`agent-shell-vertico-resume--status' answers.  The last two separate the
+sessions this machine has a transcript for from the ones it does not,
+which is what decides whether a choice previews and how much of its
+annotation is filled in.")
+
+(defun agent-shell-vertico-resume--narrow-keys ()
+  "Return the narrowing keys offered for picker choices."
+  (agent-shell-vertico--narrow-keys
+   agent-shell-vertico-resume--narrow-keys))
+
+(defun agent-shell-vertico-resume--narrow-p (key candidate _context)
+  "Return non-nil when picker CANDIDATE belongs to narrowing KEY.
+
+A nil KEY is no narrowing at all, so every choice belongs to it,
+including the ones that start a new shell.  Under any key those choices
+are gone: they stand for no session, so there is nothing to say about
+them.  The agent keys are answered from the transcript a choice was
+joined to, so a session with no transcript here answers none of them."
+  (if (null key)
+      t
+    (when-let* ((session
+                 (agent-shell-vertico-resume--candidate-session candidate)))
+      (let ((record
+             (agent-shell-vertico-resume--candidate-record candidate)))
+        (pcase key
+          ((or ?l ?r)
+           (equal (agent-shell-vertico-resume--status session)
+                  (alist-get key agent-shell-vertico-resume--narrow-keys)))
+          (?h (and record t))
+          (?n (null record))
+          (_ (agent-shell-vertico--narrow-agent-match-p
+              (and record
+                   (agent-shell-vertico-transcript-record-agent record))
+              key)))))))
+
+(defun agent-shell-vertico-resume--group (candidate transform)
+  "Return the group title of picker CANDIDATE.
+With TRANSFORM, return CANDIDATE as the completion UI should display it,
+which is the picker's own label, unchanged."
+  (if transform
+      candidate
+    (when-let* ((agent-shell-vertico-group-by)
+                (session
+                 (agent-shell-vertico-resume--candidate-session candidate)))
+      (let ((record
+             (agent-shell-vertico-resume--candidate-record candidate)))
+        (pcase agent-shell-vertico-group-by
+          ('status (agent-shell-vertico-resume--status session))
+          ('project
+           (and record
+                (agent-shell-vertico-transcript-record-project-name record)))
+          ('agent
+           (and record
+                (agent-shell-vertico-transcript-record-agent record))))))))
+
 (defun agent-shell-vertico-resume--table (candidates)
   "Return a completion table over the picker's CANDIDATES.
 
@@ -236,6 +299,8 @@ functions leave it alone."
         `(metadata
           (category . agent-shell-session-choice)
           (affixation-function . ,#'agent-shell-vertico-resume--affixate)
+          ,@(when agent-shell-vertico-group-by
+              `((group-function . ,#'agent-shell-vertico-resume--group)))
           (display-sort-function . ,#'identity)
           (cycle-sort-function . ,#'identity))
       (complete-with-action action candidates string predicate))))

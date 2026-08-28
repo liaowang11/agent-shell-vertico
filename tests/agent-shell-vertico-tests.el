@@ -72,7 +72,14 @@
                   "agent-shell-vertico-consult.el"))
     (should (equal
              (agent-shell-vertico-tests--package-requirement file "marginalia")
-             "2.1"))))
+             "2.1")))
+  ;; Narrowing is configured with the `(:predicate FN :keys ALIST)' plist
+  ;; Consult has taken since 2.4.  It is also the earliest release there
+  ;; is: Consult went from 1.8 straight to 2.4.
+  (should (equal
+           (agent-shell-vertico-tests--package-requirement
+            "agent-shell-vertico-consult.el" "consult")
+           "2.4")))
 
 (defvar markdown-ts-inline-images)
 (defvar markdown-ts-view-mode-pre-init-hook)
@@ -8331,6 +8338,322 @@ the minibuffer is not the project the reader was asked about."
       (should (eq (alist-get 'group-function
                              (cdr (funcall table "" nil 'metadata)))
                   #'agent-shell-vertico--session-group)))))
+
+(defun agent-shell-vertico-tests--narrow-record (&rest overrides)
+  "Return a transcript record for narrowing tests, amended by OVERRIDES."
+  (let ((fields (list :file "/tmp/transcripts/session.md"
+                      :project-root "/work/alpha/"
+                      :project-name "alpha"
+                      :agent "Claude"
+                      :session-id "abc-123"
+                      :modified-time (encode-time 0 0 12 4 8 2026))))
+    (while overrides
+      (setq fields (plist-put fields (pop overrides) (pop overrides))))
+    (apply #'agent-shell-vertico-transcript-record-create fields)))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-selects-by-availability ()
+  "The availability keys say the same thing the status column says."
+  (let ((resumable (agent-shell-vertico-tests--narrow-record))
+        (orphan (agent-shell-vertico-tests--narrow-record :session-id nil)))
+    (should (agent-shell-vertico-transcript--record-narrow-p
+             ?r resumable nil))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p
+                 ?t resumable nil))
+    (should (agent-shell-vertico-transcript--record-narrow-p ?t orphan nil))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p
+                 ?l resumable nil))))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-selects-live ()
+  "A transcript a shell already holds answers to the live key alone."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((shell "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "abc-123"))))))
+    (let ((agent-shell-test-buffers (list shell))
+          (record (agent-shell-vertico-tests--narrow-record)))
+      (should (agent-shell-vertico-transcript--record-narrow-p ?l record nil))
+      (should-not (agent-shell-vertico-transcript--record-narrow-p
+                   ?r record nil)))))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-selects-this-project ()
+  (let ((context (list :project "/work/alpha/"))
+        (mine (agent-shell-vertico-tests--narrow-record))
+        (other (agent-shell-vertico-tests--narrow-record
+                :project-root "/work/beta/")))
+    (should (agent-shell-vertico-transcript--record-narrow-p ?p mine context))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p
+                 ?p other context))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p ?p mine nil))))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-selects-by-age ()
+  "Today means the same calendar day, and the week means seven days back."
+  (let* ((now (encode-time 0 0 12 4 8 2026))
+         (context (list :now now)))
+    (should (agent-shell-vertico-transcript--record-narrow-p
+             ?d (agent-shell-vertico-tests--narrow-record
+                 :modified-time (encode-time 0 30 9 4 8 2026))
+             context))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p
+                 ?d (agent-shell-vertico-tests--narrow-record
+                     :modified-time (encode-time 0 0 23 3 8 2026))
+                 context))
+    (should (agent-shell-vertico-transcript--record-narrow-p
+             ?w (agent-shell-vertico-tests--narrow-record
+                 :modified-time (encode-time 0 0 12 30 7 2026))
+             context))
+    (should-not (agent-shell-vertico-transcript--record-narrow-p
+                 ?w (agent-shell-vertico-tests--narrow-record
+                     :modified-time (encode-time 0 0 12 20 7 2026))
+                 context))))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-selects-by-agent ()
+  (should (agent-shell-vertico-transcript--record-narrow-p
+           ?c (agent-shell-vertico-tests--narrow-record :agent "Claude Code")
+           nil))
+  (should-not (agent-shell-vertico-transcript--record-narrow-p
+               ?c (agent-shell-vertico-tests--narrow-record :agent "Codex")
+               nil))
+  (should (agent-shell-vertico-transcript--record-narrow-p
+           ?x (agent-shell-vertico-tests--narrow-record :agent "Codex")
+           nil)))
+
+(ert-deftest agent-shell-vertico-transcript-narrow-reads-the-candidate ()
+  "A narrowing key is answered from the record the candidate carries."
+  (let* ((record (agent-shell-vertico-tests--narrow-record))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0)))
+    (should (agent-shell-vertico-transcript--narrow-p ?r candidate nil))
+    (should-not (agent-shell-vertico-transcript--narrow-p ?t candidate nil))
+    (should (agent-shell-vertico-transcript--narrow-p nil candidate nil))
+    (should-not (agent-shell-vertico-transcript--narrow-p ?r "Not a record"
+                                                          nil))))
+
+(ert-deftest agent-shell-vertico-transcript-group-follows-group-by ()
+  (let* ((record (agent-shell-vertico-tests--narrow-record))
+         (candidate
+          (agent-shell-vertico-transcript--record-candidate record 0)))
+    (let ((agent-shell-vertico-group-by nil))
+      (should-not (agent-shell-vertico-transcript--group candidate nil)))
+    (let ((agent-shell-vertico-group-by 'project))
+      (should (equal (agent-shell-vertico-transcript--group candidate nil)
+                     "alpha")))
+    (let ((agent-shell-vertico-group-by 'agent))
+      (should (equal (agent-shell-vertico-transcript--group candidate nil)
+                     "Claude")))
+    (let ((agent-shell-vertico-group-by 'status))
+      (should (equal (agent-shell-vertico-transcript--group candidate nil)
+                     "Resumable"))
+      (should (equal (agent-shell-vertico-transcript--group candidate t)
+                     candidate)))))
+
+(ert-deftest agent-shell-vertico-transcript-read-groups-only-when-asked ()
+  "The plain transcript reader declares a group function only when asked."
+  (let ((records (list (agent-shell-vertico-tests--narrow-record)))
+        metadata)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _arguments)
+                 (setq metadata (funcall table "" nil 'metadata))
+                 (car (all-completions "" table)))))
+      (let ((agent-shell-vertico-group-by nil))
+        (agent-shell-vertico-transcript--completing-read-record
+         "Transcript: " records)
+        (should-not (alist-get 'group-function (cdr metadata))))
+      (let ((agent-shell-vertico-group-by 'project))
+        (agent-shell-vertico-transcript--completing-read-record
+         "Transcript: " records)
+        (should (eq (alist-get 'group-function (cdr metadata))
+                    #'agent-shell-vertico-transcript--group))))))
+
+(ert-deftest agent-shell-vertico-resume-narrow-selects-by-availability ()
+  "The picker's keys separate taken sessions, and transcripts from strangers."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((shell "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "live-1"))))))
+    (let* ((agent-shell-test-buffers (list shell))
+           (record (agent-shell-vertico-tests--narrow-record))
+           (live (agent-shell-vertico-resume--candidate
+                  "live-1  Alpha"
+                  (agent-shell-vertico-tests--acp-session "live-1")
+                  record))
+           (resumable (agent-shell-vertico-resume--candidate
+                       "abc-123  Alpha"
+                       (agent-shell-vertico-tests--acp-session "abc-123")
+                       record))
+           (unknown (agent-shell-vertico-resume--candidate
+                     "def-456  Elsewhere"
+                     (agent-shell-vertico-tests--acp-session "def-456")
+                     nil))
+           (new-shell (agent-shell-vertico-resume--candidate
+                       "Start a new shell" nil nil)))
+      (should (agent-shell-vertico-resume--narrow-p ?l live nil))
+      (should-not (agent-shell-vertico-resume--narrow-p ?r live nil))
+      (should (agent-shell-vertico-resume--narrow-p ?r resumable nil))
+      (should (agent-shell-vertico-resume--narrow-p ?h resumable nil))
+      (should-not (agent-shell-vertico-resume--narrow-p ?n resumable nil))
+      (should (agent-shell-vertico-resume--narrow-p ?n unknown nil))
+      (should-not (agent-shell-vertico-resume--narrow-p ?h unknown nil))
+      (should-not (agent-shell-vertico-resume--narrow-p ?r new-shell nil))
+      (should (agent-shell-vertico-resume--narrow-p nil new-shell nil)))))
+
+(ert-deftest agent-shell-vertico-resume-narrow-selects-by-agent ()
+  "The picker narrows by agent through the transcript it was joined to."
+  (let* ((candidate
+          (agent-shell-vertico-resume--candidate
+           "abc-123  Alpha"
+           (agent-shell-vertico-tests--acp-session "abc-123")
+           (agent-shell-vertico-tests--narrow-record :agent "Codex"))))
+    (should (agent-shell-vertico-resume--narrow-p ?x candidate nil))
+    (should-not (agent-shell-vertico-resume--narrow-p ?c candidate nil))))
+
+(ert-deftest agent-shell-vertico-prompt-queue-narrow-separates-actions ()
+  "Pending prompts and the queue-wide entries narrow apart."
+  (agent-shell-vertico-tests--with-queue '("First prompt"
+                                           "Second\nprompt line")
+    (let ((prompt (nth 0 candidates))
+          (multi-line (nth 1 candidates))
+          (action (nth 2 candidates)))
+      (should (agent-shell-vertico-prompt-queue--narrow-p ?p prompt nil))
+      (should-not (agent-shell-vertico-prompt-queue--narrow-p ?a prompt nil))
+      (should (agent-shell-vertico-prompt-queue--narrow-p ?a action nil))
+      (should-not (agent-shell-vertico-prompt-queue--narrow-p ?p action nil))
+      (should (agent-shell-vertico-prompt-queue--narrow-p ?m multi-line nil))
+      (should-not (agent-shell-vertico-prompt-queue--narrow-p
+                   ?m prompt nil)))))
+
+(ert-deftest agent-shell-vertico-consult-session-reader-narrows-by-key ()
+  "The session reader offers the session keys and answers for the key held."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")))))
+       (starting "Claude Agent @ beta" "/work/beta/" nil))
+    (let ((agent-shell-test-buffers (list ready starting))
+          options)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (_table &rest arguments)
+                   (setq options arguments)
+                   (buffer-name ready))))
+        (agent-shell-vertico-consult--read-session
+         "Session: " (agent-shell-vertico--completion-table 'all)))
+      (let ((narrow (plist-get options :narrow)))
+        (should (equal (alist-get ?r (plist-get narrow :keys)) "Ready"))
+        (should (equal (alist-get ?c (plist-get narrow :keys)) "Claude"))
+        (let ((consult--narrow ?r))
+          (should (funcall (plist-get narrow :predicate)
+                           (buffer-name ready)))
+          (should-not (funcall (plist-get narrow :predicate)
+                               (buffer-name starting))))))))
+
+(ert-deftest agent-shell-vertico-consult-record-reader-narrows-by-key ()
+  (let ((records (list (agent-shell-vertico-tests--narrow-record)
+                       (agent-shell-vertico-tests--narrow-record
+                        :file "/tmp/transcripts/orphan.md"
+                        :session-id nil)))
+        options
+        offered)
+    (cl-letf (((symbol-function 'consult--temporary-files)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--jump-preview)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--read)
+               (lambda (candidates &rest arguments)
+                 (setq options arguments
+                       offered candidates)
+                 (car candidates))))
+      (agent-shell-vertico-consult--read-record "Transcript: " records))
+    (let ((narrow (plist-get options :narrow)))
+      (should (equal (alist-get ?l (plist-get narrow :keys)) "Live"))
+      (let ((consult--narrow ?r))
+        (should (funcall (plist-get narrow :predicate) (nth 0 offered)))
+        (should-not (funcall (plist-get narrow :predicate)
+                             (nth 1 offered)))))))
+
+(ert-deftest agent-shell-vertico-consult-readers-group-only-when-asked ()
+  "A Consult reader passes a group function only while grouping is on."
+  (let ((records (list (agent-shell-vertico-tests--narrow-record)))
+        options)
+    (cl-letf (((symbol-function 'consult--temporary-files)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--jump-preview)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--read)
+               (lambda (candidates &rest arguments)
+                 (setq options arguments)
+                 (car candidates))))
+      (let ((agent-shell-vertico-group-by nil))
+        (agent-shell-vertico-consult--read-record "Transcript: " records)
+        (should-not (plist-get options :group)))
+      (let ((agent-shell-vertico-group-by 'project))
+        (agent-shell-vertico-consult--read-record "Transcript: " records)
+        (should (eq (plist-get options :group)
+                    #'agent-shell-vertico-transcript--group))))))
+
+(ert-deftest agent-shell-vertico-consult-choice-reader-narrows-by-key ()
+  (let* ((candidate
+          (agent-shell-vertico-resume--candidate
+           "abc-123  Alpha"
+           (agent-shell-vertico-tests--acp-session "abc-123")
+           (agent-shell-vertico-tests--narrow-record)))
+         options)
+    (cl-letf (((symbol-function 'consult--temporary-files)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--jump-preview)
+               (lambda () (lambda (&rest _arguments))))
+              ((symbol-function 'consult--read)
+               (lambda (candidates &rest arguments)
+                 (setq options arguments)
+                 (car candidates))))
+      (agent-shell-vertico-consult--read-session-choice
+       "Session: " (list candidate) nil))
+    (let ((narrow (plist-get options :narrow)))
+      (should (equal (alist-get ?h (plist-get narrow :keys))
+                     "Transcript here"))
+      (let ((consult--narrow ?h))
+        (should (funcall (plist-get narrow :predicate) candidate)))
+      (let ((consult--narrow ?n))
+        (should-not (funcall (plist-get narrow :predicate) candidate))))))
+
+(ert-deftest agent-shell-vertico-consult-queue-reader-narrows-by-key ()
+  (agent-shell-vertico-tests--with-queue '("First prompt")
+    (let (options)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (offered &rest arguments)
+                   (setq options arguments)
+                   (car offered))))
+        (agent-shell-vertico-consult--read-prompt-queue
+         "Prompt: " candidates))
+      (let ((narrow (plist-get options :narrow)))
+        (should (equal (alist-get ?a (plist-get narrow :keys))
+                       "Queue action"))
+        (let ((consult--narrow ?p))
+          (should (funcall (plist-get narrow :predicate) (nth 0 candidates)))
+          (should-not (funcall (plist-get narrow :predicate)
+                               (nth 1 candidates))))))))
+
+(ert-deftest agent-shell-vertico-consult-search-narrows-by-key ()
+  "Transcript search narrows over the same keys the browser does."
+  (let* ((record (agent-shell-vertico-tests--narrow-record))
+         (candidate (agent-shell-vertico-consult--candidate record))
+         options)
+    (cl-letf
+        (((symbol-function
+           'agent-shell-vertico-transcript--search-directories)
+          (lambda (_roots) '("/tmp/transcripts")))
+         ((symbol-function 'consult--process-collection)
+          (lambda (_builder &rest _properties) 'async-table))
+         ((symbol-function 'consult--read)
+          (lambda (_table &rest arguments)
+            (setq options arguments)
+            candidate))
+         ((symbol-function 'consult--temporary-files)
+          (lambda () (lambda (&rest _arguments))))
+         ((symbol-function 'consult--jump-preview)
+          (lambda () (lambda (&rest _arguments))))
+         ((symbol-function 'agent-shell-vertico-transcript--open-record)
+          (lambda (_selected &optional _other-window) nil)))
+      (agent-shell-vertico-consult--search '("/work/project/")))
+    (let ((narrow (plist-get options :narrow)))
+      (should (equal (alist-get ?r (plist-get narrow :keys)) "Resumable"))
+      (let ((consult--narrow ?r))
+        (should (funcall (plist-get narrow :predicate) candidate))))))
 
 (provide 'agent-shell-vertico-tests)
 

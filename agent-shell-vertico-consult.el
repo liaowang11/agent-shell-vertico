@@ -5,7 +5,7 @@
 
 ;; Author: Bill
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1") (agent-shell "0.63.5") (consult "2.0") (marginalia "2.1"))
+;; Package-Requires: ((emacs "30.1") (agent-shell "0.63.5") (consult "2.4") (marginalia "2.1"))
 ;; Keywords: convenience, tools
 ;; URL: https://github.com/liaowang11/agent-shell-vertico
 
@@ -41,6 +41,7 @@
 ;; No value: Consult's own definitions must install the real defaults.
 (defvar consult-fontify-preserve)
 (defvar consult--buffer-display)
+(defvar consult--narrow)
 
 ;; No value: markdown-ts-mode's own `defcustom' must install the real
 ;; default when it loads after this file.
@@ -273,6 +274,34 @@ commands do."
            (agent-shell-vertico-consult--session-preview-buffer
             candidate)))))))
 
+(defun agent-shell-vertico-consult--narrow (keys matcher &optional context)
+  "Return a Consult narrowing configuration offering KEYS.
+
+MATCHER answers whether a candidate belongs to the narrowing key in
+force, which Consult reports in `consult--narrow'.  CONTEXT is whatever
+the matcher needs to know about the buffer the command was called from.
+It is read here, while that buffer is still current: the predicate itself
+runs with the minibuffer current and can no longer ask.
+
+Consult installs the predicate as `minibuffer-completion-predicate', and
+every table this package reads through passes its predicate on to
+`complete-with-action', so the answer reaches the candidates.
+
+The `(:predicate FN :keys ALIST)' shape is what Consult has taken since
+2.4, which is the earliest release this package can be built against."
+  (list :predicate
+        (lambda (candidate)
+          (funcall matcher consult--narrow candidate context))
+        :keys keys))
+
+(defun agent-shell-vertico-consult--group (function)
+  "Return FUNCTION as a Consult group function, or nil when not grouping.
+
+Consult puts its own metadata ahead of the completion table's, so a
+group function passed here wins over one the table declares.  Both name
+the same function, so the two cannot disagree."
+  (and agent-shell-vertico-group-by function))
+
 (defun agent-shell-vertico-consult--read-session
     (prompt table &optional other-window)
   "Read a live session from TABLE with PROMPT, previewing each candidate.
@@ -291,6 +320,12 @@ string, which is the buffer name the caller expects."
           :state (agent-shell-vertico-consult--session-state other-window)
           :require-match t
           :category 'agent-shell-session
+          :narrow (agent-shell-vertico-consult--narrow
+                   (agent-shell-vertico--session-narrow-keys)
+                   #'agent-shell-vertico--session-narrow-p
+                   (agent-shell-vertico--session-narrow-context))
+          :group (agent-shell-vertico-consult--group
+                  #'agent-shell-vertico--session-group)
           :history 'agent-shell-vertico-history)))
     (or (and selection (substring-no-properties selection))
         (user-error "Nothing selected"))))
@@ -314,6 +349,12 @@ string, which is the buffer name the caller expects."
            :state (agent-shell-vertico-consult--state)
            :require-match t
            :category 'agent-shell-transcript
+           :narrow (agent-shell-vertico-consult--narrow
+                    (agent-shell-vertico-transcript--narrow-keys)
+                    #'agent-shell-vertico-transcript--narrow-p
+                    (agent-shell-vertico-transcript--narrow-context))
+           :group (agent-shell-vertico-consult--group
+                   #'agent-shell-vertico-transcript--group)
            :sort nil)))
     (or
      (agent-shell-vertico-transcript--record-from-candidate selection)
@@ -336,6 +377,11 @@ a choice with no transcript behind it previews nothing."
    :state (agent-shell-vertico-consult--state)
    :require-match t
    :category 'agent-shell-session-choice
+   :narrow (agent-shell-vertico-consult--narrow
+            (agent-shell-vertico-resume--narrow-keys)
+            #'agent-shell-vertico-resume--narrow-p)
+   :group (agent-shell-vertico-consult--group
+           #'agent-shell-vertico-resume--group)
    :default default
    :sort nil))
 
@@ -368,6 +414,12 @@ a choice with no transcript behind it previews nothing."
            :state (agent-shell-vertico-consult--state)
            :require-match t
            :category 'agent-shell-transcript
+           :narrow (agent-shell-vertico-consult--narrow
+                    (agent-shell-vertico-transcript--narrow-keys)
+                    #'agent-shell-vertico-transcript--narrow-p
+                    (agent-shell-vertico-transcript--narrow-context))
+           :group (agent-shell-vertico-consult--group
+                   #'agent-shell-vertico-transcript--group)
            :history '(:input agent-shell-vertico-consult-history)
            :sort nil)))
     (when selection
@@ -428,6 +480,9 @@ it would do instead of leaving the previous prompt on screen."
           :state (agent-shell-vertico-consult--prompt-queue-state)
           :require-match t
           :category 'agent-shell-prompt-queue
+          :narrow (agent-shell-vertico-consult--narrow
+                   (agent-shell-vertico-prompt-queue--narrow-keys)
+                   #'agent-shell-vertico-prompt-queue--narrow-p)
           :sort nil)))
     (or (agent-shell-vertico-prompt-queue--record-from-candidate selection)
         (user-error "Prompt no longer pending"))))

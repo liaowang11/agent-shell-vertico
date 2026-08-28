@@ -702,6 +702,95 @@ two weeks, which is what made them hard to tell apart."
              '(agent-shell-transcript
                agent-shell-vertico-transcript--record-annotation none))
 
+(defconst agent-shell-vertico-transcript--narrow-keys
+  '((?l . "Live")
+    (?r . "Resumable")
+    (?t . "Transcript only")
+    (?p . "This project")
+    (?d . "Today")
+    (?w . "Last 7 days"))
+  "Narrowing keys offered for transcripts, before the agent keys.
+
+The first three are named after the availability they select, which is
+what `agent-shell-vertico-transcript--record-status' answers.")
+
+(defun agent-shell-vertico-transcript--narrow-keys ()
+  "Return the narrowing keys offered for transcripts."
+  (agent-shell-vertico--narrow-keys
+   agent-shell-vertico-transcript--narrow-keys))
+
+(defun agent-shell-vertico-transcript--narrow-context ()
+  "Return what a transcript narrowing predicate needs from the caller.
+
+Read before the reader opens its minibuffer: the project is the one the
+command was called from, and the day is the day the list was offered on.
+Neither is knowable once the minibuffer is current."
+  (list :project (agent-shell-vertico-transcript--current-project-root)
+        :now (current-time)))
+
+(defun agent-shell-vertico-transcript--same-day-p (left right)
+  "Return non-nil when times LEFT and RIGHT fall on the same day."
+  (equal (format-time-string "%F" left)
+         (format-time-string "%F" right)))
+
+(defconst agent-shell-vertico-transcript--week (* 7 24 60 60)
+  "Seconds in the week the `Last 7 days' narrowing key covers.")
+
+(defun agent-shell-vertico-transcript--record-narrow-p (key record context)
+  "Return non-nil when transcript RECORD belongs to narrowing KEY.
+
+CONTEXT is what `agent-shell-vertico-transcript--narrow-context' read.
+A nil KEY is no narrowing at all, so every record belongs to it, and a
+key standing for nothing selects nothing."
+  (if (null key)
+      t
+    (let ((now (or (plist-get context :now) (current-time)))
+          (modified
+           (agent-shell-vertico-transcript-record-modified-time record)))
+      (pcase key
+        ((or ?l ?r ?t)
+         (equal (agent-shell-vertico-transcript--record-status record)
+                (alist-get key agent-shell-vertico-transcript--narrow-keys)))
+        (?p (agent-shell-vertico-transcript--same-directory-p
+             (agent-shell-vertico-transcript-record-project-root record)
+             (plist-get context :project)))
+        (?d (and modified
+                 (agent-shell-vertico-transcript--same-day-p modified now)))
+        (?w (and modified
+                 (< (float-time (time-subtract now modified))
+                    agent-shell-vertico-transcript--week)))
+        (_ (agent-shell-vertico--narrow-agent-match-p
+            (agent-shell-vertico-transcript-record-agent record) key))))))
+
+(defun agent-shell-vertico-transcript--narrow-p (key candidate context)
+  "Return non-nil when transcript CANDIDATE belongs to narrowing KEY.
+The record travels with the candidate, so this is the same question
+`agent-shell-vertico-transcript--record-narrow-p' answers."
+  (if (null key)
+      t
+    (when-let* ((record
+                 (agent-shell-vertico-transcript--record-from-candidate
+                  candidate)))
+      (agent-shell-vertico-transcript--record-narrow-p key record context))))
+
+(defun agent-shell-vertico-transcript--group (candidate transform)
+  "Return the group title of transcript CANDIDATE.
+With TRANSFORM, return CANDIDATE as the completion UI should display it,
+which is unchanged: the candidate already shows the title or the first
+message, and nothing of it belongs to the group heading."
+  (if transform
+      candidate
+    (when-let* ((agent-shell-vertico-group-by)
+                (record
+                 (agent-shell-vertico-transcript--record-from-candidate
+                  candidate)))
+      (pcase agent-shell-vertico-group-by
+        ('project
+         (agent-shell-vertico-transcript-record-project-name record))
+        ('agent (agent-shell-vertico-transcript-record-agent record))
+        ('status
+         (agent-shell-vertico-transcript--record-status record))))))
+
 (defun agent-shell-vertico-transcript--completing-read-record
     (prompt records)
   "Read one transcript from RECORDS with PROMPT."
@@ -722,6 +811,9 @@ two weeks, which is what made them hard to tell apart."
                      (category . agent-shell-transcript)
                      (annotation-function
                       . ,#'agent-shell-vertico-transcript--record-annotation)
+                     ,@(when agent-shell-vertico-group-by
+                         `((group-function
+                            . ,#'agent-shell-vertico-transcript--group)))
                      (display-sort-function . identity)
                      (cycle-sort-function . identity))
                  (complete-with-action action candidates string pred)))

@@ -393,9 +393,11 @@ key standing for nothing selects nothing."
       t
     (when-let* ((buffer (get-buffer (substring-no-properties candidate))))
       (pcase key
-        (?r (equal (agent-shell-vertico--status buffer) "Ready"))
-        (?w (equal (agent-shell-vertico--status buffer) "Working"))
-        (?s (equal (agent-shell-vertico--status buffer) "Starting"))
+        ;; A status key is named after the status it selects, so the key
+        ;; list is also what a candidate's status is compared against.
+        ((or ?r ?w ?s)
+         (equal (agent-shell-vertico--status buffer)
+                (alist-get key agent-shell-vertico--session-narrow-keys)))
         (?! (agent-shell-vertico--waiting-p buffer))
         (?q (agent-shell-vertico--queued-prompts-p buffer))
         (?p (and (member (buffer-name buffer) (plist-get context :project))

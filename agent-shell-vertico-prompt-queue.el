@@ -204,6 +204,32 @@ drift apart."
              '(agent-shell-prompt-queue
                agent-shell-vertico-prompt-queue--annotate none))
 
+(defconst agent-shell-vertico-prompt-queue--narrow-keys
+  '((?p . "Prompt")
+    (?a . "Queue action")
+    (?m . "Multi-line"))
+  "Narrowing keys offered for a session's prompt queue.
+
+No agent keys: a queue belongs to one session, and so to one agent.")
+
+(defun agent-shell-vertico-prompt-queue--narrow-keys ()
+  "Return the narrowing keys offered for a prompt queue."
+  agent-shell-vertico-prompt-queue--narrow-keys)
+
+(defun agent-shell-vertico-prompt-queue--narrow-p (key candidate _context)
+  "Return non-nil when queue CANDIDATE belongs to narrowing KEY.
+A nil KEY is no narrowing at all, so every candidate belongs to it."
+  (if (null key)
+      t
+    (when-let* ((record
+                 (agent-shell-vertico-prompt-queue--record-from-candidate
+                  candidate)))
+      (pcase key
+        (?p (null (map-elt record :action)))
+        (?a (and (map-elt record :action) t))
+        (?m (when-let* ((text (map-elt record :text)))
+              (> (length (split-string text "\n" t)) 1)))))))
+
 (defun agent-shell-vertico-prompt-queue--table (candidates)
   "Return a completion table over CANDIDATES.
 Sorting is left alone: the list is already in queue order."

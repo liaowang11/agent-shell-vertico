@@ -36,6 +36,11 @@ name, as `consult--buffer-preview' accepts both."
             (with-selected-window window
               (switch-to-buffer buffer 'norecord))))))))
 
+(defvar-local consult--narrow nil
+  "Stubbed Consult narrowing key currently in force.
+Consult binds this while a narrowing predicate runs, which is how a
+predicate learns which key the reader is narrowing with.")
+
 (defvar consult-after-jump-hook (list #'recenter)
   "Stubbed Consult hook, run after a jump and after each preview.")
 
