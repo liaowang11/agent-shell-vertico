@@ -8171,6 +8171,167 @@ after the test has already finished.  Tests call
                         (list quiet streaming) 'priority)
                        (list streaming quiet)))))))
 
+;;; Narrowing and grouping
+
+(ert-deftest agent-shell-vertico-narrow-agent-key-matches-name-prefix ()
+  "An agent key matches every name it prefixes, whatever the case."
+  (should (agent-shell-vertico--narrow-agent-match-p "Claude" ?c))
+  (should (agent-shell-vertico--narrow-agent-match-p "Claude(token)" ?c))
+  (should (agent-shell-vertico--narrow-agent-match-p "claude code" ?c))
+  (should (agent-shell-vertico--narrow-agent-match-p "Gemini CLI" ?g))
+  (should-not (agent-shell-vertico--narrow-agent-match-p "Codex" ?c))
+  (should-not (agent-shell-vertico--narrow-agent-match-p "Cla" ?c))
+  (should-not (agent-shell-vertico--narrow-agent-match-p nil ?c))
+  (should-not (agent-shell-vertico--narrow-agent-match-p "Claude" ?z)))
+
+(ert-deftest agent-shell-vertico-narrow-keys-end-with-the-agent-keys ()
+  "A category offers its own keys first, then every configured agent."
+  (let* ((agent-shell-vertico-narrow-agent-keys '((?c . "Claude")))
+         (keys (agent-shell-vertico--session-narrow-keys)))
+    (should (equal (alist-get ?r keys) "Ready"))
+    (should (equal (alist-get ?c keys) "Claude"))
+    (should (equal (car (last keys)) '(?c . "Claude")))))
+
+(ert-deftest agent-shell-vertico-session-narrow-selects-by-status ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")))))
+       (starting "Claude Agent @ beta" "/work/beta/" nil))
+    (should (agent-shell-vertico--session-narrow-p
+             ?r (buffer-name ready) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?r (buffer-name starting) nil))
+    (should (agent-shell-vertico--session-narrow-p
+             ?s (buffer-name starting) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?s (buffer-name ready) nil))))
+
+(ert-deftest agent-shell-vertico-session-narrow-selects-working ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ alpha" "/work/alpha/"
+                '((:session . ((:id . "a"))))))
+    (cl-letf (((symbol-function 'shell-maker-busy) (lambda () t)))
+      (should (agent-shell-vertico--session-narrow-p
+               ?w (buffer-name working) nil))
+      (should-not (agent-shell-vertico--session-narrow-p
+                   ?r (buffer-name working) nil)))))
+
+(ert-deftest agent-shell-vertico-session-narrow-selects-waiting ()
+  "The waiting key finds the session agent-shell reports as blocked."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((blocked "Codex Agent @ alpha" "/work/alpha/"
+                '((:session . ((:id . "a")))))
+       (ready "Claude Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b"))))))
+    (let ((agent-shell-test-statuses (list (cons blocked 'blocked)
+                                           (cons ready 'ready))))
+      (should (agent-shell-vertico--session-narrow-p
+               ?! (buffer-name blocked) nil))
+      (should-not (agent-shell-vertico--session-narrow-p
+                   ?! (buffer-name ready) nil)))))
+
+(ert-deftest agent-shell-vertico-session-narrow-selects-queued-prompts ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((queued "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "a")))
+                 (:pending-prompts . ("Next prompt"))))
+       (empty "Claude Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b"))))))
+    (should (agent-shell-vertico--session-narrow-p
+             ?q (buffer-name queued) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?q (buffer-name empty) nil))))
+
+(ert-deftest agent-shell-vertico-session-narrow-selects-by-agent ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((codex "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")))
+                (:agent-config . ((:mode-line-name . "Codex")))))
+       (claude "Claude Agent @ beta" "/work/beta/"
+               '((:session . ((:id . "b")))
+                 (:agent-config . ((:mode-line-name . "Claude Code"))))))
+    (should (agent-shell-vertico--session-narrow-p
+             ?x (buffer-name codex) nil))
+    (should (agent-shell-vertico--session-narrow-p
+             ?c (buffer-name claude) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?c (buffer-name codex) nil))))
+
+(ert-deftest agent-shell-vertico-session-narrow-reads-the-project-once ()
+  "The project key answers for the buffer the command was called from.
+
+The context is built before the minibuffer opens, because the project of
+the minibuffer is not the project the reader was asked about."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((mine "Codex Agent @ alpha" "/work/alpha/"
+             '((:session . ((:id . "a")))))
+       (other "Claude Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b"))))))
+    (let* ((agent-shell-test-project-buffers (list mine))
+           (context (agent-shell-vertico--session-narrow-context)))
+      (setq agent-shell-test-project-buffers (list other))
+      (should (agent-shell-vertico--session-narrow-p
+               ?p (buffer-name mine) context))
+      (should-not (agent-shell-vertico--session-narrow-p
+                   ?p (buffer-name other) context)))))
+
+(ert-deftest agent-shell-vertico-session-narrow-keeps-everything-unnarrowed ()
+  "No key in force matches every candidate; an unknown one matches none."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a"))))))
+    (should (agent-shell-vertico--session-narrow-p
+             nil (buffer-name ready) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?z (buffer-name ready) nil))
+    (should-not (agent-shell-vertico--session-narrow-p
+                 ?r "No such session" nil))))
+
+(ert-deftest agent-shell-vertico-session-narrow-filters-the-table ()
+  "A narrowing predicate reaches the completion table as its predicate."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((ready "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")))))
+       (starting "Claude Agent @ beta" "/work/beta/" nil))
+    (let ((agent-shell-test-buffers (list ready starting))
+          (table (agent-shell-vertico--completion-table 'all)))
+      (should (equal (all-completions
+                      "" table
+                      (lambda (candidate)
+                        (agent-shell-vertico--session-narrow-p
+                         ?r candidate nil)))
+                     (list (buffer-name ready)))))))
+
+(ert-deftest agent-shell-vertico-session-group-follows-group-by ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ alpha" "/work/alpha/"
+                '((:session . ((:id . "a")))
+                  (:agent-config . ((:mode-line-name . "Codex"))))))
+    (let ((name (buffer-name session)))
+      (let ((agent-shell-vertico-group-by nil))
+        (should-not (agent-shell-vertico--session-group name nil)))
+      (let ((agent-shell-vertico-group-by 'project))
+        (should (equal (agent-shell-vertico--session-group name nil)
+                       "/work/alpha/")))
+      (let ((agent-shell-vertico-group-by 'agent))
+        (should (equal (agent-shell-vertico--session-group name nil)
+                       "Codex")))
+      (let ((agent-shell-vertico-group-by 'status))
+        (should (equal (agent-shell-vertico--session-group name nil)
+                       "Ready"))
+        (should (equal (agent-shell-vertico--session-group name t) name))))))
+
+(ert-deftest agent-shell-vertico-table-groups-only-when-asked ()
+  "The table declares a group function only while grouping is on."
+  (let ((table (agent-shell-vertico--completion-table 'all)))
+    (let ((agent-shell-vertico-group-by nil))
+      (should-not (alist-get 'group-function
+                             (cdr (funcall table "" nil 'metadata)))))
+    (let ((agent-shell-vertico-group-by 'project))
+      (should (eq (alist-get 'group-function
+                             (cdr (funcall table "" nil 'metadata)))
+                  #'agent-shell-vertico--session-group)))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

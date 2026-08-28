@@ -93,6 +93,40 @@ so the ellipsis stays visible and item annotations are not crowded."
   :type 'integer
   :group 'agent-shell-vertico)
 
+(defcustom agent-shell-vertico-narrow-agent-keys
+  '((?c . "Claude")
+    (?x . "Codex")
+    (?i . "Pi")
+    (?g . "Gemini")
+    (?k . "Kiro")
+    (?o . "OpenCode"))
+  "Narrowing keys for agent names, shared by every session category.
+
+Each entry is a key and the start of the agent name it stands for, so one
+key covers every variant of a name an agent reports: `Claude' also
+selects `Claude Code' and `Claude(token)'.  Matching ignores case.
+
+Agents are named by whoever configured them, so this list cannot be
+complete.  An agent no key names stays reachable through the status and
+project keys, and through plain typing.
+
+`i' rather than `p' stands for Pi, because `p' narrows to the current
+project in every category that offers it."
+  :type '(alist :key-type character :value-type string)
+  :group 'agent-shell-vertico)
+
+(defcustom agent-shell-vertico-group-by nil
+  "How completion candidates are grouped, or nil to leave them ungrouped.
+
+Grouping gathers the candidates of one group together, which overrides
+the order `agent-shell-vertico-sort-by' and the transcript readers put
+them in.  That is why nothing is grouped by default."
+  :type '(choice (const :tag "Ungrouped" nil)
+                 (const project)
+                 (const agent)
+                 (const status))
+  :group 'agent-shell-vertico)
+
 (defvar agent-shell-vertico-history nil
   "Minibuffer history for `agent-shell-vertico' commands.")
 
@@ -284,6 +318,104 @@ table's affixation function also uses, so the two cannot drift apart."
                        3))))
     (_ candidates)))
 
+;;; Narrowing and grouping
+;;
+;; Narrowing keys are Consult's, and `agent-shell-vertico-consult'
+;; installs them, but nothing here needs Consult: a category answers with
+;; the keys it offers and with a predicate saying whether a candidate
+;; belongs to the key in force.  Consult hands that predicate to
+;; completion as `minibuffer-completion-predicate', and every table in
+;; this package passes its predicate on to `complete-with-action', so the
+;; answer reaches the candidates.
+;;
+;; A predicate runs with the minibuffer current, so whatever it needs to
+;; know about the buffer the command was called from is read beforehand,
+;; into a context the predicate is handed.
+;;
+;; Grouping is plain completion metadata, so it works under any
+;; completion UI that reads a `group-function'.
+
+(defconst agent-shell-vertico--session-narrow-keys
+  '((?r . "Ready")
+    (?w . "Working")
+    (?s . "Starting")
+    (?! . "Waiting")
+    (?q . "Queued prompts")
+    (?p . "This project"))
+  "Narrowing keys offered for live sessions, before the agent keys.")
+
+(defun agent-shell-vertico--narrow-keys (keys)
+  "Return category KEYS followed by the configured agent keys."
+  (append keys agent-shell-vertico-narrow-agent-keys))
+
+(defun agent-shell-vertico--narrow-agent-match-p (name key)
+  "Return non-nil when agent NAME is the one narrowing KEY stands for.
+KEY names the start of a name, so one key covers every variant of it."
+  (when-let* ((name)
+              (prefix (alist-get key agent-shell-vertico-narrow-agent-keys)))
+    (eq t (compare-strings prefix nil nil name 0 (length prefix) t))))
+
+(defun agent-shell-vertico--waiting-p (buffer)
+  "Return non-nil when BUFFER waits for an answer from the reader.
+Asks `agent-shell', which reports `blocked' while a permission request
+is pending.  This is the same question the sidebar asks to mark a session
+as needing attention."
+  (when (fboundp 'agent-shell-status)
+    (eq (condition-case nil
+            (agent-shell-status :shell-buffer buffer)
+          (error nil))
+        'blocked)))
+
+(defun agent-shell-vertico--queued-prompts-p (buffer)
+  "Return non-nil when BUFFER holds prompts waiting to be sent."
+  (and (map-elt (agent-shell-vertico--state buffer) :pending-prompts) t))
+
+(defun agent-shell-vertico--session-narrow-keys ()
+  "Return the narrowing keys offered for live sessions."
+  (agent-shell-vertico--narrow-keys
+   agent-shell-vertico--session-narrow-keys))
+
+(defun agent-shell-vertico--session-narrow-context ()
+  "Return what a session narrowing predicate needs from the current buffer.
+Read before the reader opens its minibuffer: `This project' means the
+project of the buffer the command was called from, and the minibuffer
+belongs to no project of its own."
+  (list :project
+        (mapcar #'buffer-name (agent-shell-vertico--buffers 'project))))
+
+(defun agent-shell-vertico--session-narrow-p (key candidate context)
+  "Return non-nil when session CANDIDATE belongs to narrowing KEY.
+
+CONTEXT is what `agent-shell-vertico--session-narrow-context' read.  A
+nil KEY is no narrowing at all, so every candidate belongs to it, and a
+key standing for nothing selects nothing."
+  (if (null key)
+      t
+    (when-let* ((buffer (get-buffer (substring-no-properties candidate))))
+      (pcase key
+        (?r (equal (agent-shell-vertico--status buffer) "Ready"))
+        (?w (equal (agent-shell-vertico--status buffer) "Working"))
+        (?s (equal (agent-shell-vertico--status buffer) "Starting"))
+        (?! (agent-shell-vertico--waiting-p buffer))
+        (?q (agent-shell-vertico--queued-prompts-p buffer))
+        (?p (and (member (buffer-name buffer) (plist-get context :project))
+                 t))
+        (_ (agent-shell-vertico--narrow-agent-match-p
+            (agent-shell-vertico--agent-name buffer) key))))))
+
+(defun agent-shell-vertico--session-group (candidate transform)
+  "Return the group title of session CANDIDATE.
+With TRANSFORM, return CANDIDATE as the completion UI should display it,
+which is unchanged: a session is shown by its whole buffer name."
+  (if transform
+      candidate
+    (when-let* ((agent-shell-vertico-group-by)
+                (buffer (get-buffer (substring-no-properties candidate))))
+      (pcase agent-shell-vertico-group-by
+        ('project (agent-shell-vertico--path buffer))
+        ('agent (agent-shell-vertico--agent-name buffer))
+        ('status (agent-shell-vertico--status buffer))))))
+
 (defconst agent-shell-vertico--key-char #x100000
   "First character of the private-use range used to key candidates.")
 
@@ -323,6 +455,9 @@ dies while the prompt is open leaves the list."
           `(metadata
             (category . agent-shell-session)
             (affixation-function . ,#'agent-shell-vertico--affixate)
+            ,@(when agent-shell-vertico-group-by
+                `((group-function
+                   . ,#'agent-shell-vertico--session-group)))
             (display-sort-function . ,#'agent-shell-vertico--sort-candidates)
             (cycle-sort-function . ,#'agent-shell-vertico--sort-candidates))
         (complete-with-action action
