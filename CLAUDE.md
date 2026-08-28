@@ -149,6 +149,29 @@ contract: `:buffers` still names the shells to offer, the chosen buffer is
 returned, and no shells or no selection is a `user-error`. `:force-short-names`
 is accepted and ignored, because candidates are whole buffer names.
 
+**Narrowing and grouping.** Each completion category answers two
+questions of its own: `--narrow-keys` lists the keys it offers, and
+`--narrow-p` says whether a candidate belongs to the key in force. Both
+live in the Consult-free modules, so they are plain functions to test.
+`agent-shell-vertico-consult--narrow` is the only place that knows about
+Consult: it reads the key from `consult--narrow` and returns the
+`(:predicate FN :keys ALIST)` plist Consult has taken since 2.4, which is
+why the Consult module requires that version (there is no 2.0 through
+2.3; Consult went from 1.8 straight to 2.4). Consult installs the
+predicate as `minibuffer-completion-predicate`, and every table here
+passes its predicate to `complete-with-action`, which is how the answer
+reaches candidates. Anything a predicate needs to know about the buffer
+the command was called from — the current project, today's date — is read
+into a context beforehand, because the predicate itself runs with the
+minibuffer current. `consult--type-narrow` is deliberately not used: it
+keys off a `consult--type` text property, which would put Consult symbols
+into modules that do not require it. Status keys are named after the
+status they select, so one alist is both the key help and what a
+candidate's status is compared against. Grouping is completion metadata
+(`group-function`), so it also works without Consult; `consult--read`
+puts its own metadata ahead of the table's, so the `:group` a reader
+passes wins over the table's, and both name the same function.
+
 ## Critical constraint: do not pre-bind host-package variables
 
 External variables (`embark-keymap-alist`, `marginalia-annotators`,

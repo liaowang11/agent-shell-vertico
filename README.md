@@ -488,6 +488,64 @@ previewing and selecting one expands the block. Candidates in
 reading them. Blocks opened while previewing stay open, because Consult's
 preview restores only the folds it opened itself.
 
+## Narrowing and grouping
+
+Every prompt this package reads narrows by key, the way Consult's own
+commands do. Press `consult-narrow-key`, then a key from the list below,
+to keep only the candidates it names; press it twice to widen again, and
+`C-h` after it to see the keys. Consult installs the keys, so narrowing
+needs `agent-shell-vertico-consult` loaded, and it does nothing until
+`consult-narrow-key` has a value:
+
+```elisp
+(setq consult-narrow-key "<")
+```
+
+Live sessions, in `agent-shell-vertico-switch` and in every prompt
+`agent-shell` asks about which shell to act on:
+
+- `r` Ready, `w` Working, `s` Starting — the status column
+- `!` Waiting — the agent is asking for permission
+- `q` sessions with prompts still queued
+- `p` sessions in the project the command was called from
+
+Transcripts, in browse, resume, and search:
+
+- `l` a shell already holds this session
+- `r` resumable, `t` transcript only
+- `p` this project
+- `d` changed today, `w` changed in the last seven days
+
+`agent-shell`'s own session picker:
+
+- `l` a shell already holds it, `r` resumable
+- `h` this machine has the transcript, `n` it does not
+
+A session's prompt queue:
+
+- `p` pending prompts, `a` the queue-wide entries, `m` multi-line prompts
+
+Every session list above also narrows by agent: `c` Claude, `x` Codex,
+`i` Pi, `g` Gemini, `k` Kiro, `o` OpenCode. A key matches the start of an
+agent's name, so `c` also finds `Claude Code` and `Claude(token)`.
+Agents are named by whoever configured them, so
+`agent-shell-vertico-narrow-agent-keys` is where you add your own. `i`
+stands for Pi because `p` is the project key everywhere else.
+
+Grouping is separate and off by default. Set
+`agent-shell-vertico-group-by` to `project`, `agent`, or `status` to
+gather each group's candidates under a heading:
+
+```elisp
+(setq agent-shell-vertico-group-by 'project)
+```
+
+Grouping gathers the candidates of one group together, which overrides
+the order `agent-shell-vertico-sort-by` and the transcript readers put
+them in. That is the trade, and it is why nothing is grouped by default.
+Grouping is plain completion metadata, so unlike narrowing it works
+without Consult.
+
 ## Setup
 
 ```elisp
