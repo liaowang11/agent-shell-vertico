@@ -150,6 +150,17 @@ contract: `:buffers` still names the shells to offer, the chosen buffer is
 returned, and no shells or no selection is a `user-error`. `:force-short-names`
 is accepted and ignored, because candidates are whole buffer names.
 
+**Opening a live session's transcript.** `agent-shell-open-transcript` is a
+bare `find-file`, so a transcript reached from a session misses the reader
+that browsing gives it. `agent-shell-vertico-transcript-open-session` resolves
+the shell with upstream's `agent-shell--current-shell` (so a viewport works
+too), reads that buffer's `agent-shell--transcript-file`, and opens it through
+`--record-from-file` and `--open-record`. Every other route into a session
+transcript, including `agent-shell-viewport-open-transcript`, the viewport
+transient, and this package's own `T` Embark action, calls
+`agent-shell-open-transcript`, so `-setup-open-transcript` advises that one
+function `:override` rather than touching any of them.
+
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and
 `--narrow-p` says whether a candidate belongs to the key in force. Both

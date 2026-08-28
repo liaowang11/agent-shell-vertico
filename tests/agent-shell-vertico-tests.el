@@ -5376,6 +5376,124 @@ ends without one modified."
         (kill-buffer buffer))
       (delete-file file))))
 
+(ert-deftest agent-shell-vertico-transcript-record-from-file-takes-header-root ()
+  "A record built from a file is scoped by the transcript's own header."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n"
+                    "**Working Directory:** /work/project\n\n---\n\n"
+                    "## User\n\nhello\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--record-from-file
+                  file "/elsewhere/")))
+            (should (equal (agent-shell-vertico-transcript-record-project-root
+                            record)
+                           "/work/project/"))
+            (should (equal (agent-shell-vertico-transcript-record-project-name
+                            record)
+                           "project"))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-record-from-file-keeps-given-root ()
+  "Without a working directory header, the given root scopes the record."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n"))
+          (should (equal (agent-shell-vertico-transcript-record-project-root
+                          (agent-shell-vertico-transcript--record-from-file
+                           file "/elsewhere/"))
+                         "/elsewhere/")))
+      (delete-file file))))
+
+(defmacro agent-shell-vertico-tests--with-session-transcript (&rest body)
+  "Evaluate BODY with a shell buffer holding a transcript file.
+
+Binds `shell' to the shell buffer, `file' to its transcript file, and
+`opened' to the record `agent-shell-vertico-transcript--open-record' was
+called with."
+  (declare (indent 0) (debug t))
+  `(let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+         opened)
+     (unwind-protect
+         (progn
+           (with-temp-file file
+             (insert "**Agent:** Codex\n"
+                     "**Working Directory:** /work/project\n\n---\n\n"
+                     "## User\n\nhello\n"))
+           (agent-shell-vertico-tests--with-session-buffers
+               ((shell "*claude*" "/work/project/" nil))
+             (with-current-buffer shell
+               (setq-local agent-shell--transcript-file file))
+             (cl-letf (((symbol-function
+                         'agent-shell-vertico-transcript--open-record)
+                        (lambda (record &optional _other-window)
+                          (setq opened record))))
+               ,@body)))
+       (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-reads-shell-transcript ()
+  "The session's transcript opens through the transcript reader."
+  (agent-shell-vertico-tests--with-session-transcript
+    (with-current-buffer shell
+      (agent-shell-vertico-transcript-open-session))
+    (should (equal (agent-shell-vertico-transcript-record-file opened) file))
+    (should (equal (agent-shell-vertico-transcript-record-project-root opened)
+                   "/work/project/"))))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-reads-through-viewport ()
+  "A viewport opens the transcript of the shell behind it."
+  (agent-shell-vertico-tests--with-session-transcript
+    (let ((viewport (generate-new-buffer
+                     (concat (buffer-name shell)
+                             agent-shell-viewport--suffix))))
+      (unwind-protect
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (agent-shell-vertico-transcript-open-session))
+        (kill-buffer viewport)))
+    (should (equal (agent-shell-vertico-transcript-record-file opened) file))))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-outside-a-session ()
+  "Nothing to open outside an `agent-shell' session."
+  (with-temp-buffer
+    (should-error (agent-shell-vertico-transcript-open-session)
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-without-transcript ()
+  "A session recording no transcript has nothing to open."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((shell "*claude*" "/work/project/" nil))
+    (with-current-buffer shell
+      (setq-local agent-shell--transcript-file nil)
+      (should-error (agent-shell-vertico-transcript-open-session)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-transcript-open-session-with-missing-file ()
+  "A transcript file that was never written has nothing to open."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((shell "*claude*" "/work/project/" nil))
+    (with-current-buffer shell
+      (setq-local agent-shell--transcript-file "/work/project/missing.md")
+      (should-error (agent-shell-vertico-transcript-open-session)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-transcript-setup-open-transcript-advises ()
+  "Setup routes `agent-shell-open-transcript' through the reader."
+  (agent-shell-vertico-tests--with-session-transcript
+    (agent-shell-vertico-transcript-setup-open-transcript)
+    (unwind-protect
+        (with-current-buffer shell
+          (agent-shell-open-transcript))
+      (advice-remove 'agent-shell-open-transcript
+                     #'agent-shell-vertico-transcript-open-session))
+    (should (equal (agent-shell-vertico-transcript-record-file opened) file))
+    (should-not (eq agent-shell-test-last-command
+                    'agent-shell-open-transcript))))
+
 (ert-deftest agent-shell-vertico-transcript-resume-activates-record ()
   (let ((record
          (agent-shell-vertico-transcript-record-create

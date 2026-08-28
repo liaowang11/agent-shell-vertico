@@ -359,6 +359,9 @@ without asking for one.
   Summarize live, resumable, and transcript-only records and disk usage.
 - `M-x agent-shell-vertico-transcript-doctor`
   Report missing tools, undiscovered projects, and transcript metadata issues.
+- `M-x agent-shell-vertico-transcript-open-session`
+  Open the transcript of the session at hand, from its shell buffer or from
+  a viewport showing it.
 
 Browse and search selections open the transcript file. Resume commands switch
 to a matching live shell when possible, otherwise they resume the recorded
@@ -392,6 +395,16 @@ transcript that ends without one; the cost is that the grammar can misread
 markup at the very end of such a transcript. A buffer already in a
 mode built on the chosen one keeps it, so `markdown-mode` derivatives such as
 Polymode's `poly-markdown-mode` survive the fallback path.
+
+`agent-shell-open-transcript` visits the same file with `find-file`, which
+leaves the mode to the file itself, so a transcript reached from a live
+session gets none of this. `agent-shell-vertico-transcript-open-session` opens
+it in the reader instead, and
+`M-x agent-shell-vertico-transcript-setup-open-transcript` advises
+`agent-shell-open-transcript` so every route into it arrives the same way:
+`agent-shell-viewport-open-transcript`, the viewport transient, and this
+package's own `T` Embark action. The reader makes the buffer read-only, so
+turn `agent-shell-vertico-transcript-mode` off to edit a transcript.
 
 The reader's own keys win over the view mode's, because minor mode keymaps take
 precedence: `n`, `p` and `b` move between messages and browse rather than
@@ -578,6 +591,10 @@ without Consult.
 (use-package agent-shell-vertico-sidebar
   :after agent-shell-vertico
   :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)))
+
+(use-package agent-shell-vertico-transcript
+  :after agent-shell-vertico
+  :config (agent-shell-vertico-transcript-setup-open-transcript))
 
 (use-package agent-shell-vertico-links
   :after agent-shell-vertico

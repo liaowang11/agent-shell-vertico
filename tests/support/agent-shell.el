@@ -29,6 +29,9 @@
 
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
+(defvar-local agent-shell--transcript-file nil
+  "Stub: path to the shell's transcript file.")
+
 (defvar agent-shell-test-toggle-fragment-count 0)
 (defvar agent-shell-test-group-collapse-calls nil)
 
@@ -390,6 +393,17 @@ Prefers the \"mode\" config option, falls back to session :mode-id."
   (if-let* ((option (agent-shell--config-option-by-category state "model")))
       (agent-shell--config-option-as-models option)
     (map-nested-elt state '(:session :models))))
+
+(defun agent-shell--current-shell ()
+  "Stub: current shell for a viewport or shell buffer.
+Mirrors the real resolver: an `agent-shell-mode' buffer is its own
+shell, a viewport buffer resolves to the shell it was created from, and
+anything else resolves to nil."
+  (cond ((derived-mode-p 'agent-shell-mode)
+         (current-buffer))
+        ((or (derived-mode-p 'agent-shell-viewport-view-mode)
+             (derived-mode-p 'agent-shell-viewport-edit-mode))
+         (agent-shell-viewport--shell-buffer))))
 
 (defun agent-shell--get-available-modes (state)
   "Return available modes from STATE, preferring config options."

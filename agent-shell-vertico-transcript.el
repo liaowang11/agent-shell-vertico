@@ -38,6 +38,7 @@
 (defvar projectile-current-project-on-switch)
 (defvar projectile-mode)
 
+(declare-function agent-shell--current-shell "agent-shell" ())
 (declare-function agent-shell--resolved-agent-configs "agent-shell" ())
 (declare-function dired "dired" (dirname &optional switches))
 (declare-function evil-local-set-key "evil" (state key definition))
@@ -1165,30 +1166,60 @@ grammar can misread markup at the very end of such a transcript."
         (forward-line (1- line))))
     buffer))
 
+(defun agent-shell-vertico-transcript--record-from-file
+    (file project-root)
+  "Return the transcript record FILE describes, scoped to PROJECT-ROOT.
+
+PROJECT-ROOT only stands in for the project a browsed record carries.
+The transcript names the directory it was written for in its own header,
+so that directory wins whenever the file has one."
+  (let* ((record
+          (agent-shell-vertico-transcript--parse-file file project-root))
+         (working-directory
+          (agent-shell-vertico-transcript-record-working-directory
+           record)))
+    (when working-directory
+      (setf
+       (agent-shell-vertico-transcript-record-project-root record)
+       working-directory
+       (agent-shell-vertico-transcript-record-project-name record)
+       (file-name-nondirectory
+        (directory-file-name working-directory))))
+    record))
+
 (defun agent-shell-vertico-transcript--current-record ()
   "Return the transcript record associated with the current buffer."
   (or
    agent-shell-vertico-transcript--record
    (when-let* ((file (buffer-file-name)))
-     (let* ((fallback-root
-             (or
-              (agent-shell-vertico-transcript--current-project-root)
-              default-directory))
-            (record
-             (agent-shell-vertico-transcript--parse-file
-              file fallback-root))
-            (working-directory
-             (agent-shell-vertico-transcript-record-working-directory
-              record)))
-       (when working-directory
-         (setf
-          (agent-shell-vertico-transcript-record-project-root record)
-          working-directory
-          (agent-shell-vertico-transcript-record-project-name record)
-          (file-name-nondirectory
-           (directory-file-name working-directory))))
-       record))
+     (agent-shell-vertico-transcript--record-from-file
+      file
+      (or
+       (agent-shell-vertico-transcript--current-project-root)
+       default-directory)))
    (user-error "Current buffer is not an agent-shell transcript")))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-open-session ()
+  "Open the transcript of the current session in the transcript reader.
+
+Reads the session from an `agent-shell' buffer or from a viewport
+showing one.  `agent-shell-open-transcript' visits the same file and
+leaves the mode to the file itself, which for a transcript is no mode at
+all.  This opens it the way `agent-shell-vertico-transcript-browse'
+does: the Markdown reader, the header line, speaker navigation, the
+clean view, and resume."
+  (interactive)
+  (let* ((shell (or (agent-shell--current-shell)
+                    (user-error "Not in an agent-shell session")))
+         (file (buffer-local-value 'agent-shell--transcript-file shell)))
+    (unless file
+      (user-error "No transcript file available for this session"))
+    (unless (file-exists-p file)
+      (user-error "Transcript file does not exist: %s" file))
+    (agent-shell-vertico-transcript--open-record
+     (agent-shell-vertico-transcript--record-from-file
+      file (buffer-local-value 'default-directory shell)))))
 
 (defun agent-shell-vertico-transcript--move-to-speaker
     (speakers direction)
@@ -1527,6 +1558,21 @@ through and landed on whatever preceded the first one."
           (agent-shell-vertico-transcript--embark-record candidate))))
     (kill-new file)
     (message "Copied transcript file: %s" file)))
+
+;;;###autoload
+(defun agent-shell-vertico-transcript-setup-open-transcript ()
+  "Open every `agent-shell' transcript in the transcript reader.
+
+`agent-shell-open-transcript' is the one function the session commands
+share: `agent-shell-viewport-open-transcript', the viewport transient,
+and this package's own `agent-shell-vertico-open-transcript' all reach
+it.  It takes no hook, so this advises it.
+
+The reader makes the buffer read-only.  Turn
+`agent-shell-vertico-transcript-mode' off to edit a transcript."
+  (interactive)
+  (advice-add 'agent-shell-open-transcript :override
+              #'agent-shell-vertico-transcript-open-session))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-setup-embark ()
