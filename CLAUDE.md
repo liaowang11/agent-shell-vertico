@@ -172,16 +172,6 @@ candidate's status is compared against. Grouping is completion metadata
 puts its own metadata ahead of the table's, so the `:group` a reader
 passes wins over the table's, and both name the same function.
 
-**What a candidate carries.** Completion matches the candidate string;
-the annotation is never matched. Anything a reader should be able to type
-has to be on the candidate, which is why a transcript candidate carries
-its project name hidden (`--searchable-project`) when the list spans more
-than one project. Hidden text is still measured: `marginalia--align`
-takes `string-width` of the whole candidate, invisible or not, so
-`--record-candidates` subtracts what it hides from the width it gives the
-title. A candidate over that width pushes every annotation right and off
-the end of the row.
-
 ## Critical constraint: do not pre-bind host-package variables
 
 External variables (`embark-keymap-alist`, `marginalia-annotators`,

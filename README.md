@@ -365,15 +365,7 @@ session is shown in its viewport rather than in the shell buffer.
 
 Each candidate is the session title, taken from the transcript's `**Title:**`
 header, and falls back to the first user message for transcripts written
-without one. Sessions are listed newest first by last change.
-
-Completion matches the candidate and never the annotation, so a list spanning
-more than one project carries each candidate's project name hidden on it:
-typing a project name reaches its transcripts, and the row reads as it always
-did. Those columns come off the title, because Marginalia measures hidden text
-too and an annotation pushed right runs off the end of the row, so titles are
-cut earlier in a list that spans projects. A list within one project carries
-nothing hidden and is unchanged. Annotations run
+without one. Sessions are listed newest first by last change. Annotations run
 from most to least identifying: project, first user message, agent,
 availability, last change, and start time. They are rendered by a Marginalia
 annotator registered for the `agent-shell-transcript` category, so
@@ -539,6 +531,19 @@ agent's name, so `c` also finds `Claude Code` and `Claude(token)`.
 Agents are named by whoever configured them, so
 `agent-shell-vertico-narrow-agent-keys` is where you add your own. `i`
 stands for Pi because `p` is the project key everywhere else.
+
+Narrowing keeps candidates by what they are. To filter by what their
+annotation shows instead, orderless matches a component against the
+annotation when you prefix it with `&`: `&lyra` in the transcript browser
+keeps that project's transcripts, `&Working` in the session switcher keeps the
+busy ones. This needs no configuration — `orderless-style-dispatchers` enables
+`orderless-affix-dispatch` by default — and nothing from this package: the
+annotation Marginalia renders is what gets matched. Two limits follow from
+that. It is matched as rendered, so a value cut to fit its column matches by
+its visible prefix only, and `&` matches every column rather than one, so
+`&Claude` finds an agent and a project called `claude` alike. Plain typing,
+with no `&`, still matches the candidate: the buffer name of a session, the
+title of a transcript.
 
 Grouping is separate and off by default. Set
 `agent-shell-vertico-group-by` to `project`, `agent`, or `status` to

@@ -614,47 +614,14 @@ the text may use."
         (agent-shell-vertico-transcript--truncate text width)
       text)))
 
-(defun agent-shell-vertico-transcript--searchable-project (record)
-  "Return RECORD's project name as text to match on but never to show.
-
-Completion matches the candidate string and never the annotation beside
-it, so a project a reader can type has to be on the candidate.  Hidden
-the way the distinguishing key is, it costs the row nothing to read.
-
-The leading space keeps a match from spanning the end of the title and
-the start of the project, which is text no reader can see."
-  (when-let* ((project
-               (agent-shell-vertico-transcript-record-project-name record)))
-    (propertize (concat " " project) 'invisible t)))
-
-(defun agent-shell-vertico-transcript--searchable-project-width (records)
-  "Return the columns a hidden project name costs across RECORDS.
-
-Zero when RECORDS name one project or none: narrowing to a project that
-holds every candidate selects every candidate, so there is nothing to
-type.  Otherwise the longest name, because every candidate has to leave
-room for its own and they all line up against the same width."
-  (let ((names (delete-dups
-                (delq nil
-                      (mapcar
-                       #'agent-shell-vertico-transcript-record-project-name
-                       records)))))
-    (if (cdr names)
-        (1+ (apply #'max (mapcar #'string-width names)))
-      0)))
-
 (defun agent-shell-vertico-transcript--record-candidate
-    (record &optional index width project)
+    (record &optional index width)
   "Return a completion candidate for RECORD.
 With INDEX, append the invisible key that keeps candidates distinct.
-WIDTH, when given, is how many columns the candidate text may use.
-With PROJECT, carry RECORD's project name hidden on the candidate, so
-completion matches a reader who types it."
+WIDTH, when given, is how many columns the candidate text may use."
   (let ((candidate
          (concat
           (agent-shell-vertico-transcript--candidate-text record width)
-          (when project
-            (agent-shell-vertico-transcript--searchable-project record))
           (when index
             (agent-shell-vertico--candidate-key index)))))
     (put-text-property
@@ -666,28 +633,14 @@ completion matches a reader who types it."
     (records &optional width)
   "Return one distinct completion candidate per record in RECORDS.
 WIDTH is how many columns a candidate may use, by default whatever the
-minibuffer leaves once the annotation has its room.
-
-Records spanning more than one project carry their project name hidden,
-which is what lets a reader type it.  Those columns come off the title
-rather than off the annotation: `marginalia--align' measures a candidate
-with `string-width', which counts invisible text, so a candidate over its
-width would push every annotation right and off the end of the row."
-  (let* ((width
-          (or width
-              (agent-shell-vertico-transcript--candidate-width
-               (window-width (minibuffer-window)))))
-         (project
-          (agent-shell-vertico-transcript--searchable-project-width records))
-         (text-width
-          (if (> project 0)
-              (max agent-shell-vertico-transcript--candidate-width-min
-                   (- width project))
-            width)))
+minibuffer leaves once the annotation has its room."
+  (let ((width
+         (or width
+             (agent-shell-vertico-transcript--candidate-width
+              (window-width (minibuffer-window))))))
     (seq-map-indexed
      (lambda (record index)
-       (agent-shell-vertico-transcript--record-candidate
-        record index text-width (> project 0)))
+       (agent-shell-vertico-transcript--record-candidate record index width))
      records)))
 
 (defun agent-shell-vertico-transcript--record-from-candidate (candidate)
