@@ -155,11 +155,9 @@ bare `find-file`, so a transcript reached from a session misses the reader
 that browsing gives it. `agent-shell-vertico-transcript-open-session` resolves
 the shell with upstream's `agent-shell--current-shell` (so a viewport works
 too), reads that buffer's `agent-shell--transcript-file`, and opens it through
-`--record-from-file` and `--open-record`. Every other route into a session
-transcript, including `agent-shell-viewport-open-transcript`, the viewport
-transient, and this package's own `T` Embark action, calls
-`agent-shell-open-transcript`, so `-setup-open-transcript` advises that one
-function `:override` rather than touching any of them.
+`--record-from-file` and `--open-record`. Upstream's own commands are left
+alone: this is a command to bind, not advice, so nothing changes for anyone
+who has not bound it.
 
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and

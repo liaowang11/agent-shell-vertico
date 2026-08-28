@@ -396,15 +396,13 @@ markup at the very end of such a transcript. A buffer already in a
 mode built on the chosen one keeps it, so `markdown-mode` derivatives such as
 Polymode's `poly-markdown-mode` survive the fallback path.
 
-`agent-shell-open-transcript` visits the same file with `find-file`, which
-leaves the mode to the file itself, so a transcript reached from a live
-session gets none of this. `agent-shell-vertico-transcript-open-session` opens
-it in the reader instead, and
-`M-x agent-shell-vertico-transcript-setup-open-transcript` advises
-`agent-shell-open-transcript` so every route into it arrives the same way:
-`agent-shell-viewport-open-transcript`, the viewport transient, and this
-package's own `T` Embark action. The reader makes the buffer read-only, so
-turn `agent-shell-vertico-transcript-mode` off to edit a transcript.
+`agent-shell-open-transcript` and `agent-shell-viewport-open-transcript` visit
+the same file with `find-file`, which leaves the mode to the file itself, so a
+transcript reached from a live session gets none of this.
+`agent-shell-vertico-transcript-open-session` opens it in the reader instead,
+from the shell buffer or from its viewport, so bind that in place of the
+upstream commands. The reader makes the buffer read-only, so turn
+`agent-shell-vertico-transcript-mode` off to edit a transcript.
 
 The reader's own keys win over the view mode's, because minor mode keymaps take
 precedence: `n`, `p` and `b` move between messages and browse rather than
@@ -594,7 +592,7 @@ without Consult.
 
 (use-package agent-shell-vertico-transcript
   :after agent-shell-vertico
-  :config (agent-shell-vertico-transcript-setup-open-transcript))
+  :bind (("C-c a t" . agent-shell-vertico-transcript-open-session)))
 
 (use-package agent-shell-vertico-links
   :after agent-shell-vertico

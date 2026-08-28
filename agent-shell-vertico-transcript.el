@@ -1560,21 +1560,6 @@ through and landed on whatever preceded the first one."
     (message "Copied transcript file: %s" file)))
 
 ;;;###autoload
-(defun agent-shell-vertico-transcript-setup-open-transcript ()
-  "Open every `agent-shell' transcript in the transcript reader.
-
-`agent-shell-open-transcript' is the one function the session commands
-share: `agent-shell-viewport-open-transcript', the viewport transient,
-and this package's own `agent-shell-vertico-open-transcript' all reach
-it.  It takes no hook, so this advises it.
-
-The reader makes the buffer read-only.  Turn
-`agent-shell-vertico-transcript-mode' off to edit a transcript."
-  (interactive)
-  (advice-add 'agent-shell-open-transcript :override
-              #'agent-shell-vertico-transcript-open-session))
-
-;;;###autoload
 (defun agent-shell-vertico-transcript-setup-embark ()
   "Register transcript candidates and actions with Embark."
   (interactive)

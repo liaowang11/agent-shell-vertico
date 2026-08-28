@@ -5481,19 +5481,6 @@ called with."
       (should-error (agent-shell-vertico-transcript-open-session)
                     :type 'user-error))))
 
-(ert-deftest agent-shell-vertico-transcript-setup-open-transcript-advises ()
-  "Setup routes `agent-shell-open-transcript' through the reader."
-  (agent-shell-vertico-tests--with-session-transcript
-    (agent-shell-vertico-transcript-setup-open-transcript)
-    (unwind-protect
-        (with-current-buffer shell
-          (agent-shell-open-transcript))
-      (advice-remove 'agent-shell-open-transcript
-                     #'agent-shell-vertico-transcript-open-session))
-    (should (equal (agent-shell-vertico-transcript-record-file opened) file))
-    (should-not (eq agent-shell-test-last-command
-                    'agent-shell-open-transcript))))
-
 (ert-deftest agent-shell-vertico-transcript-resume-activates-record ()
   (let ((record
          (agent-shell-vertico-transcript-record-create
