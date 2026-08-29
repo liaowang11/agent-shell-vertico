@@ -54,6 +54,8 @@
                   "agent-shell-vertico-prompt-queue" ())
 (declare-function agent-shell-vertico-resume-setup
                   "agent-shell-vertico-resume" ())
+(declare-function agent-shell-vertico-transcript-open-session
+                  "agent-shell-vertico-transcript" (&optional other-window))
 (declare-function agent-shell-vertico-transcript-setup-embark
                   "agent-shell-vertico-transcript" ())
 (declare-function embark-open-externally "embark")
@@ -918,11 +920,12 @@ Call this only after Embark is loaded."
     (call-interactively #'agent-shell-restart)))
 
 (defun agent-shell-vertico-open-transcript (buffer)
-  "Open transcript for BUFFER."
+  "Open BUFFER's transcript in the transcript reader."
   (interactive (list (read-buffer "Agent shell: ")))
+  (require 'agent-shell-vertico-transcript)
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
-    (call-interactively #'agent-shell-open-transcript)))
+    (agent-shell-vertico-transcript-open-session)))
 
 (defun agent-shell-vertico-view-traffic (buffer)
   "View traffic for BUFFER."

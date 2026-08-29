@@ -3905,9 +3905,14 @@ type to keymap mappings when embark loads later."
 (ert-deftest agent-shell-vertico-open-transcript-dispatches-in-target-buffer ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
-    (agent-shell-vertico-open-transcript (buffer-name alpha))
-    (should (eq agent-shell-test-last-command 'agent-shell-open-transcript))
-    (should (eq agent-shell-test-last-buffer alpha))))
+    (let (reader-buffer)
+      (cl-letf (((symbol-function 'agent-shell-vertico-transcript-open-session)
+                 (lambda (&optional other-window)
+                   (setq reader-buffer (current-buffer))
+                   (should-not other-window))))
+        (agent-shell-vertico-open-transcript (buffer-name alpha)))
+      (should (eq reader-buffer alpha))
+      (should-not agent-shell-test-last-command))))
 
 (ert-deftest agent-shell-vertico-kill-session-sends-eof-for-target-buffer ()
   "EOF is sent from the session's own buffer, and the buffer is killed.
