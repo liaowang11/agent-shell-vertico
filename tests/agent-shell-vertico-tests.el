@@ -83,6 +83,7 @@
 
 (defvar markdown-ts-inline-images)
 (defvar markdown-ts-view-mode-pre-init-hook)
+(defvar markdown-ts-fontify-code-blocks-natively)
 
 (defun agent-shell-vertico-tests--fail-if-run ()
   "Signal when a hook that must be replaced is run."
@@ -6410,6 +6411,28 @@ would modify the file's buffer, and images make a scanned preview noisy."
            (current-buffer)))))
     (should-not images)
     (should markdown-ts-inline-images)))
+
+(ert-deftest agent-shell-vertico-consult-preview-disables-native-code-fontification ()
+  "A preview turns off native code-block fontification.
+Fontifying a code block natively runs the block's own major mode and a
+whole-block `font-lock-ensure', the only step in the preview pipeline
+that costs more than a few milliseconds.  A scanned preview does not
+need it, so it is off only for the duration of the mode call, not for
+the transcript the reader opens afterward."
+  (let ((markdown-ts-fontify-code-blocks-natively t)
+        natively)
+    (cl-letf (((symbol-function
+                'agent-shell-vertico-consult--preview-major-mode)
+               (lambda () 'text-mode)))
+      (agent-shell-vertico-consult--open-preview
+       "/tmp/transcript.md"
+       (lambda (_file)
+         (with-current-buffer (generate-new-buffer " *preview*")
+           (setq natively markdown-ts-fontify-code-blocks-natively)
+           (text-mode)
+           (current-buffer)))))
+    (should-not natively)
+    (should markdown-ts-fontify-code-blocks-natively)))
 
 (ert-deftest agent-shell-vertico-consult-preview-sets-undetected-mode ()
   "A partial preview buffer has no file name, so set its mode explicitly."

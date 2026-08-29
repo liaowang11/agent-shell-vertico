@@ -47,6 +47,7 @@
 ;; default when it loads after this file.
 (defvar markdown-ts-inline-images)
 (defvar markdown-ts-view-mode-pre-init-hook)
+(defvar markdown-ts-fontify-code-blocks-natively)
 
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
@@ -178,7 +179,12 @@ Two cases show up as an unhighlighted preview:
 
 - A file above `consult-preview-partial-size' is read into a buffer with
   no file name, where `set-auto-mode' cannot detect Markdown and leaves
-  Fundamental mode.  Set the mode there directly."
+  Fundamental mode.  Set the mode there directly.
+
+Native code-block fontification is off for the mode call: it runs each
+visible block's own major mode and a whole-block `font-lock-ensure',
+the only step in the preview pipeline costing more than a few
+milliseconds, and a scanned preview does not need it."
   (let* ((mode (agent-shell-vertico-consult--preview-major-mode))
          (auto-mode-alist (cons (cons "\\.md\\'" mode) auto-mode-alist))
          ;; `markdown-ts-view-mode' turns inline images on and amends the
@@ -188,6 +194,7 @@ Two cases show up as an unhighlighted preview:
          ;; itself, so the hook is the only place left to answer it.
          (markdown-ts-view-mode-pre-init-hook
           (list (lambda () (setq-local markdown-ts-inline-images nil))))
+         (markdown-ts-fontify-code-blocks-natively nil)
          (buffer (funcall opener file)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
