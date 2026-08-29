@@ -3826,8 +3826,8 @@ Sending from one session to another is the point of asking."
                      agent-shell-prompt-send-dwim (nil))
                     (agent-shell-vertico-queue-prompt
                      agent-shell-prompt-queue-dwim (nil))
-                    (agent-shell-vertico-inject-prompt
-                     agent-shell-prompt-inject-dwim (nil))
+                    (agent-shell-vertico-steer-prompt
+                     agent-shell-prompt-steer-dwim (nil))
                     (agent-shell-vertico-compose
                      agent-shell-prompt-compose ())))
       (pcase-let ((`(,command ,delegate ,arguments) spec))
@@ -7670,30 +7670,30 @@ each later index has moved by the time its turn comes."
     (agent-shell-vertico-prompt-queue-embark-remove (nth 2 candidates))
     (should (equal agent-shell-test-last-args '(1)))))
 
-(ert-deftest agent-shell-vertico-prompt-queue-inject-uses-resolved-index ()
-  "Injection re-resolves the index the same way removal does."
+(ert-deftest agent-shell-vertico-prompt-queue-steer-uses-resolved-index ()
+  "Steering re-resolves the index the same way removal does."
   (agent-shell-vertico-tests--with-queue '("First prompt" "Second prompt")
     (let ((candidate (nth 1 candidates)))
       (agent-shell-vertico-tests--queue-set-pending shell '("Second prompt"))
-      (agent-shell-vertico-prompt-queue-embark-inject candidate)
+      (agent-shell-vertico-prompt-queue-embark-steer candidate)
       (should (eq agent-shell-test-last-command
-                  'agent-shell-prompt-queue-inject))
+                  'agent-shell-prompt-queue-steer))
       (should (eq agent-shell-test-last-buffer shell))
       (should (equal agent-shell-test-last-args '(0))))))
 
-(ert-deftest agent-shell-vertico-prompt-queue-inject-needs-agent-shell-support ()
-  "Injection arrived after the agent-shell version this package requires."
+(ert-deftest agent-shell-vertico-prompt-queue-steer-needs-agent-shell-support ()
+  "Steering arrived after the agent-shell version this package requires."
   (agent-shell-vertico-tests--with-queue '("First prompt")
-    (cl-letf (((symbol-function 'agent-shell-prompt-queue-inject) nil))
-      (should-error (agent-shell-vertico-prompt-queue-embark-inject
+    (cl-letf (((symbol-function 'agent-shell-prompt-queue-steer) nil))
+      (should-error (agent-shell-vertico-prompt-queue-embark-steer
                      (car candidates))
                     :type 'user-error)
       (should-not agent-shell-test-last-command))))
 
-(ert-deftest agent-shell-vertico-prompt-queue-inject-skips-queue-entry ()
-  "A queue-wide entry has no prompt to inject, and says so quietly."
+(ert-deftest agent-shell-vertico-prompt-queue-steer-skips-queue-entry ()
+  "A queue-wide entry has no prompt to steer, and says so quietly."
   (agent-shell-vertico-tests--with-queue '("First prompt")
-    (agent-shell-vertico-prompt-queue-embark-inject (nth 1 candidates))
+    (agent-shell-vertico-prompt-queue-embark-steer (nth 1 candidates))
     (should-not agent-shell-test-last-command)))
 
 (ert-deftest agent-shell-vertico-prompt-queue-resume-entry-resumes-queue ()
@@ -8274,7 +8274,7 @@ after the test has already finished.  Tests call
                              agent-shell-vertico-sidebar--out-of-turn))))))
 
 (ert-deftest agent-shell-vertico-sidebar-steering-round-trip-is-not-out-of-turn ()
-  "An injected prompt's own request is in flight, so its updates are in turn."
+  "A steered prompt's own request is in flight, so its updates are in turn."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))

@@ -149,10 +149,10 @@ creating path returns `agent-shell-test-start-buffer'."
   (interactive "P")
   (agent-shell-test--record-send 'agent-shell-prompt-queue-dwim arg))
 
-(defun agent-shell-prompt-inject-dwim (&optional arg)
-  "Record a prompt inject action for ARG."
+(defun agent-shell-prompt-steer-dwim (&optional arg)
+  "Record a prompt steer action for ARG."
   (interactive "P")
-  (agent-shell-test--record-send 'agent-shell-prompt-inject-dwim arg))
+  (agent-shell-test--record-send 'agent-shell-prompt-steer-dwim arg))
 
 (defun agent-shell-prompt-compose ()
   "Record a compose action."
@@ -441,10 +441,10 @@ of it."
         agent-shell-test-last-buffer (current-buffer)
         agent-shell-test-last-args (list remove-index)))
 
-(defun agent-shell-prompt-queue-inject (index)
-  "Record an inject action for the pending prompt at INDEX."
+(defun agent-shell-prompt-queue-steer (index)
+  "Record a steer action for the pending prompt at INDEX."
   (interactive (list 0))
-  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-inject
+  (setq agent-shell-test-last-command 'agent-shell-prompt-queue-steer
         agent-shell-test-last-buffer (current-buffer)
         agent-shell-test-last-args (list index)))
 

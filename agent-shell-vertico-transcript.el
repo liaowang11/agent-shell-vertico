@@ -879,7 +879,7 @@ It receives a prompt and a list of transcript records.")
 
 (defconst agent-shell-vertico-transcript--message-heading-regexp
   (concat
-   "^## \\(?:Agent\\|User\\(?: (injected)\\)?\\)"
+   "^## \\(?:Agent\\|User\\(?: (steered)\\)?\\)"
    "\\(?: ("
    agent-shell-vertico-transcript--event-timestamp-regexp
    ")\\)?[ \t]*$")

@@ -308,7 +308,7 @@ prompts, or earlier removals may have moved this one up."
       (agent-shell-prompt-queue-remove
        (agent-shell-vertico-prompt-queue--resolve-index record)))))
 
-(defun agent-shell-vertico-prompt-queue--act-inject (record)
+(defun agent-shell-vertico-prompt-queue--act-steer (record)
   "Deliver RECORD's prompt to the turn already running.
 
 `agent-shell-prompt-queue-steer' takes the prompt out of the queue
@@ -388,9 +388,9 @@ so a long prompt is only readable in a buffer of its own."
   (agent-shell-vertico-prompt-queue--act-remove
    (agent-shell-vertico-prompt-queue--record-from-candidate candidate)))
 
-(defun agent-shell-vertico-prompt-queue-embark-inject (candidate)
-  "Inject pending prompt CANDIDATE into the running turn."
-  (agent-shell-vertico-prompt-queue--act-inject
+(defun agent-shell-vertico-prompt-queue-embark-steer (candidate)
+  "Steer pending prompt CANDIDATE into the running turn."
+  (agent-shell-vertico-prompt-queue--act-steer
    (agent-shell-vertico-prompt-queue--record-from-candidate candidate)))
 
 (defun agent-shell-vertico-prompt-queue-embark-copy (candidate)
@@ -406,8 +406,10 @@ so a long prompt is only readable in a buffer of its own."
 (defvar-keymap agent-shell-vertico-prompt-queue-embark-map
   :doc "Embark actions for `agent-shell' pending prompts."
   "e" #'agent-shell-vertico-prompt-queue-embark-edit
-  ;; `i' is the key agent-shell gives Inject in the queue's own button row.
-  "i" #'agent-shell-vertico-prompt-queue-embark-inject
+  ;; `i' is left over from when agent-shell called this Inject and gave it
+  ;; `i' in the queue's own button row.  That row now offers Steer on `s',
+  ;; but the key stays put rather than moving under people's fingers.
+  "i" #'agent-shell-vertico-prompt-queue-embark-steer
   "x" #'agent-shell-vertico-prompt-queue-embark-remove
   "w" #'agent-shell-vertico-prompt-queue-embark-copy
   "v" #'agent-shell-vertico-prompt-queue-embark-view)
@@ -441,7 +443,7 @@ Call this only after Embark is loaded."
 Lists the session's pending prompts, then `[Resume queue]' and
 `[Remove all]'.  Choosing a prompt edits it; choosing one of the
 queue-wide entries resumes or empties the queue.  With Embark, a prompt
-also takes `e' to edit, `i' to inject into the running turn, `x' to
+also takes `e' to edit, `i' to steer into the running turn, `x' to
 remove, `w' to copy, and `v' to read in full.
 
 Works from the shell buffer, from its viewport, and from any other

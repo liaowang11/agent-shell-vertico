@@ -56,12 +56,13 @@ line could not show. After them come two queue-wide entries:
 Choosing a prompt edits it. With Embark:
 
 - `e` edit the prompt
-- `i` inject it into the running turn, the key agent-shell gives Inject
-  in the queue's own button row. The prompt leaves the queue only once
-  the agent takes it, so an agent that declines, or one without mid-turn
-  injection, leaves it pending. Needs an agent-shell with
-  `agent-shell-prompt-queue-inject`; an older one reports that instead
-  of failing
+- `i` steer it into the running turn. The key is left over from when
+  agent-shell called this Inject and gave it `i` in the queue's own
+  button row; that row now offers Steer on `s`. The prompt leaves the
+  queue only once the agent takes it, so an agent that declines, or one
+  without mid-turn steering, leaves it pending. Needs an agent-shell
+  with `agent-shell-prompt-queue-steer`; an older one reports that
+  instead of failing
 - `x` remove it
 - `w` copy the whole prompt to the kill ring
 - `v` read the whole prompt in a buffer, without ending the completion
@@ -138,7 +139,7 @@ mark.  Submitting a new prompt clears any of them, since the previous turn
 has by then been seen.
 
 An agent can also produce output with no turn in flight: background tasks
-such as subagents keep streaming after a turn ends, and a prompt injected
+such as subagents keep streaming after a turn ends, and a prompt steered in
 too late makes the agent start a turn of its own.  `agent-shell` reports
 such a session ready, because it has nothing in flight to report.  The
 sidebar shows it working while the output arrives, then marks it as
@@ -274,7 +275,7 @@ the `agent-shell-*-start-client` commands start sessions.
 - `M-x agent-shell-vertico-send-clipboard-image`
 - `M-x agent-shell-vertico-send-prompt`
 - `M-x agent-shell-vertico-queue-prompt`
-- `M-x agent-shell-vertico-inject-prompt`
+- `M-x agent-shell-vertico-steer-prompt`
 - `M-x agent-shell-vertico-compose`
 
 Each replaces a pair of `agent-shell` commands, so nine bindings cover what

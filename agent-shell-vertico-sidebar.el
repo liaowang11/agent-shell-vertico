@@ -183,7 +183,7 @@ Values are plists with `:kind' (`blocked', `done', or `error') and
   "Buffer to the out-of-turn burst streaming into it.
 
 An agent can stream output with no turn in flight: background tasks such
-as subagents continue after the turn ended, and a prompt injected too late
+as subagents continue after the turn ended, and a prompt steered in too late
 makes the agent start a turn of its own.  Neither is reported busy and
 neither ends with `turn-complete', so the burst is tracked here instead.
 
@@ -1537,7 +1537,7 @@ agree on when a burst has stopped."
   "Return non-nil when a KIND event in BUFFER is out-of-turn output.
 
 Requires agent output with no request of any kind in flight.  Checking
-the status alone is not enough: an injected prompt's own request is
+the status alone is not enough: a steered prompt's own request is
 tracked while `agent-shell-status' still answers `ready', and the updates
 arriving during that round trip belong to the turn it is joining."
   (and (memq kind agent-shell-vertico-sidebar--out-of-turn-events)

@@ -797,8 +797,8 @@ is started: these commands pick an existing one.")
     "Read a prompt with the context at point and queue it for an `agent-shell'."
   (agent-shell-prompt-queue-dwim nil))
 
-;;;###autoload (autoload 'agent-shell-vertico-inject-prompt "agent-shell-vertico" nil t)
-(agent-shell-vertico--define-shell-command agent-shell-vertico-inject-prompt
+;;;###autoload (autoload 'agent-shell-vertico-steer-prompt "agent-shell-vertico" nil t)
+(agent-shell-vertico--define-shell-command agent-shell-vertico-steer-prompt
     "Read a prompt with the context at point and steer it into a running turn."
   (agent-shell-prompt-steer-dwim nil))
 
