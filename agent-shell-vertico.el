@@ -799,8 +799,8 @@ is started: these commands pick an existing one.")
 
 ;;;###autoload (autoload 'agent-shell-vertico-inject-prompt "agent-shell-vertico" nil t)
 (agent-shell-vertico--define-shell-command agent-shell-vertico-inject-prompt
-    "Read a prompt with the context at point and inject it into a running turn."
-  (agent-shell-prompt-inject-dwim nil))
+    "Read a prompt with the context at point and steer it into a running turn."
+  (agent-shell-prompt-steer-dwim nil))
 
 ;;;###autoload (autoload 'agent-shell-vertico-compose "agent-shell-vertico" nil t)
 (agent-shell-vertico--define-shell-command agent-shell-vertico-compose

@@ -44,8 +44,8 @@
 (declare-function agent-shell--shell-buffer "agent-shell" (&rest arguments))
 (declare-function agent-shell-prompt-queue-edit
                   "agent-shell-prompt-queue" (index))
-(declare-function agent-shell-prompt-queue-inject
-                  "agent-shell-inject" (index))
+(declare-function agent-shell-prompt-queue-steer
+                  "agent-shell-prompt-queue" (index))
 (declare-function agent-shell-prompt-queue-remove
                   "agent-shell-prompt-queue" (&optional remove-index))
 (declare-function agent-shell-prompt-queue-resume
@@ -311,18 +311,18 @@ prompts, or earlier removals may have moved this one up."
 (defun agent-shell-vertico-prompt-queue--act-inject (record)
   "Deliver RECORD's prompt to the turn already running.
 
-`agent-shell-prompt-queue-inject' takes the prompt out of the queue
+`agent-shell-prompt-queue-steer' takes the prompt out of the queue
 itself, and only once the agent has taken it: an agent that declines,
-or one that never advertised mid-turn injection, leaves the prompt
+or one that never advertised mid-turn steering, leaves the prompt
 pending rather than losing it.
 
-Injection is newer than the agent-shell version this package requires,
+Steering is newer than the agent-shell version this package requires,
 so an older one is reported rather than left to signal a void function."
   (when (agent-shell-vertico-prompt-queue--prompt-p record)
-    (unless (fboundp 'agent-shell-prompt-queue-inject)
-      (user-error "This agent-shell cannot inject prompts mid-turn"))
+    (unless (fboundp 'agent-shell-prompt-queue-steer)
+      (user-error "This agent-shell cannot steer prompts mid-turn"))
     (with-current-buffer (agent-shell-vertico-prompt-queue--session record)
-      (agent-shell-prompt-queue-inject
+      (agent-shell-prompt-queue-steer
        (agent-shell-vertico-prompt-queue--resolve-index record)))))
 
 (defun agent-shell-vertico-prompt-queue--act-copy (record)
