@@ -901,7 +901,7 @@ Call this only after Embark is loaded."
 
 (defun agent-shell-vertico-kill-session (buffer)
   "Kill the process and buffer for BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (setq buffer (agent-shell-vertico--ensure-shell-buffer
                 (agent-shell-vertico--session-buffer buffer)))
   (when (yes-or-no-p (format "Kill agent-shell session %s? " (buffer-name buffer)))
@@ -913,7 +913,7 @@ Call this only after Embark is loaded."
 
 (defun agent-shell-vertico-restart-session (buffer)
   "Restart BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (setq buffer (agent-shell-vertico--ensure-shell-buffer
                 (agent-shell-vertico--session-buffer buffer)))
   (with-current-buffer buffer
@@ -921,7 +921,7 @@ Call this only after Embark is loaded."
 
 (defun agent-shell-vertico-open-transcript (buffer)
   "Open BUFFER's transcript in the transcript reader."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (require 'agent-shell-vertico-transcript)
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
@@ -929,28 +929,28 @@ Call this only after Embark is loaded."
 
 (defun agent-shell-vertico-view-traffic (buffer)
   "View traffic for BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-view-traffic)))
 
 (defun agent-shell-vertico-interrupt-session (buffer)
   "Interrupt BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-interrupt)))
 
 (defun agent-shell-vertico-set-session-mode (buffer)
   "Set session mode for BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-set-session-mode)))
 
 (defun agent-shell-vertico-set-session-model (buffer)
   "Set session model for BUFFER."
-  (interactive (list (read-buffer "Agent shell: ")))
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-set-session-model)))
