@@ -190,6 +190,13 @@ neither ends with `turn-complete', so the burst is tracked here instead.
 Values are plists with `:timer', the timer that ends the burst after a
 quiet period, and `:time', when the burst's latest update arrived.")
 
+(defvar agent-shell-vertico-sidebar--current-session nil
+  "Live session buffer the reader is currently in, or nil.
+
+Tracks the session, or its viewport, most recently shown in a selected
+and focused window, so the sidebar can still mark that one row once the
+reader has moved on to the sidebar itself or to an unrelated buffer.")
+
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
 
@@ -240,6 +247,18 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
   '((t :inherit shadow))
   "Face for secondary session details."
   :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-current-session
+  '((t :inherit outline-1 :height reset))
+  "Face for the fringe marker on the session the reader is currently in."
+  :group 'agent-shell-vertico-sidebar)
+
+;; A short bar, `gptel-highlight-fringe' style: `center' positions it on
+;; the row without needing the row's exact pixel height, so one definition
+;; works across fonts and text scales.
+(define-fringe-bitmap 'agent-shell-vertico-sidebar-current-session-fringe
+  (make-vector 28 #b01100000)
+  nil nil 'center)
 
 (defun agent-shell-vertico-sidebar--project-root (buffer)
   "Return the normalized project root for BUFFER."
@@ -1133,6 +1152,18 @@ the window stable without any screen-row arithmetic."
                                      'help-echo help-echo)))
         (setq position next)))))
 
+(defun agent-shell-vertico-sidebar--current-session-marker ()
+  "Return a zero-width fringe marker for the current session's row.
+
+The marker is a `display' spec on one space, so it costs no columns in
+the text area: Emacs draws the fringe bitmap in its place instead of the
+space, the same idiom `gptel-highlight-mode' uses for its response
+markers."
+  (propertize " " 'display
+              '(left-fringe
+                agent-shell-vertico-sidebar-current-session-fringe
+                agent-shell-vertico-sidebar-current-session)))
+
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
   "Insert session LINES with KIND and NODE text properties.
 
@@ -1143,17 +1174,23 @@ keep their status icon at column zero.
 Indentation is a `line-prefix' display property rather than inserted
 spaces, as `agent-shell' does for its own fragments: the columns are
 visual only, so copied rows carry no leading whitespace and point at the
-beginning of a line is already on the row's first real character."
-  (let ((start (point))
-        (first-prefix (and nested "  "))
-        (continuation-prefix (if nested "    " "  "))
-        (title-end nil)
-        (first t))
+beginning of a line is already on the row's first real character.  The
+row for the current session gets the same treatment for its fringe
+marker, prepended to whichever indentation prefix already applies, so it
+adds no columns of its own either."
+  (let* ((marker (and (eq kind 'session)
+                      (eq node agent-shell-vertico-sidebar--current-session)
+                      (agent-shell-vertico-sidebar--current-session-marker)))
+         (start (point))
+         (first-prefix (concat marker (and nested "  ")))
+         (continuation-prefix (concat marker (if nested "    " "  ")))
+         (title-end nil)
+         (first t))
     (dolist (line lines)
       (let ((line-start (line-beginning-position))
             (prefix (if first first-prefix continuation-prefix)))
         (insert (car line))
-        (when prefix
+        (unless (string-empty-p prefix)
           (add-text-properties line-start (point)
                                (list 'line-prefix prefix
                                      'wrap-prefix prefix)))
@@ -1665,6 +1702,8 @@ sees one mark rather than a flicker."
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
+    (when (eq (current-buffer) agent-shell-vertico-sidebar--current-session)
+      (setq agent-shell-vertico-sidebar--current-session nil))
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defun agent-shell-vertico-sidebar--watch-buffer (&optional buffer schedule)
@@ -1788,7 +1827,7 @@ shows."
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defun agent-shell-vertico-sidebar--mark-selected-seen (frame-or-window)
-  "Mark the session shown in FRAME-OR-WINDOW as seen.
+  "Mark the session shown in FRAME-OR-WINDOW as seen and current.
 
 A window stands for itself, a frame for its selected window, and nil for
 the current buffer.  A viewport counts as the session it shows."
@@ -1801,7 +1840,10 @@ the current buffer.  A viewport counts as the session it shows."
     (when-let ((session (and (buffer-live-p buffer)
                              (agent-shell-vertico-sidebar--session-for-buffer
                               buffer))))
-      (agent-shell-vertico-sidebar--mark-seen session))))
+      (agent-shell-vertico-sidebar--mark-seen session)
+      (unless (eq session agent-shell-vertico-sidebar--current-session)
+        (setq agent-shell-vertico-sidebar--current-session session)
+        (agent-shell-vertico-sidebar--schedule-refresh)))))
 
 (defun agent-shell-vertico-sidebar--window-selection-change
     (&optional frame-or-window)

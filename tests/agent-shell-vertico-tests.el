@@ -2579,6 +2579,94 @@ soon as a second frame is involved."
         (should-not (gethash alpha
                             agent-shell-vertico-sidebar--attention))))))
 
+(ert-deftest agent-shell-vertico-sidebar-selecting-session-becomes-current ()
+  "Selecting a session's window records it as the current session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--current-session nil))
+      (save-window-excursion
+        (set-window-buffer (selected-window) alpha)
+        (agent-shell-vertico-sidebar--window-selection-change
+         (selected-frame))
+        (should (eq agent-shell-vertico-sidebar--current-session alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-current-session-survives-other-buffer ()
+  "Selecting an unrelated buffer leaves the last current session in place.
+
+The reader is still \"in\" the session they left, whether they moved to
+the sidebar itself or to a file they are editing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--current-session alpha))
+      (with-temp-buffer
+        (let ((other (current-buffer)))
+          (save-window-excursion
+            (set-window-buffer (selected-window) other)
+            (agent-shell-vertico-sidebar--window-selection-change
+             (selected-frame))
+            (should (eq agent-shell-vertico-sidebar--current-session
+                       alpha))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-current-session-clears-on-kill ()
+  "Unwatching the current session's buffer clears the tracked session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-vertico-sidebar--current-session alpha))
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar--unwatch-buffer))
+      (should-not agent-shell-vertico-sidebar--current-session))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-marks-current-session-row ()
+  "The current session's row carries the fringe marker; others do not."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--current-session alpha))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (should (equal (get-text-property
+                        0 'display
+                        (get-text-property (line-beginning-position)
+                                           'line-prefix))
+                       '(left-fringe
+                         agent-shell-vertico-sidebar-current-session-fringe
+                         agent-shell-vertico-sidebar-current-session)))
+        (goto-char (point-min))
+        (search-forward "Review beta")
+        (should-not (get-text-property (line-beginning-position)
+                                       'line-prefix))))))
+
+(ert-deftest
+    agent-shell-vertico-sidebar-render-marks-current-session-in-project-group
+    ()
+  "The fringe marker applies inside an expanded project group too."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar--current-session alpha))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (should (get-text-property (line-beginning-position)
+                                   'line-prefix))))))
+
 (ert-deftest agent-shell-vertico-sidebar-focus-change-ignores-terminal-frame ()
   "A GUI focus callback must not read a session selected in a terminal frame.
 
