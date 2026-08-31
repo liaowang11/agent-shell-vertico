@@ -119,6 +119,14 @@ labels are returned unchanged, so upstream's own dispatch on `:new-shell`,
 transcript module layers its own: the plain reader lives in
 `agent-shell-vertico-resume-read-choice-function`, and loading the Consult
 module replaces it with the previewing one.
+Embark reaches the picker through the
+category the table declares, `agent-shell-session-choice`, registered by
+`agent-shell-vertico-resume-setup-embark`. It reuses
+`agent-shell-vertico-transcript-embark-map` rather than defining its own,
+because `--candidate` stores the joined transcript under the same text
+property the transcript actions read a candidate with. No default action
+is registered, so acting without a key keeps the picker's own default of
+selecting the session.
 
 **Project-scoped commands.** `agent-shell-vertico--target-shell` implements one
 rule: a prefix argument reads across `agent-shell-buffers`, otherwise the

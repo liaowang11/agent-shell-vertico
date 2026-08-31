@@ -8229,6 +8229,56 @@ and `records' bound to that project's parsed records."
                    '("b" "a")))
     (should (equal (all-completions "" table) '("b" "a")))))
 
+(ert-deftest agent-shell-vertico-resume-setup-embark-registers-choices ()
+  "The picker's choices reach the transcript actions as they stand."
+  (let ((embark-keymap-alist nil))
+    (agent-shell-vertico-resume-setup-embark)
+    (should (equal (assq 'agent-shell-session-choice embark-keymap-alist)
+                   '(agent-shell-session-choice
+                     agent-shell-vertico-transcript-embark-map)))))
+
+(ert-deftest agent-shell-vertico-resume-setup-embark-keeps-picker-default ()
+  "Acting with no key still selects the session, so no default is overridden."
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil))
+    (agent-shell-vertico-resume-setup-embark)
+    (should-not (assq 'agent-shell-session-choice
+                      embark-default-action-overrides))))
+
+(ert-deftest agent-shell-vertico-resume-embark-action-reads-choice-record ()
+  "A picker choice carries what the transcript actions read off a candidate."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((index (agent-shell-vertico-resume--record-index records))
+           (session (agent-shell-vertico-tests--acp-session "abc"))
+           (candidate
+            (agent-shell-vertico-resume--candidate
+             "project  Session title  Today, 10:00"
+             session
+             (gethash "abc" index)))
+           (kill-ring nil))
+      (agent-shell-vertico-transcript-embark-copy-session-id candidate)
+      (should (equal (current-kill 0) "abc")))))
+
+(ert-deftest agent-shell-vertico-resume-embark-action-without-transcript ()
+  "A choice that starts a new shell has no record, so the action refuses."
+  (should-error
+   (agent-shell-vertico-transcript-embark-copy-session-id "New shell")
+   :type 'user-error))
+
+(ert-deftest agent-shell-vertico-setup-embark-integrations-covers-choices ()
+  "Unified setup registers the picker's category with the others."
+  (let ((embark-keymap-alist nil)
+        (embark-default-action-overrides nil)
+        (embark-target-finders nil)
+        (embark-quit-after-action t))
+    (agent-shell-vertico--setup-embark-integrations)
+    (dolist (category '(agent-shell-session
+                        agent-shell-transcript
+                        agent-shell-prompt-queue
+                        agent-shell-session-choice))
+      (should (assq category embark-keymap-alist)))))
+
 (ert-deftest agent-shell-vertico-resume-consult-registers-reader ()
   "Loading the Consult module makes the picker read with preview."
   (should (equal agent-shell-vertico-resume-read-choice-function

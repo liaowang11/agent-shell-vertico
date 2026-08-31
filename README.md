@@ -326,6 +326,10 @@ lists and still resumes; its columns are empty.
 With `agent-shell-vertico-consult` loaded, moving through the picker previews
 the joined transcript, in the same way transcript search previews its matches.
 
+With Embark enabled, `embark-act` on a listed session offers the transcript
+actions listed under Embark below, because the choice carries the transcript it
+was joined to.
+
 The picker offers no hook for this, so the setup advises
 `agent-shell--prompt-select-session`. It replaces only how the choice is read:
 which sessions are offered, what a choice means, and any
@@ -638,6 +642,13 @@ Transcript candidates have a separate Embark map:
 - `I` set or repair the session ID
 - `w` copy the recorded working directory
 - `f` copy the transcript file name
+
+The session picker's choices take that same map. Each choice carries the
+transcript it was joined to, so `embark-act` on a listed session opens,
+resumes, or copies from that transcript. `RET` still selects the session
+and lets `agent-shell` resume it. A choice with no transcript on this
+machine, such as the one that starts a new shell, reports that and does
+nothing.
 
 `rg` is required only for full-text search. Consult is required by
 `agent-shell-vertico-consult`; browsing, resuming, reader mode, statistics, and

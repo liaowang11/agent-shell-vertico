@@ -36,6 +36,9 @@
 
 (declare-function agent-shell-cwd "agent-shell" ())
 
+;; No value: Embark installs its own default when it loads.
+(defvar embark-keymap-alist)
+
 ;; No value: `agent-shell' installs its own default when it loads, and a
 ;; `defvar' with one here would pre-empt that.
 (defvar agent-shell-session-choices-function)
@@ -386,6 +389,25 @@ The picker itself offers no way in, so this advises it."
   (interactive)
   (advice-add 'agent-shell--prompt-select-session :around
               #'agent-shell-vertico-resume--select-session))
+
+;;;###autoload
+(defun agent-shell-vertico-resume-setup-embark ()
+  "Register the session picker's choices and actions with Embark.
+
+Each choice carries the transcript it was joined to under the property
+the transcript actions read a candidate with, so the picker takes the
+transcript action map as it stands.  A choice with no transcript behind
+it, such as the one that starts a new shell, fails the action with a
+message and changes nothing.
+
+No default action is registered.  Acting without choosing one keeps the
+picker's own default, which is to select the session and let
+`agent-shell' resume it."
+  (interactive)
+  (add-to-list
+   'embark-keymap-alist
+   '(agent-shell-session-choice
+     agent-shell-vertico-transcript-embark-map)))
 
 (provide 'agent-shell-vertico-resume)
 

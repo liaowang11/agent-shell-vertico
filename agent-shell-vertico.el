@@ -54,6 +54,8 @@
                   "agent-shell-vertico-prompt-queue" ())
 (declare-function agent-shell-vertico-resume-setup
                   "agent-shell-vertico-resume" ())
+(declare-function agent-shell-vertico-resume-setup-embark
+                  "agent-shell-vertico-resume" ())
 (declare-function agent-shell-vertico-transcript-open-session
                   "agent-shell-vertico-transcript" (&optional other-window))
 (declare-function agent-shell-vertico-transcript-setup-embark
@@ -1286,7 +1288,8 @@ effect for buffers created afterwards."
   "Register every Agent Shell Vertico category with Embark."
   (agent-shell-vertico-setup-embark)
   (agent-shell-vertico-transcript-setup-embark)
-  (agent-shell-vertico-prompt-queue-setup-embark))
+  (agent-shell-vertico-prompt-queue-setup-embark)
+  (agent-shell-vertico-resume-setup-embark))
 
 ;;;###autoload
 (defun agent-shell-vertico-setup ()
