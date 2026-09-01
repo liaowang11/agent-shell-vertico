@@ -2457,6 +2457,50 @@ while normal and motion states get the same direct mnemonic commands."
         (agent-shell-vertico-sidebar-mode)))
     window))
 
+(defun agent-shell-vertico-sidebar--attention-sessions ()
+  "Return live sessions needing attention, the most pressing first.
+
+The order is the sidebar's own `priority' order, whose attention tier
+runs oldest first, so the head of this list is the session that has
+been waiting longest."
+  (seq-filter #'agent-shell-vertico-sidebar--attention
+              (agent-shell-vertico-sidebar--sort-buffers
+               (seq-filter #'buffer-live-p (agent-shell-buffers))
+               'priority)))
+
+(defun agent-shell-vertico-sidebar--no-attention-message ()
+  "Return what to report when no session needs attention.
+
+Counting the sessions still working separates a quiet moment in a busy
+run from nothing running at all."
+  (let ((working (aref (agent-shell-vertico-sidebar--session-statistics) 1)))
+    (if (> working 0)
+        (format "No session needs attention, %d working" working)
+      "No session needs attention")))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-jump (&optional read)
+  "Jump to the session most in need of attention.
+
+A session needs attention when it finished a turn nobody has read, asked
+for a permission decision, or failed.  The one waiting longest wins,
+which is the session the sidebar lists first under `priority' sorting.
+
+With prefix argument READ, choose the session instead.  Reading covers
+every live session, not only the ones needing attention."
+  (interactive "P")
+  (if read
+      (agent-shell-vertico--display-session
+       (agent-shell-vertico--read-session "Agent shell: " 'all))
+    (if-let* ((buffer (car (agent-shell-vertico-sidebar--attention-sessions))))
+        (progn
+          ;; Visiting reads whatever the session finished.  A permission
+          ;; decision is still owed afterwards, so `--mark-seen' leaves
+          ;; that mark alone and the session keeps its place.
+          (agent-shell-vertico-sidebar--mark-seen buffer)
+          (agent-shell-vertico--display-session (buffer-name buffer)))
+      (message "%s" (agent-shell-vertico-sidebar--no-attention-message)))))
+
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-toggle ()
   "Show or close the compact agent-shell session sidebar.

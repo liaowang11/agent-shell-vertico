@@ -8532,6 +8532,117 @@ after the test has already finished.  Tests call
                         (list quiet streaming) 'priority)
                        (list streaming quiet)))))))
 
+;;; Attention jump
+
+(ert-deftest agent-shell-vertico-sidebar-jump-visits-oldest-attention-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready))))
+      ;; The longest-waiting session is the one to answer first.
+      (puthash beta (list :kind 'done :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (puthash alpha (list :kind 'done :time 200.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-jump)
+      (should (eq agent-shell-test-displayed-buffer beta)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-ranks-attention-above-working ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'busy)
+                                           (cons beta 'ready))))
+      (puthash beta (list :kind 'done :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-jump)
+      (should (eq agent-shell-test-displayed-buffer beta)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-marks-visited-session-seen ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (puthash alpha (list :kind 'done :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-jump)
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (should-not (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-keeps-waiting-mark ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      ;; A permission decision is still owed after the visit, so the mark
+      ;; stays and the session keeps its place at the head of the list.
+      (puthash alpha (list :kind 'blocked :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-jump)
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (should (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-reports-working-when-nothing-waits ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy)))
+          messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (push (apply #'format format arguments) messages))))
+        (agent-shell-vertico-sidebar-jump))
+      (should-not agent-shell-test-displayed-buffer)
+      (should (equal messages
+                     (list "No session needs attention, 1 working"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-reports-nothing-to-answer ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (push (apply #'format format arguments) messages))))
+        (agent-shell-vertico-sidebar-jump))
+      (should-not agent-shell-test-displayed-buffer)
+      (should (equal messages (list "No session needs attention"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-prefix-reads-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let* ((agent-shell-test-buffers (list alpha beta))
+           (agent-shell-test-statuses (list (cons alpha 'ready)
+                                            (cons beta 'ready)))
+           (agent-shell-vertico-read-session-function
+            (lambda (_prompt table &optional _other-window)
+              ;; Reading covers every live session, not only the ones
+              ;; needing attention.
+              (should (equal (sort (all-completions "" table) #'string<)
+                             (sort (list (buffer-name alpha)
+                                         (buffer-name beta))
+                                   #'string<)))
+              (buffer-name beta))))
+      (puthash alpha (list :kind 'done :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-jump t)
+      (should (eq agent-shell-test-displayed-buffer beta)))))
+
 ;;; Narrowing and grouping
 
 (ert-deftest agent-shell-vertico-narrow-agent-key-matches-name-prefix ()
