@@ -15,7 +15,9 @@ Four modules form a small dependency graph:
 - `agent-shell-vertico.el` — session completion table, annotations, Embark
   actions, and the conversation imenu index.
 - `agent-shell-vertico-sidebar.el` — a persistent side window listing live
-  sessions, driven by `agent-shell` event subscriptions; requires the core.
+  sessions, driven by `agent-shell` event subscriptions; also owns which
+  sessions need attention, the command that jumps to them, and the
+  notification hook. Requires the core.
 - `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
   Markdown transcripts `agent-shell` writes; requires the core independently
   of the sidebar.
@@ -166,6 +168,28 @@ too), reads that buffer's `agent-shell--transcript-file`, and opens it through
 `--record-from-file` and `--open-record`. Upstream's own commands are left
 alone: this is a command to bind, not advice, so nothing changes for anyone
 who has not bound it.
+
+**Which session needs attention.** The sidebar's `--attention` table is the
+one record of what a session still owes the reader: `blocked` (a permission
+decision), `error`, or `done` (a finished turn nobody has read). Marks are
+set from the `agent-shell` event subscription in `--handle-event`, plus
+`--out-of-turn-settled` for output that arrives with no turn in flight. A
+mark is cleared when the reader actually looks at the session, which
+`--session-focused-p` decides by comparing against the selected window's
+buffer on a focused frame. Being merely current is not enough: any code
+that does `with-current-buffer` on a session would otherwise mark it read.
+The `priority` sort orders the table's sessions first and oldest-first
+within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
+`--sort-buffers ... 'priority'` and nothing else has to rank them again.
+
+**Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
+wherever an attention mark is set, never for a focused session. It receives
+`:buffer`, `:status` (the same word the sidebar shows) and `:last-message`.
+The message is accumulated in `--record-message-chunk` from the events the
+sidebar already subscribes to, because `agent-shell` emits one event per
+streamed chunk and keeps none of them; any other event ends the message.
+Text is passed on unshortened, so trimming and markup stripping belong to
+the caller's channel, not here.
 
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and
