@@ -4118,6 +4118,46 @@ which buffer it runs in is the whole of its behaviour."
       (agent-shell-vertico--display-session (buffer-name alpha))
       (should (eq agent-shell-test-displayed-buffer vp)))))
 
+(ert-deftest agent-shell-vertico-display-session-prepares-the-displayed-buffer ()
+  "`--display-session' offers the buffer it is about to show first.
+The viewport is what gets displayed when it is preferred, so that is the
+buffer a caller arranging the window has to prepare for."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a")))))
+       (vp "Alpha Agent @ alpha [viewport]" "/tmp/alpha/" nil))
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-viewport-buffer vp)
+           prepared
+           (agent-shell-vertico-before-display-function
+            (lambda (buffer)
+              (should-not agent-shell-test-displayed-buffer)
+              (setq prepared buffer))))
+      (agent-shell-vertico--display-session (buffer-name alpha))
+      (should (eq prepared vp))
+      (should (eq agent-shell-test-displayed-buffer vp)))))
+
+(ert-deftest agent-shell-vertico-display-session-prepares-the-shell-buffer ()
+  "Without a viewport preference the shell buffer is the one shown."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let* ((agent-shell-prefer-viewport-interaction nil)
+           prepared
+           (agent-shell-vertico-before-display-function
+            (lambda (buffer) (setq prepared buffer))))
+      (agent-shell-vertico--display-session (buffer-name alpha))
+      (should (eq prepared alpha)))))
+
+(ert-deftest agent-shell-vertico-display-session-other-window-prepares-buffer ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/" '((:session . ((:id . "a"))))))
+    (let* ((agent-shell-prefer-viewport-interaction nil)
+           prepared
+           (agent-shell-vertico-before-display-function
+            (lambda (buffer) (setq prepared buffer))))
+      (cl-letf (((symbol-function 'switch-to-buffer-other-window) #'ignore))
+        (agent-shell-vertico--display-session-other-window (buffer-name alpha)))
+      (should (eq prepared alpha)))))
+
 (ert-deftest agent-shell-vertico-live-session-buffer-finds-active-session ()
   "A live buffer is found by its active session id."
   (agent-shell-vertico-tests--with-session-buffers
@@ -8476,7 +8516,8 @@ after the test has already finished.  Tests call
   "A turn nobody is watching reports itself, carrying the agent's reply."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha"))))))
+              '((:agent-config . ((:mode-line-name . "Codex")))
+                (:session . ((:id . "a") (:title . "Alpha"))))))
     (let* ((agent-shell-test-buffers (list alpha))
            (agent-shell-test-statuses (list (cons alpha 'busy)))
            notifications
@@ -8493,6 +8534,7 @@ after the test has already finished.  Tests call
          alpha '((:event . turn-complete))))
       (should (equal notifications
                      (list (list :buffer alpha
+                                 :agent "Codex"
                                  :status "Done"
                                  :last-message "All done.")))))))
 
@@ -8527,9 +8569,10 @@ after the test has already finished.  Tests call
       (agent-shell-vertico-tests--with-sidebar
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . permission-request))))
-      ;; No agent message has arrived in this session yet.
+      ;; No agent config and no agent message in this session yet.
       (should (equal notifications
                      (list (list :buffer alpha
+                                 :agent nil
                                  :status "Waiting"
                                  :last-message nil)))))))
 
@@ -8564,6 +8607,7 @@ after the test has already finished.  Tests call
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (equal notifications
                        (list (list :buffer alpha
+                                   :agent nil
                                    :status "Done"
                                    :last-message "Background note."))))))))
 

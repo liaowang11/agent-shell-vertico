@@ -168,9 +168,9 @@ before the switch is reopened right after it."
   "Function called when a session starts needing attention.
 
 It is called with the keyword arguments `:buffer', the session buffer;
-`:status', the wording the sidebar shows for it, one of \"Waiting\",
-\"Done\" or \"Error\"; and `:last-message', the agent's newest message
-as it arrived, or nil.
+`:agent', the agent's display name; `:status', the wording the sidebar
+shows for it, one of \"Waiting\", \"Done\" or \"Error\"; and
+`:last-message', the agent's newest message as it arrived, or nil.
 
 Nothing is reported for a session the reader is already looking at, and
 the message text is passed unshortened, since how to fit it belongs to
@@ -1697,6 +1697,7 @@ the one the sidebar reads back from it."
              (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
     (funcall agent-shell-vertico-sidebar-notify-function
              :buffer buffer
+             :agent (agent-shell-vertico--agent-name buffer)
              :status (agent-shell-vertico-sidebar--status-name buffer)
              :last-message (agent-shell-vertico-sidebar--last-message buffer))))
 

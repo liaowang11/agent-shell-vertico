@@ -129,6 +129,22 @@ them in.  That is why nothing is grouped by default."
                  (const status))
   :group 'agent-shell-vertico)
 
+(defcustom agent-shell-vertico-before-display-function nil
+  "Function called with a session buffer just before it is displayed.
+
+It receives the buffer that is about to be shown, which is the session's
+viewport when `agent-shell-prefer-viewport-interaction' is non-nil and
+the shell buffer otherwise.  Use it to prepare wherever the session will
+appear: a window layout package that keeps one layout per project, for
+instance, has to switch to the session's own layout first, or the
+session is displayed in the wrong one.
+
+Every command that opens a session goes through the same two functions,
+so one setting covers the switch commands, the Embark actions and the
+sidebar alike."
+  :type '(choice (const :tag "Display without preparation" nil) function)
+  :group 'agent-shell-vertico)
+
 (defvar agent-shell-vertico-history nil
   "Minibuffer history for `agent-shell-vertico' commands.")
 
@@ -532,22 +548,29 @@ BUFFER unchanged."
                   (string= buffer-name-prefix (map-elt config :buffer-name)))
                 (agent-shell--resolved-agent-configs)))))
 
+(defun agent-shell-vertico--before-display (buffer)
+  "Let `agent-shell-vertico-before-display-function' prepare BUFFER."
+  (when agent-shell-vertico-before-display-function
+    (funcall agent-shell-vertico-before-display-function buffer)))
+
 (defun agent-shell-vertico--display-session (buffer-name)
   "Display agent shell session for BUFFER-NAME.
 Uses `agent-shell--display-buffer', resolving viewport when
 `agent-shell-prefer-viewport-interaction' is non-nil."
-  (let ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
-                       (agent-shell-vertico--session-buffer buffer-name))))
-    (agent-shell--display-buffer
-     (agent-shell-vertico--maybe-resolve-viewport shell-buffer))))
+  (let* ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer-name)))
+         (target (agent-shell-vertico--maybe-resolve-viewport shell-buffer)))
+    (agent-shell-vertico--before-display target)
+    (agent-shell--display-buffer target)))
 
 (defun agent-shell-vertico--display-session-other-window (buffer-name)
   "Display agent shell session for BUFFER-NAME in another window.
 Respects `agent-shell-prefer-viewport-interaction'."
-  (let ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
-                       (agent-shell-vertico--session-buffer buffer-name))))
-    (switch-to-buffer-other-window
-     (agent-shell-vertico--maybe-resolve-viewport shell-buffer))))
+  (let* ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer-name)))
+         (target (agent-shell-vertico--maybe-resolve-viewport shell-buffer)))
+    (agent-shell-vertico--before-display target)
+    (switch-to-buffer-other-window target)))
 
 (defun agent-shell-vertico--live-session-buffer (session-id)
   "Return the live `agent-shell' buffer for SESSION-ID, or nil.

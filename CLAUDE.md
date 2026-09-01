@@ -169,6 +169,17 @@ too), reads that buffer's `agent-shell--transcript-file`, and opens it through
 alone: this is a command to bind, not advice, so nothing changes for anyone
 who has not bound it.
 
+**Preparing where a session appears.** Every command that opens a session
+goes through `--display-session` or `--display-session-other-window`, so
+`agent-shell-vertico-before-display-function` is called there, once, with
+the buffer actually about to be shown: the viewport when
+`agent-shell-prefer-viewport-interaction' is set, the shell buffer
+otherwise. That is the seam for a window-layout package that keeps one
+layout per project and has to switch layouts before the session is
+displayed. One setting covers the switch commands, the Embark actions and
+the sidebar, which is why it is a variable here rather than advice in a
+user's configuration.
+
 **Which session needs attention.** The sidebar's `--attention` table is the
 one record of what a session still owes the reader: `blocked` (a permission
 decision), `error`, or `done` (a finished turn nobody has read). Marks are
@@ -184,7 +195,8 @@ within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
-`:buffer`, `:status` (the same word the sidebar shows) and `:last-message`.
+`:buffer`, `:agent` (the agent's display name), `:status` (the same word
+the sidebar shows) and `:last-message`.
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
 streamed chunk and keeps none of them; any other event ends the message.
