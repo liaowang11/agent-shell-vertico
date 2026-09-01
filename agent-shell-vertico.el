@@ -847,9 +847,17 @@ ALL is passed to `agent-shell-vertico--target-shell', which signals
 before BODY runs when no shell is live anywhere.  BODY is an
 `agent-shell' command, which resolves the shell it acts on through
 `agent-shell--shell-buffer'; pinning that is what carries the answer in,
-without BODY having to accept one."
+without BODY having to accept one.
+
+BODY displays the session it sends to, so the buffer it will show is
+offered to `agent-shell-vertico-before-display-function' first, as
+`agent-shell-vertico--display-session' does.  Otherwise a session picked
+from elsewhere is shown wherever the caller stood rather than where the
+session lives."
   (declare (indent 1) (debug t))
   `(let ((target (agent-shell-vertico--target-shell ,all)))
+     (agent-shell-vertico--before-display
+      (agent-shell-vertico--maybe-resolve-viewport target))
      (cl-letf (((symbol-function 'agent-shell--shell-buffer)
                 (lambda (&rest _) target)))
        ,@body)))

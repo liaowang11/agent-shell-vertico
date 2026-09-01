@@ -3892,6 +3892,74 @@ Sending from one session to another is the point of asking."
                     :type 'user-error)
       (should-not ran))))
 
+(ert-deftest agent-shell-vertico-with-target-shell-prepares-the-viewport ()
+  "The target's viewport is prepared before the body sends anything to it.
+The body displays the session itself, so the preparation has to happen
+first or the session appears wherever the caller stood."
+  (agent-shell-vertico-tests--with-project-shells
+    (agent-shell-vertico-tests--with-session-buffers
+        ((viewport "Alpha Agent @ two [viewport]" "/work/alpha/" nil))
+      (setq agent-shell-test-project-buffers (list alpha-two))
+      (let* ((agent-shell-prefer-viewport-interaction t)
+             (agent-shell-test-viewport-buffer viewport)
+             prepared
+             ran
+             (agent-shell-vertico-before-display-function
+              (lambda (buffer)
+                (should-not ran)
+                (setq prepared buffer))))
+        (agent-shell-vertico--with-target-shell nil
+          (setq ran t))
+        (should (eq prepared viewport))
+        (should ran)))))
+
+(ert-deftest agent-shell-vertico-with-target-shell-prepares-the-shell-buffer ()
+  "Without a viewport preference the shell buffer is the one prepared."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers (list alpha-two))
+    (let* ((agent-shell-prefer-viewport-interaction nil)
+           prepared
+           (agent-shell-vertico-before-display-function
+            (lambda (buffer) (setq prepared buffer))))
+      (agent-shell-vertico--with-target-shell nil
+        nil)
+      (should (eq prepared alpha-two)))))
+
+(ert-deftest agent-shell-vertico-commands-prepare-the-target-before-sending ()
+  "Every send command prepares the session it is about to display."
+  (agent-shell-vertico-tests--with-project-shells
+    (agent-shell-vertico-tests--with-session-buffers
+        ((viewport "Alpha Agent @ two [viewport]" "/work/alpha/" nil))
+      (setq agent-shell-test-project-buffers (list alpha-two))
+      (dolist (command '(agent-shell-vertico-send-prompt
+                         agent-shell-vertico-queue-prompt
+                         agent-shell-vertico-steer-prompt
+                         agent-shell-vertico-send-region
+                         agent-shell-vertico-compose))
+        (let* ((agent-shell-prefer-viewport-interaction t)
+               (agent-shell-test-viewport-buffer viewport)
+               prepared
+               (agent-shell-vertico-before-display-function
+                (lambda (buffer)
+                  (should-not agent-shell-test-last-command)
+                  (setq prepared buffer))))
+          (setq agent-shell-test-last-command nil)
+          (call-interactively command)
+          (should (equal (list command prepared)
+                         (list command viewport))))))))
+
+(ert-deftest agent-shell-vertico-with-target-shell-prepares-nothing-without-a-shell ()
+  "No live shell signals before anything is prepared or displayed."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-buffers nil
+          agent-shell-test-project-buffers nil)
+    (let* ((prepared nil)
+           (agent-shell-vertico-before-display-function
+            (lambda (buffer) (setq prepared buffer))))
+      (should-error (agent-shell-vertico--with-target-shell nil nil)
+                    :type 'user-error)
+      (should-not prepared))))
+
 (ert-deftest agent-shell-vertico-commands-send-to-the-resolved-shell ()
   "Each command delegates to agent-shell with the resolved shell in place."
   (agent-shell-vertico-tests--with-project-shells

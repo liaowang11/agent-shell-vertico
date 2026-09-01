@@ -289,7 +289,10 @@ transfer behavior applied to the shell you chose.
 
 Every command resolves the shell, then runs the `agent-shell` command it stands
 for with resolution pinned to that shell, so what is sent, how a busy shell is
-handled, and whether a viewport composes it all stay `agent-shell`'s.
+handled, and whether a viewport composes it all stay `agent-shell`'s. Sending
+displays the session it went to, so the buffer about to be shown is offered to
+`agent-shell-vertico-before-display-function` first, exactly as the switch
+commands do.
 
 ## Shell buffer prompts
 
