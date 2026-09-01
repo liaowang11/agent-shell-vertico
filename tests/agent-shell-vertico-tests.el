@@ -181,6 +181,8 @@ Each element in BINDINGS is of the form:
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--out-of-turn)
                      (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--messages)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
                     ((symbol-value
@@ -8531,6 +8533,135 @@ after the test has already finished.  Tests call
         (should (equal (agent-shell-vertico-sidebar--sort-buffers
                         (list quiet streaming) 'priority)
                        (list streaming quiet)))))))
+
+;;; Attention notifications
+
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-finished-turn ()
+  "A turn nobody is watching reports itself, carrying the agent's reply."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'busy)))
+           notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "All ")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "done.")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . turn-complete))))
+      (should (equal notifications
+                     (list (list :buffer alpha
+                                 :status "Done"
+                                 :last-message "All done.")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-does-not-notify-a-watched-session ()
+  "Output on screen has already been seen, so it is not announced."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'busy)))
+           notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (_buffer) t)))
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete)))))
+      (should-not notifications))))
+
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-permission-request ()
+  "A session that cannot continue without an answer says so."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'blocked)))
+           notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-request))))
+      ;; No agent message has arrived in this session yet.
+      (should (equal notifications
+                     (list (list :buffer alpha
+                                 :status "Waiting"
+                                 :last-message nil)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-failed-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'ready)))
+           notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . error))))
+      (should (equal (plist-get (car notifications) :status) "Error")))))
+
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-settled-burst ()
+  "Output that arrived outside a turn is announced once it stops."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* ((agent-shell-test-buffers (list alpha))
+             (agent-shell-test-statuses (list (cons alpha 'ready)))
+             notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Background note.")))))
+        (should-not notifications)
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (equal notifications
+                       (list (list :buffer alpha
+                                   :status "Done"
+                                   :last-message "Background note."))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-message-ends-at-the-next-event ()
+  "Chunks separated by another event belong to different messages."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "First.")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . tool-call-update)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Second.")))))
+        (should (equal (agent-shell-vertico-sidebar--last-message alpha)
+                       "Second."))))))
+
+(ert-deftest agent-shell-vertico-sidebar-clean-up-forgets-the-last-message ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Gone.")))))
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . clean-up)))
+        (should-not (agent-shell-vertico-sidebar--last-message alpha))))))
 
 ;;; Attention jump
 

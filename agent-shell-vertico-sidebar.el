@@ -163,6 +163,20 @@ before the switch is reopened right after it."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-notify-function nil
+  "Function called when a session starts needing attention.
+
+It is called with the keyword arguments `:buffer', the session buffer;
+`:status', the wording the sidebar shows for it, one of \"Waiting\",
+\"Done\" or \"Error\"; and `:last-message', the agent's newest message
+as it arrived, or nil.
+
+Nothing is reported for a session the reader is already looking at, and
+the message text is passed unshortened, since how to fit it belongs to
+whichever channel shows it."
+  :type '(choice (const :tag "Do not notify" nil) function)
+  :group 'agent-shell-vertico-sidebar)
+
 (defvar agent-shell-vertico-sidebar--attention (make-hash-table :test #'eq)
   "Buffer to attention metadata.
 
@@ -189,6 +203,13 @@ neither ends with `turn-complete', so the burst is tracked here instead.
 
 Values are plists with `:timer', the timer that ends the burst after a
 quiet period, and `:time', when the burst's latest update arrived.")
+
+(defvar agent-shell-vertico-sidebar--messages (make-hash-table :test #'eq)
+  "Buffer to the newest agent message streamed into it.
+
+Values are plists with `:chunks', the message text in reverse arrival
+order, and `:open', whether the next chunk continues that message or
+starts a new one.")
 
 (defvar agent-shell-vertico-sidebar--current-session nil
   "Live session buffer the reader is currently in, or nil.
@@ -1632,32 +1653,78 @@ sees one mark rather than a flicker."
       (puthash buffer
                (list :kind 'done
                      :time (or (plist-get burst :time) (float-time)))
-               agent-shell-vertico-sidebar--attention))
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar--notify buffer))
     (agent-shell-vertico-sidebar--schedule-refresh)))
+
+(defun agent-shell-vertico-sidebar--record-message-chunk (buffer event)
+  "Accumulate the agent message BUFFER is streaming in EVENT.
+
+agent-shell emits one event per streamed chunk and accumulates none of
+them, so the sidebar keeps the newest message for a notification to
+carry.  Any other event ends the message, which is agent-shell's own
+message boundary."
+  (let ((entry (gethash buffer agent-shell-vertico-sidebar--messages)))
+    (if (not (eq (map-elt event :event) 'agent-message-chunk))
+        (when entry
+          (puthash buffer (plist-put entry :open nil)
+                   agent-shell-vertico-sidebar--messages))
+      (unless (plist-get entry :open)
+        (setq entry (list :chunks nil :open t)))
+      (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
+        (setq entry (plist-put entry :chunks
+                               (cons chunk (plist-get entry :chunks)))))
+      (puthash buffer entry agent-shell-vertico-sidebar--messages))))
+
+(defun agent-shell-vertico-sidebar--last-message (buffer)
+  "Return the newest agent message streamed into BUFFER, or nil."
+  (when-let* ((chunks (plist-get
+                       (gethash buffer
+                                agent-shell-vertico-sidebar--messages)
+                       :chunks)))
+    (apply #'concat (reverse chunks))))
+
+(defun agent-shell-vertico-sidebar--notify (buffer)
+  "Report that BUFFER now needs attention.
+
+The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
+this after the attention mark is in place, since the status reported is
+the one the sidebar reads back from it."
+  (when (and agent-shell-vertico-sidebar-notify-function
+             (buffer-live-p buffer)
+             (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
+    (funcall agent-shell-vertico-sidebar-notify-function
+             :buffer buffer
+             :status (agent-shell-vertico-sidebar--status-name buffer)
+             :last-message (agent-shell-vertico-sidebar--last-message buffer))))
 
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
   "Update sidebar metadata for BUFFER after agent EVENT."
   (let ((kind (map-elt event :event))
         (now (float-time)))
+    (agent-shell-vertico-sidebar--record-message-chunk buffer event)
     (puthash buffer now agent-shell-vertico-sidebar--activity)
     (pcase kind
       ('permission-request
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'blocked :time now)
-                agent-shell-vertico-sidebar--attention))
+                agent-shell-vertico-sidebar--attention)
+       (agent-shell-vertico-sidebar--notify buffer))
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer (list :kind 'error :time now)
-                agent-shell-vertico-sidebar--attention))
+                agent-shell-vertico-sidebar--attention)
+       (agent-shell-vertico-sidebar--notify buffer))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
            (remhash buffer agent-shell-vertico-sidebar--attention)
          (puthash buffer (list :kind 'done :time now)
-                  agent-shell-vertico-sidebar--attention)))
+                  agent-shell-vertico-sidebar--attention)
+         (agent-shell-vertico-sidebar--notify buffer)))
       ('input-submitted
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
@@ -1676,6 +1743,7 @@ sees one mark rather than a flicker."
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times))
       ('clean-up
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
+       (remhash buffer agent-shell-vertico-sidebar--messages)
        (remhash buffer agent-shell-vertico-sidebar--attention)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
@@ -1698,6 +1766,7 @@ sees one mark rather than a flicker."
       (ignore-errors (agent-shell-unsubscribe :subscription subscription)))
     (agent-shell-vertico-sidebar--cancel-out-of-turn (current-buffer))
     (remhash (current-buffer) agent-shell-vertico-sidebar--subscriptions)
+    (remhash (current-buffer) agent-shell-vertico-sidebar--messages)
     (remhash (current-buffer) agent-shell-vertico-sidebar--attention)
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
@@ -1761,6 +1830,7 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
     (dolist (buffer dead)
       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
       (remhash buffer agent-shell-vertico-sidebar--subscriptions)
+      (remhash buffer agent-shell-vertico-sidebar--messages)
       (remhash buffer agent-shell-vertico-sidebar--attention)
       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
       (remhash buffer agent-shell-vertico-sidebar--activity)))
