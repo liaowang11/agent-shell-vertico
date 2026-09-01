@@ -98,9 +98,10 @@ current sidebar buffer."
 
 `priority' puts sessions needing attention first, followed by working,
 ready, and starting sessions.  Attention and working sessions order
-oldest first, matching `agent-shell-attention-jump', so the top of the
-list is the session that has waited longest.  Ready and starting
-sessions order by their latest activity, newest first, so a session
+oldest first, so the top of the list is the session that has waited
+longest and the one `agent-shell-vertico-sidebar-jump' visits.  Ready
+and starting sessions order by their latest activity, newest first, so
+a session
 read or finished recently stays above stale idle ones.  `activity' uses
 the latest agent event, `recency' uses the last display time, `status'
 uses only status, and `name' sorts by session title."
@@ -912,9 +913,10 @@ session holding unseen output each get their own mark."
   "Return non-nil when LEFT sorts before RIGHT by SORT-BY.
 
 Under `priority' the attention and working tiers order oldest first,
-so the sidebar's first session is the one `agent-shell-attention-jump'
-visits; the remaining tiers order newest first so a session that was
-read or finished recently stays near the top of its tier."
+so the sidebar's first session is the one
+`agent-shell-vertico-sidebar-jump' visits; the remaining tiers order
+newest first so a session that was read or finished recently stays near
+the top of its tier."
   (let* ((left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
          (left-rank (when (memq sort-by '(status priority))
