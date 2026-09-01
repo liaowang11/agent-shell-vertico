@@ -8510,6 +8510,102 @@ after the test has already finished.  Tests call
                         (list quiet streaming) 'priority)
                        (list streaming quiet)))))))
 
+;;; Viewport pages
+
+(defun agent-shell-vertico-tests--insert-page (prompt response)
+  "Insert one shell-maker exchange of PROMPT and RESPONSE."
+  (insert (propertize (concat "> " prompt "\n")
+                      'font-lock-face 'comint-highlight-prompt))
+  (insert (propertize "<shell-maker-end-of-prompt>"
+                      'shell-maker--marker t))
+  (insert "\n" response "\n"))
+
+(defmacro agent-shell-vertico-tests--with-viewport (pages &rest body)
+  "Evaluate BODY in a viewport whose shell holds PAGES.
+
+PAGES is a list of (PROMPT . RESPONSE) exchanges.  The shell and its
+viewport are named the way agent-shell names them, since the viewport
+resolves its shell from its own buffer name."
+  (declare (indent 1))
+  `(let* ((shell (generate-new-buffer "Codex Agent @ alpha"))
+          (viewport (get-buffer-create
+                     (concat (buffer-name shell) " [viewport]"))))
+     (unwind-protect
+         (let ((agent-shell-test-history
+                (mapcar (lambda (page) (list (car page) (cdr page))) ,pages))
+               (agent-shell-test-viewport-refreshed nil)
+               (agent-shell-test-viewport-header-updated nil)
+               (agent-shell-test-viewport-position
+                (list (cons :current 1) (cons :total (length ,pages)))))
+           (with-current-buffer shell
+             (agent-shell-mode)
+             (dolist (page ,pages)
+               (agent-shell-vertico-tests--insert-page (car page) (cdr page))))
+           (with-current-buffer viewport
+             (agent-shell-viewport-view-mode)
+             ,@body))
+       (dolist (buffer (list shell viewport))
+         (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-reads-a-page ()
+  "The page is chosen by its prompt text and the shell moves to it."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("second question" . "second answer"))
+    (let (offered)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _arguments)
+                   (setq offered collection)
+                   "second question")))
+        (agent-shell-vertico-viewport-goto-page nil))
+      (should (equal offered '("first question" "second question"))))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (should (looking-at "> second question")))
+    (should agent-shell-test-viewport-refreshed)
+    (should agent-shell-test-viewport-header-updated)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-takes-a-page-number ()
+  "A numeric prefix argument names the page without reading one."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("second question" . "second answer"))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _arguments) (error "Should not read"))))
+      (agent-shell-vertico-viewport-goto-page 1))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (should (looking-at "> first question")))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-rejects-a-page-past-the-end ()
+  (agent-shell-vertico-tests--with-viewport
+      '(("only question" . "only answer"))
+    (should-error (agent-shell-vertico-viewport-goto-page 2)
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-without-history-errors ()
+  (agent-shell-vertico-tests--with-viewport '()
+    (should-error (agent-shell-vertico-viewport-goto-page nil)
+                  :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-outside-a-viewport-errors ()
+  "The command is about a viewport's history, so it needs one."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a"))))))
+    (with-current-buffer alpha
+      (should-error (agent-shell-vertico-viewport-goto-page nil)
+                    :type 'user-error))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-ignores-echoed-prompts ()
+  "A response quoting a prompt is not a page of its own."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "quoting\n> second question\nback to prose")
+        ("real second" . "second answer"))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _arguments) "real second")))
+      (agent-shell-vertico-viewport-goto-page nil))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (should (looking-at "> real second")))))
+
 ;;; Attention notifications
 
 (ert-deftest agent-shell-vertico-sidebar-notifies-a-finished-turn ()

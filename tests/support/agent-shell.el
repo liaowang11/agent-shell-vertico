@@ -5,6 +5,9 @@
 (require 'cl-lib)
 (require 'map)
 (require 'seq)
+;; The real agent-shell requires shell-maker, and the viewport reads a
+;; session's history through it.
+(require 'shell-maker)
 
 (defconst agent-shell-test-stub-p t
   "Non-nil when the agent-shell test stub is loaded.")
@@ -488,6 +491,35 @@ of it."
 (define-derived-mode agent-shell-viewport-edit-mode fundamental-mode
   "Agent Shell Viewport (Edit)"
   "Stub of the viewport edit mode.")
+
+(defvar agent-shell-test-viewport-position nil
+  "Stub: position alist `agent-shell-viewport--position' returns.")
+
+(defvar agent-shell-test-viewport-refreshed nil
+  "Stub: non-nil once `agent-shell-viewport-refresh' has been called.")
+
+(defvar agent-shell-test-viewport-header-updated nil
+  "Stub: non-nil once `agent-shell-viewport--update-header' was called.")
+
+(defun agent-shell-viewport--ensure-buffer ()
+  "Stub: signal unless the current buffer is a viewport."
+  (unless (or (derived-mode-p 'agent-shell-viewport-view-mode)
+              (derived-mode-p 'agent-shell-viewport-edit-mode))
+    (user-error "Not in a shell viewport buffer")))
+
+(cl-defun agent-shell-viewport--position (&key force-refresh)
+  "Stub: return the recorded history position, ignoring FORCE-REFRESH."
+  (ignore force-refresh)
+  (agent-shell-viewport--ensure-buffer)
+  agent-shell-test-viewport-position)
+
+(defun agent-shell-viewport-refresh ()
+  "Stub: record that the viewport was refreshed."
+  (setq agent-shell-test-viewport-refreshed t))
+
+(defun agent-shell-viewport--update-header ()
+  "Stub: record that the viewport header was updated."
+  (setq agent-shell-test-viewport-header-updated t))
 
 (cl-defun agent-shell-viewport--shell-buffer (&optional viewport-buffer)
   "Stub: derive the shell buffer for VIEWPORT-BUFFER by name.

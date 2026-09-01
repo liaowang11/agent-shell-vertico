@@ -40,6 +40,19 @@
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
 (declare-function agent-shell-select-config "agent-shell" (&rest arguments))
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
+(declare-function agent-shell-viewport--ensure-buffer "agent-shell-viewport")
+(declare-function agent-shell-viewport--shell-buffer "agent-shell-viewport"
+                  (&optional viewport-buffer))
+(declare-function agent-shell-viewport--position "agent-shell-viewport"
+                  (&key force-refresh))
+(declare-function agent-shell-viewport-refresh "agent-shell-viewport" ())
+(declare-function agent-shell-viewport--update-header "agent-shell-viewport" ())
+(declare-function shell-maker-history "shell-maker" ())
+(declare-function shell-maker-prompt-regexp "shell-maker" (config))
+(declare-function shell-maker--re-search-forward-prompt "shell-maker"
+                  (prompt-regexp &optional bound))
+(declare-function shell-maker--find-marker "shell-maker"
+                  (marker bound &rest arguments))
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 (declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
@@ -62,6 +75,7 @@
 (declare-function comint-send-eof "comint" ())
 
 (defvar agent-shell--state)
+(defvar shell-maker--config)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
 (defvar agent-shell-preferred-agent-config)
@@ -649,6 +663,90 @@ shell for a viewport."
   (interactive)
   (agent-shell-vertico--display-session
    (agent-shell-vertico--read-session "Project agent shell: " 'project)))
+
+;;; Viewport pages
+;;
+;; A viewport shows one exchange of a session at a time and moves through
+;; them one step at a time.  These read which exchange to show instead,
+;; naming each by the prompt that started it.
+
+(defun agent-shell-vertico--viewport-pages ()
+  "Return the current viewport's history as (PROMPT . PAGE) pairs.
+
+PAGE counts from one, which is how the viewport numbers its own
+position."
+  (agent-shell-viewport--ensure-buffer)
+  (when-let* ((shell-buffer (agent-shell-viewport--shell-buffer))
+              (history (with-current-buffer shell-buffer
+                         (shell-maker-history)))
+              ((not (seq-empty-p history))))
+    (seq-map-indexed
+     (lambda (item index)
+       (cons (string-trim (or (car item) "")) (1+ index)))
+     history)))
+
+(defun agent-shell-vertico--read-viewport-page (page)
+  "Return the viewport history page PAGE names.
+
+PAGE is a prefix argument: a number selects that page directly, and nil
+reads one by its prompt text."
+  (if page
+      (let* ((position (or (agent-shell-viewport--position :force-refresh t)
+                           (user-error "No items in history")))
+             (total (map-elt position :total))
+             (number (prefix-numeric-value page)))
+        (unless (<= 1 number total)
+          (user-error "Page %d is out of range" number))
+        number)
+    (let* ((pages (or (agent-shell-vertico--viewport-pages)
+                      (user-error "No items in history")))
+           (selection (completing-read "Page: " (mapcar #'car pages) nil t)))
+      (or (cdr (assoc selection pages))
+          (user-error "Unknown page: %s" selection)))))
+
+(defun agent-shell-vertico--goto-viewport-page (page shell-buffer)
+  "Move SHELL-BUFFER's point to the start of PAGE and return it.
+
+A page is a prompt whose exchange carries shell-maker's end-of-prompt
+marker.  A prompt without one is text the agent printed, not an exchange
+the viewport can show."
+  (with-current-buffer shell-buffer
+    (let ((prompt-regexp (shell-maker-prompt-regexp shell-maker--config))
+          (count 0)
+          found)
+      (goto-char (point-min))
+      (while (and (not found)
+                  (shell-maker--re-search-forward-prompt prompt-regexp))
+        (let ((prompt-start (match-beginning 0))
+              (chunk-end (save-excursion
+                           (if (shell-maker--re-search-forward-prompt
+                                prompt-regexp)
+                               (match-beginning 0)
+                             (point-max)))))
+          (when (shell-maker--find-marker
+                 "<shell-maker-end-of-prompt>" chunk-end)
+            (setq count (1+ count))
+            (when (= count page)
+              (setq found prompt-start)))))
+      (unless found
+        (user-error "Page %d is out of range" page))
+      (goto-char found)
+      found)))
+
+;;;###autoload
+(defun agent-shell-vertico-viewport-goto-page (page)
+  "Show a chosen page of this viewport's history.
+
+Without a prefix argument, read which page by the prompt that started
+it.  With a numeric prefix argument PAGE, show that page directly."
+  (interactive "P")
+  (unless (derived-mode-p 'agent-shell-viewport-view-mode)
+    (user-error "Not in a shell viewport buffer"))
+  (let ((number (agent-shell-vertico--read-viewport-page page))
+        (shell-buffer (agent-shell-viewport--shell-buffer)))
+    (agent-shell-vertico--goto-viewport-page number shell-buffer)
+    (agent-shell-viewport-refresh)
+    (agent-shell-viewport--update-header)))
 
 ;;; Shell buffer picker
 ;;

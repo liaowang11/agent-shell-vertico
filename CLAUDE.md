@@ -169,6 +169,18 @@ too), reads that buffer's `agent-shell--transcript-file`, and opens it through
 alone: this is a command to bind, not advice, so nothing changes for anyone
 who has not bound it.
 
+**Jumping around a viewport's history.** A viewport shows one exchange at
+a time and steps through them one at a time.
+`agent-shell-vertico-viewport-goto-page` reads which exchange to show,
+naming each by the prompt that started it. It counts pages the way
+shell-maker does, so it uses shell-maker's own searchers rather than a
+plain `re-search-forward`: a prompt only counts when it carries the
+`comint-highlight-prompt` face, and an exchange only counts when its
+end-of-prompt marker carries the `shell-maker--marker` property. Without
+those two checks a prompt an agent echoed inside a response would become
+a page of its own. `tests/support/shell-maker.el` keeps both rules, which
+is what makes the tests about echoed prompts mean anything.
+
 **Preparing where a session appears.** Every command that opens a session
 goes through `--display-session` or `--display-session-other-window`, so
 `agent-shell-vertico-before-display-function` is called there, once, with
