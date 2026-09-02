@@ -214,6 +214,13 @@ and it leaves an existing mark alone, since `blocked` and `error` outrank
 unread output. It deliberately does not fight the clear paths: marking a
 session unread while sitting in it holds only until the reader is next seen
 looking at it, which is a decision, not an oversight.
+`--mark-read` is the same table in reverse, and it refuses a session whose
+live status is `blocked` for a reason worth keeping: that mark is derived
+in `--attention` from the status rather than recorded, so dropping the
+record would hide a session that cannot proceed. Both commands resolve
+their session through `--attention-target`, which reads the sidebar row at
+point when called there and the current buffer's session, viewport
+included, anywhere else.
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives

@@ -9020,8 +9020,84 @@ a `done' mark on a running turn would report it as finished."
               #'agent-shell-vertico-sidebar-mark-unread))
   (should (eq (cdr (assoc "u" agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-mark-unread))
-  (should (string-match-p "u  *Mark"
+  (should (string-match-p "u / !.*Mark"
                           (agent-shell-vertico-sidebar--help-text))))
+(ert-deftest agent-shell-vertico-sidebar-mark-read-clears-session-at-point ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha (list :kind 'done :time 100.0)
+                 agent-shell-vertico-sidebar--attention)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (agent-shell-vertico-sidebar-mark-read)
+        (should-not (gethash alpha
+                             agent-shell-vertico-sidebar--attention))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-read-clears-the-current-session ()
+  "Reading a session without visiting it works from the session buffer too."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (inhibit-message t))
+      (puthash alpha (list :kind 'error :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar-mark-read))
+      (should-not (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-read-refuses-a-waiting-session ()
+  "A session that cannot proceed still owes a permission decision.
+
+Its mark is derived from the live status, so dropping the recorded one
+would hide the session for as long as it takes the sidebar to read the
+status back."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'blocked))))
+      (puthash alpha (list :kind 'blocked :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-current-buffer alpha
+        (should-error (agent-shell-vertico-sidebar-mark-read)
+                      :type 'user-error))
+      (should (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-read-reports-an-unmarked-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          messages)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (push (apply #'format format arguments) messages))))
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-mark-read)))
+      (should (equal messages
+                     (list (format "Session %s needs no attention"
+                                   (buffer-name alpha))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-read-is-bound ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "!"))
+              #'agent-shell-vertico-sidebar-mark-read))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c !"))
+              #'agent-shell-vertico-sidebar-mark-read))
+  (should (eq (cdr (assoc "!" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-mark-read))
+  (should (string-match-p "u / !.*Mark"
+                          (agent-shell-vertico-sidebar--help-text))))
+
 ;;; Narrowing and grouping
 
 (ert-deftest agent-shell-vertico-narrow-agent-key-matches-name-prefix ()

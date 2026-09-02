@@ -141,16 +141,26 @@ has by then been seen.
 Displaying a session counts as reading it, so walking into one by mistake
 drops its mark.  `u` puts the mark back: the session returns to the head of
 the `priority` order and `agent-shell-vertico-sidebar-jump` visits it again.
-It works on the row at point in the sidebar and on the session or viewport
-buffer itself, so bind `agent-shell-vertico-sidebar-mark-unread` in
-`agent-shell-mode-map` (`C-c u` is free there) to mark the session you are
-standing in.  The mark carries the session's last activity time rather than
+Both commands work on the row at point in the sidebar and on the session or
+viewport buffer itself, so bind `agent-shell-vertico-sidebar-mark-unread`
+and `agent-shell-vertico-sidebar-mark-read` in `agent-shell-mode-map`
+(`C-c u` and `C-c !` are free there) to mark the session you are standing
+in.  The mark carries the session's last activity time rather than
 the current time, so a session marked by hand does not jump ahead of one
 that has waited longer.  A working session is refused, since its turn marks
 itself unread when it finishes away from you, and a session already waiting
 on a permission decision or an error keeps that mark instead.  Leave the
 session after marking it: the mark clears again as soon as you are seen
 looking at the session.
+
+`!` is the other direction: it drops a mark without visiting the session, so
+an error already dealt with elsewhere, or a turn read in the sidebar itself,
+stops holding the head of the `priority` order and
+`agent-shell-vertico-sidebar-jump` moves on to the next session.  A session
+still waiting for a permission decision is refused, because that mark is
+derived from its live status rather than recorded: it cannot proceed until
+you answer it.  New output marks the session again, whether a turn finishes
+or a background stream goes quiet.
 
 An agent can also produce output with no turn in flight: background tasks
 such as subagents keep streaming after a turn ends, and a prompt steered in
@@ -254,8 +264,8 @@ previous row, session or project header), `TAB` (fold or session details),
 `S-TAB` (cycle all fold levels),
 `=` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
-(traffic/transcript), `u` (mark unread), `?` (show the key reference), and `q`
-(close the side window).
+(traffic/transcript), `u`/`!` (mark unread/read), `?` (show the key
+reference), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the
@@ -263,7 +273,9 @@ current row or metadata field, `o` opens the session,
 `O` opens it in another window, `TAB` toggles the current row, and `S-TAB`
 cycles every row through the fold levels.  `gr` refreshes, `D`
 kills, `R` restarts, and `I` interrupts the current session; `t` opens its
-transcript, `T` shows traffic, and `u` marks the session unread.  `q` closes the sidebar, while `=`, `s`,
+transcript, `T` shows traffic, and `u`/`!` mark the session unread or read;
+`!` takes precedence over Evil's `evil-shell-command` in this read-only
+list.  `q` closes the sidebar, while `=`, `s`,
 `c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains
 Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
 prefix remains available as a fallback (for example, `C-c k` kills).
