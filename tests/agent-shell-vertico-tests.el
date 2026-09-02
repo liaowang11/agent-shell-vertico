@@ -8918,6 +8918,110 @@ resolves its shell from its own buffer name."
       (agent-shell-vertico-sidebar-jump t)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-session-at-point ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-sidebar
+        (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (agent-shell-vertico-sidebar-mark-unread)
+        ;; The mark carries the session's own last activity time rather
+        ;; than now, so the attention tier still runs oldest first.
+        (should (equal (gethash alpha agent-shell-vertico-sidebar--attention)
+                       (list :kind 'done :time 100.0)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-the-current-session ()
+  "Marking works from the session buffer, which is where the mistake happens."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (inhibit-message t))
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar-mark-unread))
+      (should (eq (plist-get (gethash alpha
+                                      agent-shell-vertico-sidebar--attention)
+                             :kind)
+                  'done)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-from-a-viewport ()
+  "A viewport marks the session it shows, not nothing at all."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-statuses (list (cons alpha 'ready)))
+                (agent-shell-test-viewport-buffer viewport)
+                (inhibit-message t))
+            (with-current-buffer viewport
+              (agent-shell-vertico-sidebar-mark-unread))
+            (should (eq (plist-get
+                        (gethash alpha
+                                 agent-shell-vertico-sidebar--attention)
+                        :kind)
+                       'done)))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-refuses-a-working-session ()
+  "A turn still running has produced nothing the reader can have missed.
+
+It also marks itself unread when it completes away from the reader, and
+a `done' mark on a running turn would report it as finished."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy))))
+      (with-current-buffer alpha
+        (should-error (agent-shell-vertico-sidebar-mark-unread)
+                      :type 'user-error))
+      (should-not (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-keeps-a-waiting-mark ()
+  "A permission decision outranks unread output, so its mark stays."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (inhibit-message t))
+      (puthash alpha (list :kind 'blocked :time 100.0)
+               agent-shell-vertico-sidebar--attention)
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar-mark-unread))
+      (should (equal (gethash alpha agent-shell-vertico-sidebar--attention)
+                     (list :kind 'blocked :time 100.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-needs-a-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (with-temp-buffer
+        (should-error (agent-shell-vertico-sidebar-mark-unread)
+                      :type 'user-error))
+      (should-not (gethash alpha agent-shell-vertico-sidebar--attention)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-is-bound ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "u"))
+              #'agent-shell-vertico-sidebar-mark-unread))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c u"))
+              #'agent-shell-vertico-sidebar-mark-unread))
+  (should (eq (cdr (assoc "u" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-mark-unread))
+  (should (string-match-p "u  *Mark"
+                          (agent-shell-vertico-sidebar--help-text))))
 ;;; Narrowing and grouping
 
 (ert-deftest agent-shell-vertico-narrow-agent-key-matches-name-prefix ()

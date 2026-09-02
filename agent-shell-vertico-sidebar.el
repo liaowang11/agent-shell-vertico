@@ -2338,6 +2338,7 @@ statuses themselves are separated by the lighter middle dot."
    "  m / M       Set mode / model\n"
    "  t / T       Traffic / transcript (regular); reverse in Evil\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
+   "  u           Mark the session unread again\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
    "Metadata values are individually clickable.  Project values open their\n"
@@ -2368,6 +2369,7 @@ statuses themselves are separated by the lighter middle dot."
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
     map)
@@ -2399,6 +2401,7 @@ statuses themselves are separated by the lighter middle dot."
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "q") #'quit-window)
@@ -2437,6 +2440,7 @@ statuses themselves are separated by the lighter middle dot."
     ("M" . agent-shell-vertico-sidebar-set-model)
     ("t" . agent-shell-vertico-sidebar-open-transcript)
     ("T" . agent-shell-vertico-sidebar-view-traffic)
+    ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
@@ -2470,7 +2474,7 @@ while normal and motion states get the same direct mnemonic commands."
         (unless (equal (car binding) "gr")
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r"
-                     "i" "m" "M" "t" "T" "?" "q"))
+                     "i" "m" "M" "t" "T" "u" "?" "q"))
         (when-let ((command (lookup-key
                              agent-shell-vertico-sidebar-action-map
                              (kbd key))))
@@ -2550,6 +2554,61 @@ run from nothing running at all."
     (if (> working 0)
         (format "No session needs attention, %d working" working)
       "No session needs attention")))
+
+(defun agent-shell-vertico-sidebar--unread-target ()
+  "Return the session `agent-shell-vertico-sidebar-mark-unread' acts on.
+
+In the sidebar the row at point names the session.  Anywhere else the
+current buffer does, which is a session buffer or a viewport showing
+one, so the command works from the session the reader walked into."
+  (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--session-at-point)
+    (or (agent-shell-vertico-sidebar--session-for-buffer (current-buffer))
+        (user-error "No agent-shell session here"))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-mark-unread ()
+  "Mark the session at point, or the current session, as unread.
+
+Displaying a session counts as reading it, so opening one by mistake
+drops the mark that said it still owed the reader an answer.  This puts
+that mark back: the session returns to the head of the sidebar's
+`priority' order, and `agent-shell-vertico-sidebar-jump' visits it
+again.
+
+The mark carries the session's last activity time rather than now, so
+the attention tier still runs oldest first and a session marked by hand
+does not jump ahead of one that has waited longer.
+
+A working session is refused, because nothing has finished for the
+reader to have missed, and the turn marks itself unread when it
+completes away from the reader.  A session already needing attention
+keeps the mark it has, since a permission decision or an error outranks
+unread output.
+
+Leave the session after marking it.  The mark is cleared again as soon
+as the reader is seen looking at the session, which includes staying in
+it until Emacs regains input focus."
+  (interactive)
+  (let* ((buffer (agent-shell-vertico-sidebar--unread-target))
+         (status (agent-shell-vertico-sidebar--raw-status buffer)))
+    (cond
+     ((eq status 'busy)
+      (user-error "Session %s is still working" (buffer-name buffer)))
+     ((agent-shell-vertico-sidebar--attention buffer)
+      (message "Session %s already needs attention: %s"
+               (buffer-name buffer)
+               (agent-shell-vertico-sidebar--status-name buffer)))
+     (t
+      (puthash buffer
+               (list :kind 'done
+                     :time (or (gethash
+                                buffer
+                                agent-shell-vertico-sidebar--activity)
+                               (float-time)))
+               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s marked unread" (buffer-name buffer))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-jump (&optional read)

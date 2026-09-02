@@ -204,6 +204,16 @@ that does `with-current-buffer` on a session would otherwise mark it read.
 The `priority` sort orders the table's sessions first and oldest-first
 within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
 `--sort-buffers ... 'priority'` and nothing else has to rank them again.
+`agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets
+by hand, and it writes the same `done` kind rather than a kind of its own,
+so status names, icons, ranks, counters and the jump order need no case for
+it. It stamps the session's last activity time, not the current time, so
+the oldest-first tier stays truthful; it refuses a `busy` session, whose
+turn has produced nothing to miss and would be misreported as finished;
+and it leaves an existing mark alone, since `blocked` and `error` outrank
+unread output. It deliberately does not fight the clear paths: marking a
+session unread while sitting in it holds only until the reader is next seen
+looking at it, which is a decision, not an oversight.
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
