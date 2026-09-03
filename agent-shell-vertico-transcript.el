@@ -84,8 +84,18 @@ it takes to open."
   match-text)
 
 (defun agent-shell-vertico-transcript--normalize-directory (directory)
-  "Return DIRECTORY expanded and terminated with a slash."
-  (file-name-as-directory (expand-file-name directory)))
+  "Return DIRECTORY expanded and terminated with a slash.
+
+A remote directory is terminated as a plain string, with no file name
+handler.  A recorded working directory is already absolute, so expanding
+one buys nothing, and handing a remote path to `expand-file-name' or
+`file-name-as-directory' either signals for a TRAMP method this Emacs
+does not have or asks the host to resolve the name.  Either would cost
+the whole store for one transcript written elsewhere."
+  (if (file-remote-p directory)
+      (let ((file-name-handler-alist nil))
+        (file-name-as-directory directory))
+    (file-name-as-directory (expand-file-name directory))))
 
 (defun agent-shell-vertico-transcript--current-project-root ()
   "Return the current Projectile or project.el root, or nil."
@@ -222,6 +232,23 @@ a field has to stop here rather than pick a quoted line up."
         (agent-shell-vertico-transcript--normalize-directory left)
         (agent-shell-vertico-transcript--normalize-directory right))))
 
+(defun agent-shell-vertico-transcript--working-directory-in-project-p
+    (working-directory project-root)
+  "Return non-nil when WORKING-DIRECTORY names PROJECT-ROOT or sits under it.
+
+A session run over TRAMP records the working directory Emacs saw, so it
+carries a remote prefix that no local project root matches verbatim.
+The prefix names the host that ran the session, not the project, and the
+project is checked out at the same path on whichever host ran it, so the
+comparison drops it."
+  (let ((working-directory
+         (or (file-remote-p working-directory 'localname)
+             working-directory)))
+    (or
+     (agent-shell-vertico-transcript--same-directory-p
+      working-directory project-root)
+     (file-in-directory-p working-directory project-root))))
+
 (defun agent-shell-vertico-transcript--record-in-project-p
     (record project-root transcript-directory)
   "Return non-nil when RECORD belongs to PROJECT-ROOT.
@@ -238,10 +265,8 @@ the record's working directory to distinguish projects."
      ;; A shared store needs the header to disambiguate projects, but a
      ;; working directory anywhere under the root still belongs to it.
      (and working-directory
-          (or
-           (agent-shell-vertico-transcript--same-directory-p
-            working-directory project-root)
-           (file-in-directory-p working-directory project-root))))))
+          (agent-shell-vertico-transcript--working-directory-in-project-p
+           working-directory project-root)))))
 
 (defun agent-shell-vertico-transcript--records-for-project (project-root)
   "Return transcript records belonging to PROJECT-ROOT, newest first."
@@ -382,10 +407,8 @@ Each value is a plist containing `:count', `:line', and `:text'."
        #'>
        (seq-filter
         (lambda (root)
-          (or
-           (agent-shell-vertico-transcript--same-directory-p
-            working-directory root)
-           (file-in-directory-p working-directory root)))
+          (agent-shell-vertico-transcript--working-directory-in-project-p
+           working-directory root))
         project-roots))))
    (seq-find
     (lambda (root)
@@ -1679,7 +1702,11 @@ that RECORDS omits."
       (if-let* ((directory
                  (agent-shell-vertico-transcript-record-working-directory
                   record)))
-          (unless (file-directory-p directory)
+          ;; Only a local directory can be checked here.  Asking whether a
+          ;; remote one exists means connecting to the host it names, and a
+          ;; report on local metadata has no business doing that.
+          (unless (or (file-remote-p directory)
+                      (file-directory-p directory))
             (cl-incf invalid-working-directory))
         (cl-incf missing-working-directory)))
     (when (> missing-session-id 0)

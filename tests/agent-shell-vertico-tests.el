@@ -5109,6 +5109,125 @@ The annotation is cut there rather than the title shrinking to nothing."
                      '("stale" "subdir")))))
       (delete-directory root t))))
 
+(ert-deftest agent-shell-vertico-transcript-records-match-remote-directory ()
+  "A session run over TRAMP belongs to the project it names.
+The header records the working directory Emacs saw, so a remote session
+carries a TRAMP prefix that no local project root can match verbatim."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (other-root (make-temp-file "agent-shell-vertico-other-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "remote.md" transcript-dir)
+            (insert (format "**Working Directory:** /ssh:remote-host:%s\n"
+                            (directory-file-name root))
+                    "**Session ID:** remote\n\n---\n\n"
+                    "## User\n\nRemote transcript\n"))
+          (with-temp-file (expand-file-name "elsewhere.md" transcript-dir)
+            (insert (format "**Working Directory:** /ssh:remote-host:%s\n"
+                            (directory-file-name other-root))
+                    "**Session ID:** elsewhere\n\n---\n\n"
+                    "## User\n\nAnother project on the same host\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should (= (length records) 1))
+            (should
+             (equal (agent-shell-vertico-transcript-record-session-id
+                     (car records))
+                    "remote"))
+            ;; The prefix names the host to open the directory on, so the
+            ;; record keeps the path the header recorded.
+            (should
+             (equal (agent-shell-vertico-transcript-record-working-directory
+                     (car records))
+                    (format "/ssh:remote-host:%s"
+                            (file-name-as-directory root))))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-records-match-remote-subdirectory ()
+  "A remote session started below the root still belongs to the project."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (subdir (expand-file-name "packages/api" root))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (make-directory subdir t)
+          (with-temp-file (expand-file-name "remote.md" transcript-dir)
+            (insert (format "**Working Directory:** /ssh:remote-host:%s\n"
+                            subdir)
+                    "**Session ID:** remote-subdir\n\n---\n\n"
+                    "## User\n\nRemote transcript\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should (= (length records) 1))
+            (should
+             (equal (agent-shell-vertico-transcript-record-session-id
+                     (car records))
+                    "remote-subdir"))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-records-keep-unknown-tramp-method ()
+  "A method this Emacs does not have costs its own transcript, not the store.
+`expand-file-name' signals for an unregistered TRAMP method, so reading
+a working directory written on another machine would otherwise abandon
+every transcript in the store."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "unknown.md" transcript-dir)
+            (insert (format "**Working Directory:** /nosuchmethod:host:%s\n"
+                            (directory-file-name root))
+                    "**Session ID:** unknown-method\n\n---\n\n"
+                    "## User\n\nWritten on another machine\n"))
+          (with-temp-file (expand-file-name "local.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** local\n\n---\n\n"
+                    "## User\n\nWritten here\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project root)))
+            (should
+             (equal
+              (sort (mapcar
+                     #'agent-shell-vertico-transcript-record-session-id
+                     records)
+                    #'string<)
+              '("local" "unknown-method")))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-search-matches-remote-directory ()
+  "Search keeps a match whose working directory is a TRAMP path."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (file (expand-file-name "remote.md" transcript-dir))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert (format "**Working Directory:** /ssh:remote-host:%s\n"
+                            (directory-file-name root))
+                    "**Session ID:** remote\n\n---\n\n"
+                    "## User\n\nneedle\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--record-for-match
+                  file '(:count 1 :line 6 :text "needle")
+                  (list root))))
+            (should record)
+            (should
+             (agent-shell-vertico-transcript--same-directory-p
+              (agent-shell-vertico-transcript-record-project-root record)
+              root))))
+      (delete-directory root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-search-maps-project-subdirectory ()
   "Search assigns a shared-store transcript to its most specific project."
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
@@ -5288,6 +5407,20 @@ that omits them."
               issues))))
       (delete-directory root t)
       (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-diagnostics-keep-remote-directories ()
+  "A remote working directory is not reported as gone.
+Asking whether it exists means connecting to the host it names, which a
+report on local metadata has no business doing."
+  (let ((records
+         (list (agent-shell-vertico-transcript-record-create
+                :file "/tmp/transcripts/remote.md"
+                :session-id "remote"
+                :working-directory "/nosuchmethod:host:/work/project/"))))
+    (should-not
+     (seq-find
+      (lambda (issue) (string-match-p "no longer exist" issue))
+      (agent-shell-vertico-transcript--diagnostic-issues records)))))
 
 (ert-deftest agent-shell-vertico-transcript-records-find-nested-files ()
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
