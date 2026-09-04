@@ -97,6 +97,19 @@ the whole store for one transcript written elsewhere."
         (file-name-as-directory directory))
     (file-name-as-directory (expand-file-name directory))))
 
+(defun agent-shell-vertico-transcript--directory-basename (directory)
+  "Return DIRECTORY's final path component.
+
+Like `agent-shell-vertico-transcript--normalize-directory', a remote
+DIRECTORY is handled as a plain string: `directory-file-name' and
+`file-name-nondirectory' both dispatch through
+`file-name-handler-alist', which signals for a TRAMP method this Emacs
+does not have.  DIRECTORY is a working directory a transcript header
+recorded, not one this Emacs is about to visit, so no handler is needed
+to find its last component."
+  (let ((file-name-handler-alist nil))
+    (file-name-nondirectory (directory-file-name directory))))
+
 (defun agent-shell-vertico-transcript--current-project-root ()
   "Return the current Projectile or project.el root, or nil."
   (cond
@@ -212,7 +225,7 @@ a field has to stop here rather than pick a quoted line up."
        :file file
        :project-root normalized-root
        :project-name
-       (file-name-nondirectory (directory-file-name normalized-root))
+       (agent-shell-vertico-transcript--directory-basename normalized-root)
        :agent agent
        :model model
        :session-id session-id
@@ -291,6 +304,31 @@ the record's working directory to distinguish projects."
             (agent-shell-vertico-transcript-record-modified-time right)
             (agent-shell-vertico-transcript-record-modified-time left)))
          records)))))
+
+(defun agent-shell-vertico-transcript--records-in-store (project-root)
+  "Return every transcript record the store at PROJECT-ROOT holds.
+
+A session ID is unique to the run that created it, not to a project, so
+joining a picker session to its transcript by ID has no business
+filtering by project membership the way
+`agent-shell-vertico-transcript--records-for-project' does for browsing.
+That membership check is what a TRAMP-prefixed working directory keeps
+tripping up: the prefix names whichever host or connection happened to
+read the project that time, and a session resumed from a plain path one
+day and a `/rpc:' path the next carries the same session ID with two
+different-looking headers.  PROJECT-ROOT only locates the store
+directory; every record parsed from it is returned, newest first."
+  (let ((directory (agent-shell-vertico-transcript--directory project-root)))
+    (when (file-directory-p directory)
+      (seq-sort
+       (lambda (left right)
+         (time-less-p
+          (agent-shell-vertico-transcript-record-modified-time right)
+          (agent-shell-vertico-transcript-record-modified-time left)))
+       (mapcar
+        (lambda (file)
+          (agent-shell-vertico-transcript--parse-file file project-root))
+        (directory-files-recursively directory "\\.md\\'"))))))
 
 (defun agent-shell-vertico-transcript--search-directories (project-roots)
   "Return existing transcript directories for PROJECT-ROOTS."
@@ -1213,8 +1251,8 @@ so that directory wins whenever the file has one."
        (agent-shell-vertico-transcript-record-project-root record)
        working-directory
        (agent-shell-vertico-transcript-record-project-name record)
-       (file-name-nondirectory
-        (directory-file-name working-directory))))
+       (agent-shell-vertico-transcript--directory-basename
+        working-directory)))
     record))
 
 (defun agent-shell-vertico-transcript--current-record ()

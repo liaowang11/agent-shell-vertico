@@ -5204,6 +5204,39 @@ The annotation is cut there rather than the title shrinking to nothing."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-records-in-store-ignores-membership ()
+  "Unlike `--records-for-project', every record in the store comes back.
+A join by session ID needs the whole store, not just the transcripts a
+directory comparison would keep."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (other-root (make-temp-file "agent-shell-vertico-other-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "matching.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name root))
+                    "**Session ID:** matching\n\n---\n\n"
+                    "## User\n\nMatching transcript\n"))
+          (with-temp-file (expand-file-name "other.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n"
+                            (directory-file-name other-root))
+                    "**Session ID:** other\n\n---\n\n"
+                    "## User\n\nOther transcript\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-in-store root)))
+            (should
+             (equal
+              (sort (mapcar
+                     #'agent-shell-vertico-transcript-record-session-id
+                     records)
+                    #'string<)
+              '("matching" "other")))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-records-keep-local-stale-and-subdir ()
   "A project-local store identifies its project despite header path drift."
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
@@ -8482,6 +8515,36 @@ and `records' bound to that project's parsed records."
                        #'agent-shell-vertico-resume--select-session))
       (should-not (nth 0 annotations))
       (should (string-match-p "make the sidebar wider" (nth 1 annotations))))))
+
+(ert-deftest agent-shell-vertico-resume-picker-joins-session-across-tramp-mismatch ()
+  "Joining is by session ID, so a TRAMP prefix on either side does not matter.
+The invoking buffer's project root carries a TRAMP prefix from however
+the picker is being run, but the transcript header recorded a plain
+working directory from whenever that session actually ran.  A directory
+comparison would drop the join; the ID does not care."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (annotation nil)
+           (agent-shell-session-choices-function nil)
+           (default-directory (concat "/rpc:remote-host:" root))
+           (agent-shell-vertico-resume-read-choice-function
+            (lambda (_prompt candidates _default)
+              (setq annotation
+                    (agent-shell-vertico-resume--annotate (nth 1 candidates)))
+              (nth 1 candidates))))
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (&rest _) 'project))
+                ((symbol-function 'project-root)
+                 (lambda (_) default-directory)))
+        (advice-add 'agent-shell--prompt-select-session
+                    :around #'agent-shell-vertico-resume--select-session)
+        (unwind-protect
+            (should (equal (agent-shell--prompt-select-session (list session))
+                           session))
+          (advice-remove 'agent-shell--prompt-select-session
+                         #'agent-shell-vertico-resume--select-session)))
+      (should (string-match-p "make the sidebar wider" annotation)))))
 
 (ert-deftest agent-shell-vertico-resume-picker-survives-store-failure ()
   "A transcript store that cannot be read leaves the picker working."

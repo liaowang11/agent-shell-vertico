@@ -95,14 +95,21 @@ so the first record for a session ID is the one kept."
     index))
 
 (defun agent-shell-vertico-resume--index-for-directory (directory)
-  "Return the transcript index for the project DIRECTORY belongs to.
+  "Return the transcript index for the store DIRECTORY belongs to.
+
+Indexed by session ID rather than filtered by project membership: a
+picker session lists sessions this machine's agent knows about, and each
+is joined to its transcript by the ID the ACP session carries, not by
+comparing directories.  That is what a session listed with a
+TRAMP-prefixed or plain working directory --- whichever the header
+happened to record when it ran --- still joins to.
 
 A store that cannot be read costs the picker its annotations and nothing
 else, so the session list still works when the transcript configuration
 is broken or the store has gone missing."
   (condition-case error
       (agent-shell-vertico-resume--record-index
-       (agent-shell-vertico-transcript--records-for-project
+       (agent-shell-vertico-transcript--records-in-store
         (or (let ((default-directory directory))
               (agent-shell-vertico-transcript--current-project-root))
             directory)))
