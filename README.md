@@ -184,21 +184,36 @@ property rather than by inserted spaces, so the indentation is visual only:
 copying a row yields no leading whitespace, and the two reserved columns
 line a session icon up under the project name.
 
+A row's mark answers two questions at once.  The glyph says what the session
+is, and whether it is filled says whether it holds output nobody has read.
+
+| Status | Unread icon | Read icon | Character |
+| --- | --- | --- | --- |
+| Failed | `nf-md-close_circle` | `nf-md-close_circle_outline` | `✖` |
+| Waiting for a permission response | `nf-md-help_circle` | `nf-md-help_circle_outline` | `?` |
+| Working | `nf-md-dots_horizontal_circle` | `nf-md-dots_horizontal_circle_outline` | `◆` |
+| Ready | `nf-md-check_circle` | `nf-md-check_circle_outline` | `✓` |
+| Starting | `nf-md-circle` | `nf-md-circle_outline` | `○` |
+
 | Meaning | Icon | Character |
 | --- | --- | --- |
-| Failed request | `nf-cod-error` | `✖` |
-| Waiting for a permission response | `nf-cod-stop_circle` | `▲` |
-| Finished, output unread | `nf-cod-circle_large_filled` | `●` |
-| Working | `nf-md-dots_circle` | `◆` |
-| Ready | `nf-cod-circle_large` | `✓` |
-| Starting | `nf-cod-dash` | `○` |
 | Working directory | `nf-cod-root_folder` | `⌂` |
 | Last user message | `nf-cod-arrow_small_right` | `↳` |
 
-Finished-unread and ready are the filled and hollow circle of one family
-because they are the same session before and after you look at it: a turn
-that completes while its buffer is off screen is marked unread, and selecting
-that window clears the mark, leaving an ordinary ready row.
+Every status is one circle with something inside: empty has produced nothing
+yet, dots are working, a check has finished, a question mark is asking you
+something, and a cross failed.  The colour says the same thing the filling
+does, and more: unread is red, a waiting or failed session you have already
+seen is yellow, working is blue, ready is green, starting is grey.  A
+terminal has no filled twin for a check or a question mark, so its plain
+characters are the same read or unread and the colour carries it alone.
+
+The status is what the session is, never whether you have read it.  A turn
+that completes while its buffer is off screen leaves an ordinary ready
+session holding unread output; selecting that window clears the unread mark
+and leaves the row green.  A failed session stays failed until you send it
+something, because that is what it is; reading it only turns it from red to
+yellow.
 
 Nerd-icons glyphs fill their cell, so they are drawn with a wider gap than a
 plain character needs.  A graphical frame gets half a column, the only
@@ -210,10 +225,14 @@ the total session or turn duration; an actively streaming session therefore
 shows `now`.
 
 The header reports the total number of live sessions and compact non-zero
-status counts, each using the same mark its rows use, so a failed request, a
-waiting session, and an unread completion are counted apart.  Hover a count
-for its label.  Project headers summarize the same three counts for the
-sessions they contain.
+counts, each using the same mark its rows use.  Counts are grouped by status
+and read state together, unread first, so a status with both read and unread
+sessions is counted twice: `⧉ 7 : ✖ 1 · ✓ 2 · ? 1 · ◆ 1 · ✓ 2` reads as one
+unread failure, two unread finished sessions, one waiting session you have
+seen, one working, and two read and ready.  Hover a count for its label,
+which says which of the two it is.  Project headers show the single most
+pressing count for the sessions they contain, and nothing when nothing there
+asks for a reply.
 
 The sidebar hides the regular mode line and uses its compact header for these
 statistics instead.

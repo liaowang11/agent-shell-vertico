@@ -169,8 +169,15 @@ before the switch is reopened right after it."
 
 It is called with the keyword arguments `:buffer', the session buffer;
 `:agent', the agent's display name; `:status', the wording the sidebar
-shows for it, one of \"Waiting\", \"Done\" or \"Error\"; and
-`:last-message', the agent's newest message as it arrived, or nil.
+shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
+\"Ready\" or \"Starting\"; `:unread', non-nil when the session holds
+output nobody has read; and `:last-message', the agent's newest message
+as it arrived, or nil.
+
+Status and unread are separate because they answer different questions:
+a finished turn leaves an ordinary `Ready' session holding unread
+output, and a failed one leaves a `Failed' session that stays failed
+after it is read.
 
 Nothing is reported for a session the reader is already looking at, and
 the message text is passed unshortened, since how to fit it belongs to
@@ -178,11 +185,22 @@ whichever channel shows it."
   :type '(choice (const :tag "Do not notify" nil) function)
   :group 'agent-shell-vertico-sidebar)
 
-(defvar agent-shell-vertico-sidebar--attention (make-hash-table :test #'eq)
-  "Buffer to attention metadata.
+(defvar agent-shell-vertico-sidebar--unread (make-hash-table :test #'eq)
+  "Buffer to the time its unread output arrived.
 
-Values are plists with `:kind' (`blocked', `done', or `error') and
-`:time'.")
+Presence is the whole record: a session either holds output nobody has
+read or it does not.  The time orders the attention tier oldest first,
+so the session that has waited longest is the one
+`agent-shell-vertico-sidebar-jump' visits.")
+
+(defvar agent-shell-vertico-sidebar--failed (make-hash-table :test #'eq)
+  "Buffers whose last turn ended in an error.
+
+agent-shell reports what a session is doing, not how its last turn
+ended, so a failed session answers `ready' like any other idle one.  The
+sidebar remembers the failure until a new turn starts, which is what
+makes `failed' a status the reader can see rather than a notification
+they had to catch.")
 
 (defvar agent-shell-vertico-sidebar--activity (make-hash-table :test #'eq)
   "Buffer to the latest observed agent activity timestamp.")
@@ -252,11 +270,19 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
 
 (defface agent-shell-vertico-sidebar-attention
   '((t :inherit error :weight bold))
-  "Face for sessions needing attention."
+  "Face for a session holding output nobody has read."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-unresolved
+  '((t :inherit warning))
+  "Face for a session the reader has seen and not finished with.
+
+A permission request still waiting for its answer, or a failed turn
+nobody has started again."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-working
-  '((t :inherit warning :weight bold))
+  '((t :inherit font-lock-function-name-face :weight bold))
   "Face for working sessions."
   :group 'agent-shell-vertico-sidebar)
 
@@ -368,53 +394,61 @@ what the session is doing apart from any burst; use
           (_ 'unknown)))))
 
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
-  "Return the raw status symbol for BUFFER."
+  "Return the status symbol the sidebar shows for BUFFER.
+
+Two things agent-shell does not report are added to what it does.  The
+agent is working during an out-of-turn burst whether or not a turn asked
+for the work, so say so; and a session whose last turn failed is failed
+until a new turn starts, though agent-shell calls it idle.  Both only
+apply to an otherwise idle session: a live `busy' or `blocked' means a
+real turn owns the session and wins."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
       (let ((status (agent-shell-vertico-sidebar--live-status buffer)))
-        ;; The agent is working during a burst whether or not a turn asked
-        ;; for the work, so say so.  A live `busy' or `blocked' still wins:
-        ;; a real turn owns the session.
-        (if (and (eq status 'ready)
-                 (gethash buffer agent-shell-vertico-sidebar--out-of-turn))
-            'busy
-          status))))
+        (cond
+         ((not (eq status 'ready)) status)
+         ((gethash buffer agent-shell-vertico-sidebar--out-of-turn) 'busy)
+         ((gethash buffer agent-shell-vertico-sidebar--failed) 'failed)
+         (t status)))))
 
-(defun agent-shell-vertico-sidebar--attention (buffer)
-  "Return attention metadata for BUFFER, or nil."
-  (or (agent-shell-vertico-sidebar--snapshot-field buffer :attention)
-      (gethash buffer agent-shell-vertico-sidebar--attention)
-      (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)
-        (list :kind 'blocked
-              :time (or (gethash buffer agent-shell-vertico-sidebar--activity)
-                        (when-let ((time (buffer-local-value
-                                          'buffer-display-time buffer)))
-                          (float-time time))
-                        0.0)))))
+(defun agent-shell-vertico-sidebar--unread-time (buffer)
+  "Return when BUFFER's unread output arrived, or nil when it has none."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :unread)
+      (gethash buffer agent-shell-vertico-sidebar--unread)))
+
+(defun agent-shell-vertico-sidebar--unread-p (buffer)
+  "Return non-nil when BUFFER holds output nobody has read."
+  (and (agent-shell-vertico-sidebar--unread-time buffer) t))
+
+(defun agent-shell-vertico-sidebar--mark-unread-at (buffer time)
+  "Record that BUFFER holds output nobody has read, arriving at TIME."
+  (puthash buffer time agent-shell-vertico-sidebar--unread))
+
+(defun agent-shell-vertico-sidebar--needs-attention-p (buffer)
+  "Return non-nil when BUFFER is waiting on the reader.
+
+Two things ask for the reader, and they are asked differently.  Unread
+output is recorded, because nothing about a session says whether anyone
+has looked at it.  A pending permission decision is not: the session
+reports itself blocked for as long as it waits, so reading the status is
+the whole answer and no record can go stale."
+  (or (agent-shell-vertico-sidebar--unread-p buffer)
+      (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)))
 
 (defun agent-shell-vertico-sidebar--status-name (buffer)
-  "Return a display status name for BUFFER."
+  "Return a display status name for BUFFER.
+
+The name says what the session is, never whether anyone has read it:
+a finished turn leaves a session `Ready'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-name)
-      (pcase (plist-get (agent-shell-vertico-sidebar--attention buffer) :kind)
-        ('blocked "Waiting")
-        ('done "Done")
-        ('error "Error")
-        (_
-         (pcase (agent-shell-vertico-sidebar--raw-status buffer)
-           ('busy "Working")
-           ('ready (if (agent-shell-vertico--session-field buffer :id)
-                       "Ready"
-                     "Starting"))
-           ('starting "Starting")
-           (_ "Unknown"))))))
+      (agent-shell-vertico-sidebar--status-name-for
+       buffer (agent-shell-vertico-sidebar--raw-status buffer))))
 
 (defun agent-shell-vertico-sidebar--status-rank (buffer)
   "Return a status rank for BUFFER.  Lower ranks sort first."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-rank)
-      (cond
-       ((agent-shell-vertico-sidebar--attention buffer) 0)
-       ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy) 1)
-       ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'ready) 2)
-       (t 3))))
+      (agent-shell-vertico-sidebar--status-rank-for
+       (agent-shell-vertico-sidebar--raw-status buffer)
+       (agent-shell-vertico-sidebar--needs-attention-p buffer))))
 
 (defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
   "Return the raw status rank for BUFFER.  Lower ranks sort first.
@@ -422,15 +456,15 @@ what the session is doing apart from any burst; use
 Unlike `agent-shell-vertico-sidebar--status-rank', this deliberately
 ignores attention metadata; attention is the concern of `priority'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :raw-status-rank)
-      (pcase (agent-shell-vertico-sidebar--raw-status buffer)
-        ('blocked 0)
-        ('busy 1)
-        ('ready 2)
-        ('starting 3)
-        (_ 4))))
+      (agent-shell-vertico-sidebar--status-sort-rank-for
+       (agent-shell-vertico-sidebar--raw-status buffer))))
 
 (defun agent-shell-vertico-sidebar--status-rank-for (status attention)
-  "Return the priority rank for STATUS and ATTENTION metadata."
+  "Return the priority rank for STATUS, given ATTENTION.
+
+A session nobody is waiting on ranks by what it is doing.  A failed one
+that has been read ranks last with the sessions that can do nothing:
+it has already said all it has to say."
   (cond
    (attention 0)
    ((eq status 'busy) 1)
@@ -441,25 +475,23 @@ ignores attention metadata; attention is the concern of `priority'."
   "Return the raw status rank for STATUS."
   (pcase status
     ('blocked 0)
-    ('busy 1)
-    ('ready 2)
-    ('starting 3)
-    (_ 4)))
+    ('failed 1)
+    ('busy 2)
+    ('ready 3)
+    ('starting 4)
+    (_ 5)))
 
-(defun agent-shell-vertico-sidebar--status-name-for (buffer status attention)
-  "Return a display status for BUFFER from STATUS and ATTENTION."
-  (pcase (plist-get attention :kind)
+(defun agent-shell-vertico-sidebar--status-name-for (buffer status)
+  "Return a display status for BUFFER from STATUS."
+  (pcase status
     ('blocked "Waiting")
-    ('done "Done")
-    ('error "Error")
-    (_
-     (pcase status
-       ('busy "Working")
-       ('ready (if (agent-shell-vertico--session-field buffer :id)
-                   "Ready"
-                 "Starting"))
-       ('starting "Starting")
-       (_ "Unknown")))))
+    ('failed "Failed")
+    ('busy "Working")
+    ('ready (if (agent-shell-vertico--session-field buffer :id)
+                "Ready"
+              "Starting"))
+    ('starting "Starting")
+    (_ "Unknown")))
 
 (defun agent-shell-vertico-sidebar--session-snapshot (buffer)
   "Return one render snapshot for live session BUFFER.
@@ -469,10 +501,8 @@ header statistics, and row rendering consume the resulting plist instead of
 repeating those queries during one redisplay."
   (let* ((status (agent-shell-vertico-sidebar--raw-status buffer))
          (activity-time (agent-shell-vertico-sidebar--activity-time buffer))
-         (attention (or (gethash buffer
-                                  agent-shell-vertico-sidebar--attention)
-                        (when (eq status 'blocked)
-                          (list :kind 'blocked :time activity-time))))
+         (unread (gethash buffer agent-shell-vertico-sidebar--unread))
+         (attention (or (and unread t) (eq status 'blocked)))
          (busy-since-time
           (if (eq status 'busy)
               (or (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
@@ -493,15 +523,13 @@ repeating those queries during one redisplay."
           :title (agent-shell-vertico-sidebar--title buffer)
           :status status
           :status-name
-          (agent-shell-vertico-sidebar--status-name-for
-           buffer status attention)
+          (agent-shell-vertico-sidebar--status-name-for buffer status)
           :status-rank (agent-shell-vertico-sidebar--status-rank-for
                         status attention)
-          :icon-slot (agent-shell-vertico-sidebar--icon-slot-for
-                      status attention)
+          :mark (agent-shell-vertico-sidebar--mark-for status unread)
           :raw-status-rank
           (agent-shell-vertico-sidebar--status-sort-rank-for status)
-          :attention attention
+          :unread unread
           :activity-time activity-time
           :busy-since-time busy-since-time
           :recency-time recency-time
@@ -529,12 +557,12 @@ repeating those queries during one redisplay."
 (defun agent-shell-vertico-sidebar--priority-time (buffer)
   "Return the timestamp used to order BUFFER by priority.
 
-Attention timestamps order sessions waiting for user action.  Working
+Unread timestamps order sessions waiting for user action.  Working
 sessions use the time their current turn entered the busy state; streamed
 activity is deliberately not a priority tie-breaker.  Every other session
 uses its latest activity, so one read or finished recently stays above
 stale idle sessions instead of dropping to its alphabetical slot."
-  (or (plist-get (agent-shell-vertico-sidebar--attention buffer) :time)
+  (or (agent-shell-vertico-sidebar--unread-time buffer)
       (agent-shell-vertico-sidebar--snapshot-field buffer :busy-since-time)
       (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
       (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
@@ -768,29 +796,43 @@ default in `agent-shell-vertico-sidebar-show-details'."
   "Fit STRING to WIDTH columns, adding an ellipsis when needed."
   (truncate-string-to-width (or string "") (max 1 width) 0 nil "…"))
 
-(defconst agent-shell-vertico-sidebar--icons
-  '((error     "nf-cod-error"               "✖")
-    (blocked   "nf-cod-stop_circle"         "▲")
-    (done      "nf-cod-circle_large_filled" "●")
-    (working   "nf-md-dots_circle"          "◆")
-    (ready     "nf-cod-circle_large"        "✓")
-    (starting  "nf-cod-dash"                "○")
-    (project   "nf-cod-root_folder"         "⌂")
-    (message   "nf-cod-arrow_small_right"   "↳")
-    (sessions  "nf-cod-layers"             "⧉")
-    (expanded  nil                          "▼")
-    (collapsed nil                          "▶"))
-  "Slot, nerd-icons name, and plain character for each sidebar mark.
+(defconst agent-shell-vertico-sidebar--status-icons
+  '((failed   "nf-md-close_circle"
+              "nf-md-close_circle_outline"           "✖")
+    (blocked  "nf-md-help_circle"
+              "nf-md-help_circle_outline"            "?")
+    (busy     "nf-md-dots_horizontal_circle"
+              "nf-md-dots_horizontal_circle_outline" "◆")
+    (ready    "nf-md-check_circle"
+              "nf-md-check_circle_outline"           "✓")
+    (starting "nf-md-circle"
+              "nf-md-circle_outline"                 "○"))
+  "Status, filled and outline nerd-icons names, and plain character.
 
-Slots with no nerd-icons name always draw their character.  Done and ready
-are the filled and hollow circle of one family, because a done session is a
-ready session whose output nobody has read yet.  The `sessions' layers mark
-stands for the total count in a header.  The fold triangles match the ones
-`agent-shell' uses for its own collapsible fragments.")
+One glyph per status, so a mark says what the session is: an empty
+circle has produced nothing yet, dots are working, a check has finished,
+a question mark is asking the reader something, and a cross failed.  The
+filled variant marks unread output, which the colour says too.  A
+terminal has no filled twin for a check or a question mark, so its plain
+character is the same read or unread and the colour carries it alone.")
 
-(defconst agent-shell-vertico-sidebar--icon-order
-  '(error blocked done working ready starting)
+(defconst agent-shell-vertico-sidebar--status-order
+  '(failed blocked busy ready starting)
   "Order in which status counts appear in headers.")
+
+(defconst agent-shell-vertico-sidebar--icons
+  '((project   "nf-cod-root_folder"       "⌂")
+    (message   "nf-cod-arrow_small_right" "↳")
+    (sessions  "nf-cod-layers"            "⧉")
+    (expanded  nil                        "▼")
+    (collapsed nil                        "▶"))
+  "Slot, nerd-icons name, and plain character for each mark that is not
+a status.
+
+Slots with no nerd-icons name always draw their character.  The
+`sessions' layers mark stands for the total count in a header.  The fold
+triangles match the ones `agent-shell' uses for its own collapsible
+fragments.")
 
 (defvar agent-shell-vertico-sidebar--nerd-icons-available 'unknown
   "Whether the `nerd-icons' package could be loaded.
@@ -808,14 +850,12 @@ rather than on every drawn icon.")
            agent-shell-vertico-sidebar--nerd-icons-available)
     (value value)))
 
-(defun agent-shell-vertico-sidebar--slot-icon (slot &optional face)
-  "Return the mark for SLOT, drawn in FACE."
-  (pcase-let* ((`(,_ ,name ,text) (assq slot
-                                        agent-shell-vertico-sidebar--icons))
-               (drawer (when name
-                         (if (string-prefix-p "nf-md-" name)
-                             'nerd-icons-mdicon
-                           'nerd-icons-codicon))))
+(defun agent-shell-vertico-sidebar--draw-icon (name text &optional face)
+  "Return NAME's nerd-icons glyph, or TEXT without them, drawn in FACE."
+  (let ((drawer (when name
+                  (if (string-prefix-p "nf-md-" name)
+                      'nerd-icons-mdicon
+                    'nerd-icons-codicon))))
     (if (and drawer
              (agent-shell-vertico-sidebar--nerd-icons-p)
              (fboundp drawer))
@@ -823,6 +863,21 @@ rather than on every drawn icon.")
             (funcall drawer name :face face)
           (funcall drawer name))
       (if face (propertize text 'face face) text))))
+
+(defun agent-shell-vertico-sidebar--slot-icon (slot &optional face)
+  "Return the mark for SLOT, drawn in FACE."
+  (pcase-let ((`(,_ ,name ,text) (assq slot
+                                       agent-shell-vertico-sidebar--icons)))
+    (agent-shell-vertico-sidebar--draw-icon name text face)))
+
+(defun agent-shell-vertico-sidebar--status-icon (status unread &optional face)
+  "Return the mark for STATUS, filled when UNREAD, drawn in FACE."
+  (pcase-let ((`(,_ ,filled ,outline ,text)
+               (or (assq status agent-shell-vertico-sidebar--status-icons)
+                   (assq 'starting
+                         agent-shell-vertico-sidebar--status-icons))))
+    (agent-shell-vertico-sidebar--draw-icon
+     (if unread filled outline) text face)))
 
 (defun agent-shell-vertico-sidebar--icon-frame ()
   "Return the frame showing the sidebar, or nil for the selected frame."
@@ -844,12 +899,16 @@ graphical frame takes a fraction of one instead."
     (concat " " (propertize " " 'display '(space :width 0.5))))
    (t "  ")))
 
-(defun agent-shell-vertico-sidebar--count-text (slot count &optional face)
-  "Return COUNT preceded by SLOT's mark, both drawn in FACE.
+(defun agent-shell-vertico-sidebar--count-text (mark count &optional face)
+  "Return COUNT preceded by MARK, both drawn in FACE.
 
-The mark and the number are separated the same way a mark and a title are,
-so a glyph that fills its cell does not touch the digits after it."
-  (concat (agent-shell-vertico-sidebar--slot-icon slot face)
+MARK is a status mark, a status and whether it is unread, or one of the
+slots that is not a status.  The mark and the number are separated the
+same way a mark and a title are, so a glyph that fills its cell does not
+touch the digits after it."
+  (concat (if (consp mark)
+              (agent-shell-vertico-sidebar--mark-icon mark face)
+            (agent-shell-vertico-sidebar--slot-icon mark face))
           (agent-shell-vertico-sidebar--icon-gap)
           (let ((count (number-to-string count)))
             (if face (propertize count 'face face) count))))
@@ -863,51 +922,57 @@ NESTED rows are indented below a project header."
             1
             (string-width (agent-shell-vertico-sidebar--icon-gap)))))
 
-(defun agent-shell-vertico-sidebar--icon-slot-for (status attention)
-  "Return the icon slot for STATUS and ATTENTION metadata."
-  (or (pcase (plist-get attention :kind)
-        ('error 'error)
-        ('blocked 'blocked)
-        ('done 'done))
-      (pcase (agent-shell-vertico-sidebar--status-rank-for status nil)
-        (1 'working)
-        (2 'ready)
-        (_ 'starting))))
+(defun agent-shell-vertico-sidebar--mark-for (status unread)
+  "Return the mark a session in STATUS gets, given UNREAD.
 
-(defun agent-shell-vertico-sidebar--icon-slot (buffer)
-  "Return the icon slot for BUFFER."
-  (or (agent-shell-vertico-sidebar--snapshot-field buffer :icon-slot)
-      (agent-shell-vertico-sidebar--icon-slot-for
+A mark is the pair the sidebar draws from: the status picks the glyph
+and the colour family, unread fills the glyph and turns it red."
+  (cons status (and unread t)))
+
+(defun agent-shell-vertico-sidebar--mark (buffer)
+  "Return the mark drawn for BUFFER."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :mark)
+      (agent-shell-vertico-sidebar--mark-for
        (agent-shell-vertico-sidebar--raw-status buffer)
-       (agent-shell-vertico-sidebar--attention buffer))))
+       (agent-shell-vertico-sidebar--unread-p buffer))))
 
-(defun agent-shell-vertico-sidebar--icon-counts (slots)
-  "Return an alist of slot to count for SLOTS, in display order.
+(defun agent-shell-vertico-sidebar--mark-icon (mark &optional face)
+  "Return MARK's glyph, drawn in FACE."
+  (agent-shell-vertico-sidebar--status-icon (car mark) (cdr mark) face))
 
-Slots with no sessions are left out."
+(defun agent-shell-vertico-sidebar--mark-face (mark)
+  "Return the face MARK is drawn in.
+
+Red is what nobody has read.  Yellow is what the reader has seen and
+still owes something: a permission decision, or a failure they have not
+started again.  Everything else is drawn in its status colour."
+  (cond
+   ((cdr mark) 'agent-shell-vertico-sidebar-attention)
+   ((memq (car mark) '(blocked failed))
+    'agent-shell-vertico-sidebar-unresolved)
+   ((eq (car mark) 'busy) 'agent-shell-vertico-sidebar-working)
+   ((eq (car mark) 'ready) 'agent-shell-vertico-sidebar-ready)
+   (t 'agent-shell-vertico-sidebar-detail)))
+
+(defun agent-shell-vertico-sidebar--mark-counts (marks)
+  "Return an alist of mark to count for MARKS, in display order.
+
+Unread marks come first, so a header reads what wants the reader before
+what does not.  Marks with no sessions are left out."
   (let (counts)
-    (dolist (slot agent-shell-vertico-sidebar--icon-order)
-      (let ((count (seq-count (lambda (other) (eq other slot)) slots)))
-        (when (> count 0)
-          (push (cons slot count) counts))))
+    (dolist (unread '(t nil))
+      (dolist (status agent-shell-vertico-sidebar--status-order)
+        (let* ((mark (agent-shell-vertico-sidebar--mark-for status unread))
+               (count (seq-count (lambda (other) (equal other mark)) marks)))
+          (when (> count 0)
+            (push (cons mark count) counts)))))
     (nreverse counts)))
 
 (defun agent-shell-vertico-sidebar--icon (buffer)
-  "Return the status mark for BUFFER, drawn in its status face.
-
-A failed request, a session waiting for a permission response, and a
-session holding unseen output each get their own mark."
-  (agent-shell-vertico-sidebar--slot-icon
-   (agent-shell-vertico-sidebar--icon-slot buffer)
-   (agent-shell-vertico-sidebar--status-face buffer)))
-
-(defun agent-shell-vertico-sidebar--status-face (buffer)
-  "Return the status face for BUFFER."
-  (pcase (agent-shell-vertico-sidebar--status-rank buffer)
-    (0 'agent-shell-vertico-sidebar-attention)
-    (1 'agent-shell-vertico-sidebar-working)
-    (2 'agent-shell-vertico-sidebar-ready)
-    (_ 'agent-shell-vertico-sidebar-detail)))
+  "Return the mark for BUFFER, drawn in its own face."
+  (let ((mark (agent-shell-vertico-sidebar--mark buffer)))
+    (agent-shell-vertico-sidebar--mark-icon
+     mark (agent-shell-vertico-sidebar--mark-face mark))))
 
 (defun agent-shell-vertico-sidebar--compare-buffers (left right sort-by)
   "Return non-nil when LEFT sorts before RIGHT by SORT-BY.
@@ -1244,16 +1309,21 @@ adds no columns of its own either."
 (defun agent-shell-vertico-sidebar--project-summary (buffers)
   "Return the count shown at the right of a project header for BUFFERS.
 
-Only the most urgent attention kind present is counted, and a project with
-nothing waiting on the reader gets no count at all.  The session total is
-the whole sidebar's header, and every other status is on the session row
-that has it, so a project header states only what asks for a reply."
+Only the most pressing mark that asks for the reader is counted, and a
+project with nothing waiting on the reader gets no count at all.  The
+session total is the whole sidebar's header, and every other status is
+on the session row that has it, so a project header states only what
+asks for a reply."
   (when-let ((urgent
               (seq-find
-               (lambda (entry) (memq (car entry) '(error blocked done)))
-               (agent-shell-vertico-sidebar--icon-counts
-                (mapcar #'agent-shell-vertico-sidebar--icon-slot buffers)))))
-    (agent-shell-vertico-sidebar--count-text (car urgent) (cdr urgent))))
+               (lambda (entry)
+                 (let ((mark (car entry)))
+                   (or (cdr mark) (eq (car mark) 'blocked))))
+               (agent-shell-vertico-sidebar--mark-counts
+                (mapcar #'agent-shell-vertico-sidebar--mark buffers)))))
+    (agent-shell-vertico-sidebar--count-text
+     (car urgent) (cdr urgent)
+     (agent-shell-vertico-sidebar--mark-face (car urgent)))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
     (indicator name summary width)
@@ -1647,15 +1717,13 @@ sees one mark rather than a flicker."
                ;; A real turn started meanwhile and owns the session now.
                (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                           '(busy blocked)))
-               ;; Waiting or failed outrank unread output; leave them, and
-               ;; leave an earlier unread mark at its own time so the
+               ;; An earlier unread mark keeps its own time, so the
                ;; attention tier still orders oldest first.
-               (not (gethash buffer agent-shell-vertico-sidebar--attention))
+               (not (gethash buffer agent-shell-vertico-sidebar--unread))
                (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
       (puthash buffer
-               (list :kind 'done
-                     :time (or (plist-get burst :time) (float-time)))
-               agent-shell-vertico-sidebar--attention)
+               (or (plist-get burst :time) (float-time))
+               agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar--notify buffer))
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
@@ -1690,8 +1758,8 @@ message boundary."
   "Report that BUFFER now needs attention.
 
 The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
-this after the attention mark is in place, since the status reported is
-the one the sidebar reads back from it."
+this after the unread mark and the status are in place, since both are
+read back from the session."
   (when (and agent-shell-vertico-sidebar-notify-function
              (buffer-live-p buffer)
              (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
@@ -1699,6 +1767,7 @@ the one the sidebar reads back from it."
              :buffer buffer
              :agent (agent-shell-vertico--agent-name buffer)
              :status (agent-shell-vertico-sidebar--status-name buffer)
+             :unread (agent-shell-vertico-sidebar--unread-p buffer)
              :last-message (agent-shell-vertico-sidebar--last-message buffer))))
 
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
@@ -1711,43 +1780,44 @@ the one the sidebar reads back from it."
       ('permission-request
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
-       (puthash buffer (list :kind 'blocked :time now)
-                agent-shell-vertico-sidebar--attention)
+       ;; The request itself is news; the session reports itself blocked
+       ;; for as long as it waits, so nothing records that part.
+       (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
-       (puthash buffer (list :kind 'error :time now)
-                agent-shell-vertico-sidebar--attention)
+       (puthash buffer t agent-shell-vertico-sidebar--failed)
+       (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
-           (remhash buffer agent-shell-vertico-sidebar--attention)
-         (puthash buffer (list :kind 'done :time now)
-                  agent-shell-vertico-sidebar--attention)
+           (remhash buffer agent-shell-vertico-sidebar--unread)
+         (agent-shell-vertico-sidebar--mark-unread-at buffer now)
          (agent-shell-vertico-sidebar--notify buffer)))
       ('input-submitted
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
        ;; Submitting a new prompt means the user has seen whatever the
-       ;; previous turn produced, so the new turn starts unmarked.  A
-       ;; permission request that is still pending is re-derived from the
-       ;; live status.
-       (remhash buffer agent-shell-vertico-sidebar--attention))
+       ;; previous turn produced, and starts a turn of their own, so how
+       ;; the last one ended stops being what the session is.
+       (remhash buffer agent-shell-vertico-sidebar--unread)
+       (remhash buffer agent-shell-vertico-sidebar--failed))
       ('permission-response
-       (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
-         (unless (eq status 'blocked)
-           (remhash buffer agent-shell-vertico-sidebar--attention))
-         (when (eq status 'busy)
-           (puthash buffer now agent-shell-vertico-sidebar--busy-since-times))))
+       ;; Answering a request is reading it, whether or not another one
+       ;; is already pending behind it.
+       (remhash buffer agent-shell-vertico-sidebar--unread)
+       (when (eq (agent-shell-vertico-sidebar--live-status buffer) 'busy)
+         (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)))
       ('idle
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times))
       ('clean-up
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--messages)
-       (remhash buffer agent-shell-vertico-sidebar--attention)
+       (remhash buffer agent-shell-vertico-sidebar--unread)
+       (remhash buffer agent-shell-vertico-sidebar--failed)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
       (_ nil))
@@ -1770,7 +1840,8 @@ the one the sidebar reads back from it."
     (agent-shell-vertico-sidebar--cancel-out-of-turn (current-buffer))
     (remhash (current-buffer) agent-shell-vertico-sidebar--subscriptions)
     (remhash (current-buffer) agent-shell-vertico-sidebar--messages)
-    (remhash (current-buffer) agent-shell-vertico-sidebar--attention)
+    (remhash (current-buffer) agent-shell-vertico-sidebar--unread)
+    (remhash (current-buffer) agent-shell-vertico-sidebar--failed)
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
@@ -1834,7 +1905,8 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
       (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
       (remhash buffer agent-shell-vertico-sidebar--subscriptions)
       (remhash buffer agent-shell-vertico-sidebar--messages)
-      (remhash buffer agent-shell-vertico-sidebar--attention)
+      (remhash buffer agent-shell-vertico-sidebar--unread)
+      (remhash buffer agent-shell-vertico-sidebar--failed)
       (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
       (remhash buffer agent-shell-vertico-sidebar--activity)))
   (dolist (buffer (if buffers-supplied buffers (agent-shell-buffers)))
@@ -1892,11 +1964,13 @@ shows."
                 (seq-filter #'buffer-live-p (agent-shell-buffers))))))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
-  "Mark completed output in BUFFER as seen."
-  (when (eq (plist-get (gethash buffer agent-shell-vertico-sidebar--attention)
-                       :kind)
-            'done)
-    (remhash buffer agent-shell-vertico-sidebar--attention)
+  "Mark unread output in BUFFER as seen.
+
+Reading settles what the session has said, not what it is waiting for:
+a blocked session still needs its permission decision afterwards, and a
+failed one is still failed."
+  (when (gethash buffer agent-shell-vertico-sidebar--unread)
+    (remhash buffer agent-shell-vertico-sidebar--unread)
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defun agent-shell-vertico-sidebar--mark-selected-seen (frame-or-window)
@@ -2252,51 +2326,51 @@ in that order."
                      (agent-shell-vertico-sidebar--status-rank buffer))))
     counts))
 
-(defun agent-shell-vertico-sidebar--header-stat (count slot label)
-  "Return compact COUNT status text marked with SLOT and named by LABEL."
-  (when (> count 0)
-    (propertize (agent-shell-vertico-sidebar--count-text
-                 slot count (agent-shell-vertico-sidebar--slot-face slot))
-                'help-echo label)))
-
-(defconst agent-shell-vertico-sidebar--slot-labels
-  '((sessions . "sessions")
-    (error . "error")
+(defconst agent-shell-vertico-sidebar--status-labels
+  '((failed . "failed")
     (blocked . "waiting")
-    (done . "done")
-    (working . "working")
+    (busy . "working")
     (ready . "ready")
     (starting . "starting"))
-  "Tooltip wording for each count in a header.
+  "Tooltip wording for each status counted in a header.
 
 The marks replace the words, so the wording moves to the tooltip.")
 
-(defun agent-shell-vertico-sidebar--slot-face (slot)
-  "Return the face SLOT is drawn in."
-  (pcase slot
-    ((or 'error 'blocked 'done) 'agent-shell-vertico-sidebar-attention)
-    ('working 'agent-shell-vertico-sidebar-working)
-    ('ready 'agent-shell-vertico-sidebar-ready)
-    (_ 'agent-shell-vertico-sidebar-detail)))
+(defun agent-shell-vertico-sidebar--mark-label (mark)
+  "Return the tooltip wording for MARK.
 
-(defun agent-shell-vertico-sidebar--header-line-for (slots)
-  "Return the header line counting SLOTS, one segment per occupied slot.
+Two counts can share a glyph, one unread and one read, so the wording
+says which this one is."
+  (let ((status (or (alist-get (car mark)
+                               agent-shell-vertico-sidebar--status-labels)
+                    "unknown")))
+    (if (cdr mark)
+        (concat status ", unread")
+      status)))
 
-A colon separates the total from the statuses it breaks down into; the
-statuses themselves are separated by the lighter middle dot."
+(defun agent-shell-vertico-sidebar--header-stat (count mark)
+  "Return compact COUNT text for MARK, drawn and named as MARK."
+  (when (> count 0)
+    (propertize (agent-shell-vertico-sidebar--count-text
+                 mark count (agent-shell-vertico-sidebar--mark-face mark))
+                'help-echo (agent-shell-vertico-sidebar--mark-label mark))))
+
+(defun agent-shell-vertico-sidebar--header-line-for (marks)
+  "Return the header line counting MARKS, one segment per occupied mark.
+
+A colon separates the total from the marks it breaks down into; the
+marks themselves are separated by the lighter middle dot.  A status with
+both read and unread sessions is counted twice, since read and unread
+are what the reader is looking for."
   (let ((total (propertize
                 (agent-shell-vertico-sidebar--count-text
-                 'sessions (length slots))
-                'help-echo
-                (alist-get 'sessions
-                           agent-shell-vertico-sidebar--slot-labels)))
+                 'sessions (length marks))
+                'help-echo "sessions"))
         parts)
-    (dolist (entry (agent-shell-vertico-sidebar--icon-counts slots))
-      (pcase-let ((`(,slot . ,count) entry))
+    (dolist (entry (agent-shell-vertico-sidebar--mark-counts marks))
+      (pcase-let ((`(,mark . ,count) entry))
         (when-let ((text (agent-shell-vertico-sidebar--header-stat
-                          count slot
-                          (alist-get slot
-                                     agent-shell-vertico-sidebar--slot-labels))))
+                          count mark)))
           (push text parts))))
     (concat " " total
             (when parts
@@ -2305,12 +2379,12 @@ statuses themselves are separated by the lighter middle dot."
 (defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
   "Return a cached header string for SNAPSHOTS."
   (agent-shell-vertico-sidebar--header-line-for
-   (mapcar (lambda (snapshot) (plist-get snapshot :icon-slot)) snapshots)))
+   (mapcar (lambda (snapshot) (plist-get snapshot :mark)) snapshots)))
 
 (defun agent-shell-vertico-sidebar--header-line ()
   "Return the sidebar header with live session statistics."
   (agent-shell-vertico-sidebar--header-line-for
-   (mapcar #'agent-shell-vertico-sidebar--icon-slot
+   (mapcar #'agent-shell-vertico-sidebar--mark
            (seq-filter #'buffer-live-p (agent-shell-buffers)))))
 
 (defconst agent-shell-vertico-sidebar--help-buffer
@@ -2543,7 +2617,7 @@ while normal and motion states get the same direct mnemonic commands."
 The order is the sidebar's own `priority' order, whose attention tier
 runs oldest first, so the head of this list is the session that has
 been waiting longest."
-  (seq-filter #'agent-shell-vertico-sidebar--attention
+  (seq-filter #'agent-shell-vertico-sidebar--needs-attention-p
               (agent-shell-vertico-sidebar--sort-buffers
                (seq-filter #'buffer-live-p (agent-shell-buffers))
                'priority)))
@@ -2574,8 +2648,8 @@ one, so the command works from the session the reader walked into."
   "Mark the session at point, or the current session, as unread.
 
 Displaying a session counts as reading it, so opening one by mistake
-drops the mark that said it still owed the reader an answer.  This puts
-that mark back: the session returns to the head of the sidebar's
+drops the mark that said its output was still owed to the reader.  This
+puts that mark back: the session returns to the head of the sidebar's
 `priority' order, and `agent-shell-vertico-sidebar-jump' visits it
 again.
 
@@ -2585,9 +2659,7 @@ does not jump ahead of one that has waited longer.
 
 A working session is refused, because nothing has finished for the
 reader to have missed, and the turn marks itself unread when it
-completes away from the reader.  A session already needing attention
-keeps the mark it has, since a permission decision or an error outranks
-unread output.
+completes away from the reader.
 
 Leave the session after marking it.  The mark is cleared again as soon
 as the reader is seen looking at the session, which includes staying in
@@ -2598,18 +2670,12 @@ it until Emacs regains input focus."
     (cond
      ((eq status 'busy)
       (user-error "Session %s is still working" (buffer-name buffer)))
-     ((agent-shell-vertico-sidebar--attention buffer)
-      (message "Session %s already needs attention: %s"
-               (buffer-name buffer)
-               (agent-shell-vertico-sidebar--status-name buffer)))
+     ((agent-shell-vertico-sidebar--unread-p buffer)
+      (message "Session %s is already unread" (buffer-name buffer)))
      (t
-      (puthash buffer
-               (list :kind 'done
-                     :time (or (gethash
-                                buffer
-                                agent-shell-vertico-sidebar--activity)
-                               (float-time)))
-               agent-shell-vertico-sidebar--attention)
+      (agent-shell-vertico-sidebar--mark-unread-at
+       buffer (or (gethash buffer agent-shell-vertico-sidebar--activity)
+                  (float-time)))
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s marked unread" (buffer-name buffer))))))
 
@@ -2617,32 +2683,26 @@ it until Emacs regains input focus."
 (defun agent-shell-vertico-sidebar-mark-read ()
   "Mark the session at point, or the current session, as read.
 
-The sidebar clears a mark when it sees the reader looking at the
-session, which means answering a session is the only way to stop it
-being listed first.  This drops the mark without visiting: an error
-already dealt with elsewhere, or a finished turn read in the sidebar
-itself, stops holding the head of the `priority' order and
+The sidebar clears the unread mark when it sees the reader looking at
+the session, which means visiting a session is otherwise the only way to
+stop it being listed first.  This drops the mark without visiting: a
+failure already dealt with elsewhere, or a finished turn read in the
+sidebar itself, stops holding the head of the `priority' order and
 `agent-shell-vertico-sidebar-jump' moves on to the next session.
 
-A session still waiting for a permission decision is refused.  Its mark
-is derived from the live status rather than recorded, so dropping the
-record would hide a session that cannot proceed until the reader
-answers it.
+Only the unread mark goes.  A session waiting for a permission decision
+keeps its place through its status, which no command can mark away, and
+a failed session stays failed until a new turn starts.
 
 New output marks the session again, which includes a turn that finishes
 after this and a background stream that goes quiet after this."
   (interactive)
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
-    (cond
-     ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)
-      (user-error "Session %s is waiting for a permission response"
-                  (buffer-name buffer)))
-     ((not (gethash buffer agent-shell-vertico-sidebar--attention))
-      (message "Session %s needs no attention" (buffer-name buffer)))
-     (t
-      (remhash buffer agent-shell-vertico-sidebar--attention)
+    (if (not (agent-shell-vertico-sidebar--unread-p buffer))
+        (message "Session %s has nothing unread" (buffer-name buffer))
+      (remhash buffer agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar-refresh)
-      (message "Session %s marked read" (buffer-name buffer))))))
+      (message "Session %s marked read" (buffer-name buffer)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-jump (&optional read)
@@ -2660,9 +2720,9 @@ every live session, not only the ones needing attention."
        (agent-shell-vertico--read-session "Agent shell: " 'all))
     (if-let* ((buffer (car (agent-shell-vertico-sidebar--attention-sessions))))
         (progn
-          ;; Visiting reads whatever the session finished.  A permission
-          ;; decision is still owed afterwards, so `--mark-seen' leaves
-          ;; that mark alone and the session keeps its place.
+          ;; Visiting reads whatever the session had to say.  A
+          ;; permission decision is still owed afterwards, and the
+          ;; blocked status keeps the session in place for it.
           (agent-shell-vertico-sidebar--mark-seen buffer)
           (agent-shell-vertico--display-session (buffer-name buffer)))
       (message "%s" (agent-shell-vertico-sidebar--no-attention-message)))))

@@ -192,40 +192,72 @@ displayed. One setting covers the switch commands, the Embark actions and
 the sidebar, which is why it is a variable here rather than advice in a
 user's configuration.
 
-**Which session needs attention.** The sidebar's `--attention` table is the
-one record of what a session still owes the reader: `blocked` (a permission
-decision), `error`, or `done` (a finished turn nobody has read). Marks are
-set from the `agent-shell` event subscription in `--handle-event`, plus
-`--out-of-turn-settled` for output that arrives with no turn in flight. A
-mark is cleared when the reader actually looks at the session, which
+**Status and unread are two axes.** What a session *is* and what it
+*owes the reader* are separate questions, and conflating them was a bug:
+a finished turn used to report the status `Done`, so an idle session
+reported as busy-ish and a failure could never be read away. `--raw-status`
+answers the first question with `starting`, `ready`, `busy`, `blocked` or
+`failed`. The first four come from `agent-shell-status`; `failed` is the
+sidebar's own overlay, recorded in `--failed` from the `error` event and
+dropped when a new turn starts, because agent-shell reports what a session
+is doing and not how its last turn ended. The overlay only applies to an
+otherwise idle session, so a live `busy` or `blocked` always wins.
+
+**Which session needs attention.** `--unread` is the second axis: a buffer
+to the time its unread output arrived, where presence is the whole record.
+It is set from the `agent-shell` event subscription in `--handle-event`
+(a finished turn, a permission request, an error), plus
+`--out-of-turn-settled` for output that arrives with no turn in flight.
+It is cleared when the reader actually looks at the session, which
 `--session-focused-p` decides by comparing against the selected window's
 buffer on a focused frame. Being merely current is not enough: any code
 that does `with-current-buffer` on a session would otherwise mark it read.
-The `priority` sort orders the table's sessions first and oldest-first
+`--needs-attention-p` joins the two axes: unread output, or a `blocked`
+status. Blocked is deliberately not recorded — the session reports itself
+blocked for as long as it waits, so reading the status is the whole
+answer and no record can go stale. Reading a blocked session therefore
+drops its unread mark and leaves it in the attention tier, which is
+right: it still owes a permission decision.
+The `priority` sort puts the attention sessions first, oldest-first
 within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
 `--sort-buffers ... 'priority'` and nothing else has to rank them again.
 `agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets
-by hand, and it writes the same `done` kind rather than a kind of its own,
-so status names, icons, ranks, counters and the jump order need no case for
-it. It stamps the session's last activity time, not the current time, so
-the oldest-first tier stays truthful; it refuses a `busy` session, whose
-turn has produced nothing to miss and would be misreported as finished;
-and it leaves an existing mark alone, since `blocked` and `error` outrank
-unread output. It deliberately does not fight the clear paths: marking a
+by hand, and it writes the same record the events write, so status names,
+icons, ranks, counters and the jump order need no case for it. It stamps
+the session's last activity time, not the current time, so the
+oldest-first tier stays truthful; it refuses a `busy` session, whose turn
+has produced nothing to miss; and it leaves an existing mark at its own
+time. It deliberately does not fight the clear paths: marking a
 session unread while sitting in it holds only until the reader is next seen
 looking at it, which is a decision, not an oversight.
-`--mark-read` is the same table in reverse, and it refuses a session whose
-live status is `blocked` for a reason worth keeping: that mark is derived
-in `--attention` from the status rather than recorded, so dropping the
-record would hide a session that cannot proceed. Both commands resolve
-their session through `--attention-target`, which reads the sidebar row at
-point when called there and the current buffer's session, viewport
+`--mark-read` is the same record in reverse and refuses nothing, because
+the unread mark is now the only thing it can drop: a blocked session keeps
+its place through its status and a failed one stays failed. Both commands
+resolve their session through `--attention-target`, which reads the sidebar
+row at point when called there and the current buffer's session, viewport
 included, anywhere else.
+
+**Drawing a session.** A row's mark is a `(STATUS . UNREAD)` cons, built by
+`--mark-for` and cached in the render snapshot as `:mark`. The status picks
+the glyph from `--status-icons`, which lists a filled and an outline
+nerd-icons name plus one plain character per status, and unread picks
+between the two. `--mark-face` colours it: red (`-attention`) for unread,
+yellow (`-unresolved`) for a `blocked` or `failed` session already read,
+then the status colours. Red therefore means exactly `--needs-attention-p`
+minus the sessions the reader has already seen. The plain characters have
+no filled twin for a check or a question mark, so in a terminal the colour
+alone carries unread; that is a deliberate limit, not an oversight.
+`--mark-counts` groups the header and project-header counts by mark, unread
+first, so one status can be counted twice and `--mark-label` says which is
+which in the tooltip. Slots that are not statuses (`project`, `message`,
+`sessions`, the fold triangles) stay in `--icons` and are drawn by
+`--slot-icon`; both go through `--draw-icon`.
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
 `:buffer`, `:agent` (the agent's display name), `:status` (the same word
-the sidebar shows) and `:last-message`.
+the sidebar shows for the session, never a read state), `:unread` (whether
+the session holds output nobody has read) and `:last-message`.
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
 streamed chunk and keeps none of them; any other event ends the message.
