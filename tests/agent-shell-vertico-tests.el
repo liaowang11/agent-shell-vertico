@@ -5408,6 +5408,31 @@ belongs to, whatever directory the file happens to be stored in."
     (should-error (agent-shell-vertico-transcript--current-record)
                   :type 'user-error)))
 
+(ert-deftest agent-shell-vertico-transcript-manual-mode-shows-header-line ()
+  "Toggling the mode by hand still parses the visited file for the header.
+`--header-line' only reads the cached record; without this, a manual
+`M-x agent-shell-vertico-transcript-mode' left it nil and the header
+line blank, even though the buffer is a transcript on disk."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n"
+                    "**Working Directory:** /work/project\n"
+                    "**Session ID:** manual\n\n---\n\n"
+                    "## User\n\nhello\n"))
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (agent-shell-vertico-transcript-mode 1)
+            (should agent-shell-vertico-transcript--record)
+            (should (agent-shell-vertico-transcript--header-line))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
 (ert-deftest agent-shell-vertico-transcript-move-to-speaker-reports-the-end ()
   "Running out of headings says so rather than moving point."
   (with-temp-buffer

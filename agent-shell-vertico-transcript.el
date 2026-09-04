@@ -1073,6 +1073,13 @@ that is how they are reached in Evil states."
   :keymap agent-shell-vertico-transcript-mode-map
   (if agent-shell-vertico-transcript-mode
       (progn
+        (unless agent-shell-vertico-transcript--record
+          (when-let* ((file (buffer-file-name)))
+            (setq-local agent-shell-vertico-transcript--record
+                        (agent-shell-vertico-transcript--record-from-file
+                         file
+                         (or (agent-shell-vertico-transcript--current-project-root)
+                             default-directory)))))
         (setq-local header-line-format
                     '(:eval
                       (agent-shell-vertico-transcript--header-line)))
