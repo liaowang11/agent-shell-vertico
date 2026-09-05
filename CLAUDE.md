@@ -252,6 +252,13 @@ first, so one status can be counted twice and `--mark-label` says which is
 which in the tooltip. Slots that are not statuses (`project`, `message`,
 `sessions`, the fold triangles) stay in `--icons` and are drawn by
 `--slot-icon`; both go through `--draw-icon`.
+The fringe marker for the current session is derived, not stored:
+`--current-session` is the session, or viewport, the selected window shows,
+and nothing else. Selecting a file, magit or the sidebar itself leaves no
+row marked. The render caches what it drew in
+`--rendered-current-session`, and the selection and buffer-change hooks
+compare against that cache to decide whether to redraw, so the cache can
+never disagree with the windows for longer than one idle refresh.
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives

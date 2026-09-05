@@ -230,12 +230,12 @@ Values are plists with `:chunks', the message text in reverse arrival
 order, and `:open', whether the next chunk continues that message or
 starts a new one.")
 
-(defvar agent-shell-vertico-sidebar--current-session nil
-  "Live session buffer the reader is currently in, or nil.
+(defvar-local agent-shell-vertico-sidebar--rendered-current-session nil
+  "Session whose row the most recent render marked as current, or nil.
 
-Tracks the session, or its viewport, most recently shown in a selected
-and focused window, so the sidebar can still mark that one row once the
-reader has moved on to the sidebar itself or to an unrelated buffer.")
+A cache of what is drawn, never the answer itself: that comes from
+`agent-shell-vertico-sidebar--current-session' each time.  The selection
+hooks compare the two to decide whether the marker needs a redraw.")
 
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
@@ -1271,7 +1271,8 @@ row for the current session gets the same treatment for its fringe
 marker, prepended to whichever indentation prefix already applies, so it
 adds no columns of its own either."
   (let* ((marker (and (eq kind 'session)
-                      (eq node agent-shell-vertico-sidebar--current-session)
+                      (eq node
+                          agent-shell-vertico-sidebar--rendered-current-session)
                       (agent-shell-vertico-sidebar--current-session-marker)))
          (start (point))
          (first-prefix (concat marker (and nested "  ")))
@@ -1423,6 +1424,9 @@ a column of slack rather than pushing its count past the window edge."
           (agent-shell-vertico-sidebar--cancel-resize)
           (setq agent-shell-vertico-sidebar--dirty nil
                 agent-shell-vertico-sidebar--last-rendered-width width
+                agent-shell-vertico-sidebar--rendered-current-session
+                (and buffers
+                     (agent-shell-vertico-sidebar--current-session buffers))
                 header-line-format
                 (agent-shell-vertico-sidebar--header-line-from-snapshots
                  snapshots))
@@ -1849,8 +1853,6 @@ read back from the session."
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
-    (when (eq (current-buffer) agent-shell-vertico-sidebar--current-session)
-      (setq agent-shell-vertico-sidebar--current-session nil))
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defun agent-shell-vertico-sidebar--watch-buffer (&optional buffer schedule)
@@ -1954,18 +1956,41 @@ otherwise be unread."
              (eq shown (agent-shell-vertico-sidebar--viewport-buffer
                         buffer))))))
 
-(defun agent-shell-vertico-sidebar--session-for-buffer (buffer)
+(defun agent-shell-vertico-sidebar--session-for-buffer (buffer
+                                                        &optional sessions)
   "Return the session BUFFER belongs to, or nil.
 
 A session buffer stands for itself; a viewport stands for the session it
-shows."
+shows.  SESSIONS, when given, are the live session buffers to search for
+a viewport, saving a render its own query."
   (when (buffer-live-p buffer)
     (if (with-current-buffer buffer (derived-mode-p 'agent-shell-mode))
         buffer
       (seq-find (lambda (session)
                   (eq buffer
                       (agent-shell-vertico-sidebar--viewport-buffer session)))
-                (seq-filter #'buffer-live-p (agent-shell-buffers))))))
+                (or sessions
+                    (seq-filter #'buffer-live-p (agent-shell-buffers)))))))
+
+(defun agent-shell-vertico-sidebar--current-session (&optional sessions)
+  "Return the live session shown in the selected window, or nil.
+
+The reader is in a session only while its buffer, or its viewport, is
+what the selected window shows.  Moving to any other buffer, a file,
+magit or the sidebar itself, leaves it, so nothing is current then.  The
+selected window already follows input focus across frames.  SESSIONS is
+passed on to `agent-shell-vertico-sidebar--session-for-buffer'."
+  (agent-shell-vertico-sidebar--session-for-buffer
+   (window-buffer (selected-window)) sessions))
+
+(defun agent-shell-vertico-sidebar--refresh-current-marker ()
+  "Schedule a redraw when the current session is not the one marked."
+  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (unless (eq (agent-shell-vertico-sidebar--current-session)
+                (buffer-local-value
+                 'agent-shell-vertico-sidebar--rendered-current-session
+                 sidebar))
+      (agent-shell-vertico-sidebar--schedule-refresh))))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
   "Mark unread output in BUFFER as seen.
@@ -1978,7 +2003,7 @@ failed one is still failed."
     (agent-shell-vertico-sidebar--schedule-refresh)))
 
 (defun agent-shell-vertico-sidebar--mark-selected-seen (frame-or-window)
-  "Mark the session shown in FRAME-OR-WINDOW as seen and current.
+  "Mark the session shown in FRAME-OR-WINDOW as seen, then redraw the marker.
 
 A window stands for itself, a frame for its selected window, and nil for
 the current buffer.  A viewport counts as the session it shows."
@@ -1991,10 +2016,8 @@ the current buffer.  A viewport counts as the session it shows."
     (when-let ((session (and (buffer-live-p buffer)
                              (agent-shell-vertico-sidebar--session-for-buffer
                               buffer))))
-      (agent-shell-vertico-sidebar--mark-seen session)
-      (unless (eq session agent-shell-vertico-sidebar--current-session)
-        (setq agent-shell-vertico-sidebar--current-session session)
-        (agent-shell-vertico-sidebar--schedule-refresh)))))
+      (agent-shell-vertico-sidebar--mark-seen session))
+    (agent-shell-vertico-sidebar--refresh-current-marker)))
 
 (defun agent-shell-vertico-sidebar--window-selection-change
     (&optional frame-or-window)
@@ -2004,7 +2027,9 @@ Emacs passes the frame whose selected window changed, because this runs
 from the default value of `window-selection-change-functions'.  Reading
 the current buffer instead would clear the mark of whichever session
 happens to be current, which is the wrong session once a second frame is
-involved."
+involved.  It also runs from `window-buffer-change-functions', which
+passes the frame too: switching buffers in place leaves the selected
+window alone, and only that hook sees the session come or go."
   (agent-shell-vertico-sidebar--mark-selected-seen frame-or-window))
 
 (defun agent-shell-vertico-sidebar--focus-change ()
@@ -2828,6 +2853,8 @@ SCOPE is persp-mode's activation scope, as for
 (add-hook 'agent-shell-mode-hook
           #'agent-shell-vertico-sidebar--watch-buffer-on-mode-hook)
 (add-hook 'window-selection-change-functions
+          #'agent-shell-vertico-sidebar--window-selection-change)
+(add-hook 'window-buffer-change-functions
           #'agent-shell-vertico-sidebar--window-selection-change)
 (add-function :after after-focus-change-function
               #'agent-shell-vertico-sidebar--focus-change)
