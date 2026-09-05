@@ -3017,6 +3017,14 @@ what says a ready session holds output nobody has read."
                    0 'face (agent-shell-vertico-sidebar--icon read))
                   'agent-shell-vertico-sidebar-ready)))))
 
+(ert-deftest agent-shell-vertico-sidebar-working-has-no-colored-background ()
+  "The working face inherits magenta without painting a magenta block."
+  (let ((face 'agent-shell-vertico-sidebar-working))
+    (should (equal (face-attribute face :foreground nil t)
+                   (face-attribute 'ansi-color-magenta :foreground nil t)))
+    (should (equal (face-attribute face :background nil t)
+                   "unspecified-bg"))))
+
 (ert-deftest agent-shell-vertico-sidebar-read-blocked-is-unresolved ()
   "A permission request the reader has seen stops being red.
 

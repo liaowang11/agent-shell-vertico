@@ -20,6 +20,7 @@
 
 (require 'agent-shell)
 (require 'agent-shell-vertico)
+(require 'ansi-color)
 (require 'cl-lib)
 (require 'map)
 (require 'seq)
@@ -282,7 +283,7 @@ nobody has started again."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-working
-  '((t :inherit font-lock-function-name-face :weight bold))
+  '((t :inherit ansi-color-magenta :background "unspecified-bg"))
   "Face for working sessions."
   :group 'agent-shell-vertico-sidebar)
 
