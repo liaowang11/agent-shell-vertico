@@ -186,14 +186,16 @@ line a session icon up under the project name.
 
 A row's mark answers two questions at once.  The glyph says what the session
 is, and whether it is filled says whether it holds output nobody has read.
+Working and starting have nothing to have missed, so they draw one icon
+regardless of read state.
 
 | Status | Unread icon | Read icon | Character |
 | --- | --- | --- | --- |
 | Failed | `nf-md-close_circle` | `nf-md-close_circle_outline` | `✖` |
 | Waiting for a permission response | `nf-md-help_circle` | `nf-md-help_circle_outline` | `?` |
-| Working | `nf-md-dots_horizontal_circle` | `nf-md-dots_horizontal_circle_outline` | `◆` |
+| Working | `nf-md-dots_circle` | `nf-md-dots_circle` | `◆` |
 | Ready | `nf-md-check_circle` | `nf-md-check_circle_outline` | `✓` |
-| Starting | `nf-md-circle` | `nf-md-circle_outline` | `○` |
+| Starting | `nf-md-circle_outline` | `nf-md-circle_outline` | `○` |
 
 | Meaning | Icon | Character |
 | --- | --- | --- |

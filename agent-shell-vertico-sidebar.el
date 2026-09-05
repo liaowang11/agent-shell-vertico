@@ -798,15 +798,15 @@ default in `agent-shell-vertico-sidebar-show-details'."
 
 (defconst agent-shell-vertico-sidebar--status-icons
   '((failed   "nf-md-close_circle"
-              "nf-md-close_circle_outline"           "✖")
+              "nf-md-close_circle_outline"  "✖")
     (blocked  "nf-md-help_circle"
-              "nf-md-help_circle_outline"            "?")
-    (busy     "nf-md-dots_horizontal_circle"
-              "nf-md-dots_horizontal_circle_outline" "◆")
+              "nf-md-help_circle_outline"   "?")
+    (busy     "nf-md-dots_circle"
+              "nf-md-dots_circle"           "◆")
     (ready    "nf-md-check_circle"
-              "nf-md-check_circle_outline"           "✓")
-    (starting "nf-md-circle"
-              "nf-md-circle_outline"                 "○"))
+              "nf-md-check_circle_outline"  "✓")
+    (starting "nf-md-circle_outline"
+              "nf-md-circle_outline"        "○"))
   "Status, filled and outline nerd-icons names, and plain character.
 
 One glyph per status, so a mark says what the session is: an empty
@@ -814,7 +814,11 @@ circle has produced nothing yet, dots are working, a check has finished,
 a question mark is asking the reader something, and a cross failed.  The
 filled variant marks unread output, which the colour says too.  A
 terminal has no filled twin for a check or a question mark, so its plain
-character is the same read or unread and the colour carries it alone.")
+character is the same read or unread and the colour carries it alone.
+Working and starting have nothing to have missed — a session still
+running or not yet begun has produced nothing a reader could be behind
+on — so their filled and outline names are the same glyph and the colour
+is the only thing that ever changes.")
 
 (defconst agent-shell-vertico-sidebar--status-order
   '(failed blocked busy ready starting)

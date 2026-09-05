@@ -2990,16 +2990,18 @@ question mark says what kind of answer."
                      "<md:nf-md-help_circle>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'blocked nil)
                      "<md:nf-md-help_circle_outline>"))
+      ;; Working and starting have nothing to have missed, so both draw
+      ;; the same glyph whether or not the session holds unread output.
       (should (equal (agent-shell-vertico-sidebar--status-icon 'busy t)
-                     "<md:nf-md-dots_horizontal_circle>"))
+                     "<md:nf-md-dots_circle>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'busy nil)
-                     "<md:nf-md-dots_horizontal_circle_outline>"))
+                     "<md:nf-md-dots_circle>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'ready t)
                      "<md:nf-md-check_circle>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'ready nil)
                      "<md:nf-md-check_circle_outline>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'starting t)
-                     "<md:nf-md-circle>"))
+                     "<md:nf-md-circle_outline>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'starting nil)
                      "<md:nf-md-circle_outline>"))
       ;; A status the sidebar does not know draws the starting circle.
