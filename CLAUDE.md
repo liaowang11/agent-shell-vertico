@@ -197,11 +197,15 @@ user's configuration.
 a finished turn used to report the status `Done`, so an idle session
 reported as busy-ish and a failure could never be read away. `--raw-status`
 answers the first question with `starting`, `ready`, `busy`, `blocked` or
-`failed`. The first four come from `agent-shell-status`; `failed` is the
-sidebar's own overlay, recorded in `--failed` from the `error` event and
-dropped when a new turn starts, because agent-shell reports what a session
-is doing and not how its last turn ended. The overlay only applies to an
-otherwise idle session, so a live `busy` or `blocked` always wins.
+`failed`. `busy` and `blocked` come straight from `agent-shell-status`, which
+never reports the other two: `starting` and `failed` are the sidebar's own
+overlays on top of what `agent-shell-status` calls `ready`. `starting` is a
+session with no ACP session id yet, recorded nowhere because the id's
+absence is the whole answer; `failed` is recorded in `--failed` from the
+`error` event and dropped when a new turn starts, because agent-shell
+reports what a session is doing and not how its last turn ended. Both
+overlays only apply to an otherwise idle session, so a live `busy` or
+`blocked` always wins.
 
 **Which session needs attention.** `--unread` is the second axis: a buffer
 to the time its unread output arrived, where presence is the whole record.

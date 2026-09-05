@@ -396,18 +396,21 @@ what the session is doing apart from any burst; use
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
-Two things agent-shell does not report are added to what it does.  The
+Three things agent-shell does not report are added to what it does.  The
 agent is working during an out-of-turn burst whether or not a turn asked
-for the work, so say so; and a session whose last turn failed is failed
-until a new turn starts, though agent-shell calls it idle.  Both only
-apply to an otherwise idle session: a live `busy' or `blocked' means a
-real turn owns the session and wins."
+for the work, so say so; a session whose last turn failed is failed
+until a new turn starts, though agent-shell calls it idle; and a session
+with no ACP session yet is starting, though agent-shell has nothing to
+call it but ready, since no turn is in flight either way.  All three
+only apply to an otherwise idle session: a live `busy' or `blocked' means
+a real turn owns the session and wins."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
       (let ((status (agent-shell-vertico-sidebar--live-status buffer)))
         (cond
          ((not (eq status 'ready)) status)
          ((gethash buffer agent-shell-vertico-sidebar--out-of-turn) 'busy)
          ((gethash buffer agent-shell-vertico-sidebar--failed) 'failed)
+         ((not (agent-shell-vertico--session-field buffer :id)) 'starting)
          (t status)))))
 
 (defun agent-shell-vertico-sidebar--unread-time (buffer)
@@ -441,7 +444,7 @@ The name says what the session is, never whether anyone has read it:
 a finished turn leaves a session `Ready'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-name)
       (agent-shell-vertico-sidebar--status-name-for
-       buffer (agent-shell-vertico-sidebar--raw-status buffer))))
+       (agent-shell-vertico-sidebar--raw-status buffer))))
 
 (defun agent-shell-vertico-sidebar--status-rank (buffer)
   "Return a status rank for BUFFER.  Lower ranks sort first."
@@ -481,15 +484,13 @@ it has already said all it has to say."
     ('starting 4)
     (_ 5)))
 
-(defun agent-shell-vertico-sidebar--status-name-for (buffer status)
-  "Return a display status for BUFFER from STATUS."
+(defun agent-shell-vertico-sidebar--status-name-for (status)
+  "Return a display status name for STATUS."
   (pcase status
     ('blocked "Waiting")
     ('failed "Failed")
     ('busy "Working")
-    ('ready (if (agent-shell-vertico--session-field buffer :id)
-                "Ready"
-              "Starting"))
+    ('ready "Ready")
     ('starting "Starting")
     (_ "Unknown")))
 
@@ -523,7 +524,7 @@ repeating those queries during one redisplay."
           :title (agent-shell-vertico-sidebar--title buffer)
           :status status
           :status-name
-          (agent-shell-vertico-sidebar--status-name-for buffer status)
+          (agent-shell-vertico-sidebar--status-name-for status)
           :status-rank (agent-shell-vertico-sidebar--status-rank-for
                         status attention)
           :mark (agent-shell-vertico-sidebar--mark-for status unread)

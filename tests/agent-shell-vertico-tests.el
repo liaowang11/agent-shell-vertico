@@ -838,10 +838,14 @@ Each element in BINDINGS is of the form:
     (let ((agent-shell-test-buffers
            (list attention working ready starting))
           (agent-shell-test-statuses
+           ;; Upstream has no `starting' status of its own: a session with
+           ;; no ACP session yet still answers `ready', same as `ready'
+           ;; itself.  What tells them apart is `starting''s fixture above
+           ;; omitting `:id'.
            (list (cons attention 'blocked)
                  (cons working 'busy)
                  (cons ready 'ready)
-                 (cons starting 'starting))))
+                 (cons starting 'ready))))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (let ((header (agent-shell-vertico-sidebar--header-line)))
@@ -2854,6 +2858,45 @@ the reader."
        alpha '((:event . input-submitted)))
       (should-not (agent-shell-vertico-sidebar--unread-p alpha))
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready)))))
+
+(ert-deftest agent-shell-vertico-sidebar-no-session-yet-is-starting ()
+  "A session with no ACP session yet is starting, not ready.
+
+Upstream has no status of its own for this: it answers `ready' because
+no turn is in flight, the same answer a genuinely idle session gets.
+What tells them apart is whether the session has an id yet."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/" nil))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))
+      (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                     "Starting")))))
+
+(ert-deftest
+    agent-shell-vertico-sidebar-session-creation-pending-is-starting ()
+  "A session past the handshake but with no session id yet is starting."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:title . "Review alpha"))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))
+      (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                     "Starting")))))
+
+(ert-deftest agent-shell-vertico-sidebar-session-id-ends-starting ()
+  "Getting a session id turns a starting session ready.
+
+No event marks this transition: the next status query simply sees the
+id agent-shell recorded once the session was created."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/" nil))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))
+      (with-current-buffer alpha
+        (setq agent-shell--state '((:session . ((:id . "a"))))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+      (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                     "Ready")))))
 
 (ert-deftest agent-shell-vertico-sidebar-blocked-needs-attention-unrecorded ()
   "A session waiting for a permission decision needs no record to say so.
