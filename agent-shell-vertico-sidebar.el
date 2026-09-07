@@ -2091,20 +2091,25 @@ its own first line however deep in it point started."
   "Move point to the row after the current one, or BACKWARD of it.
 
 Every project header and every session is a stop, and the current row's own
-context and detail lines are not, so each key lands on one row's first line
-and the two directions undo each other.  Point does not move at the ends of
-the list."
+context and detail lines are not, so each key lands on one row's first line.
+Moving back from one of those lines lands on the row point is already in,
+and only the next key leaves it: a session's path and details are part of
+its row, so backing out of them must not skip the row itself.
+
+Point does not move at the ends of the list, and nothing is reported there.
+The only row in a one-session sidebar is both ends at once, and answering
+that there is no row would say the opposite of what the sidebar shows."
   (let* ((node-positions (agent-shell-vertico-sidebar--node-positions))
-         (start (agent-shell-vertico-sidebar--row-start node-positions))
-         (rows (mapcar #'cdr node-positions))
-         (position (seq-find (if backward
-                                 (lambda (position) (< position start))
-                               (lambda (position) (> position start)))
-                             (if backward (reverse rows) rows))))
-    (unless position
-      (user-error "No %s row in the agent-shell sidebar"
-                  (if backward "previous" "next")))
-    (goto-char position)))
+         (start (agent-shell-vertico-sidebar--row-start node-positions)))
+    (if (and backward (> (line-beginning-position) start))
+        (goto-char start)
+      (let* ((rows (mapcar #'cdr node-positions))
+             (position (seq-find (if backward
+                                     (lambda (position) (< position start))
+                                   (lambda (position) (> position start)))
+                                 (if backward (reverse rows) rows))))
+        (when position
+          (goto-char position))))))
 
 (defun agent-shell-vertico-sidebar-next-row ()
   "Move point to the first line of the next session or project row."
@@ -2112,7 +2117,10 @@ the list."
   (agent-shell-vertico-sidebar--move-to-row nil))
 
 (defun agent-shell-vertico-sidebar-previous-row ()
-  "Move point to the first line of the previous session or project row."
+  "Move point to the first line of the row above the one point sits in.
+
+From a session's own path or detail lines this is that session's first
+line, so the row point is in is never skipped."
   (interactive)
   (agent-shell-vertico-sidebar--move-to-row t))
 

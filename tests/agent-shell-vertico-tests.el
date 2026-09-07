@@ -1459,12 +1459,14 @@ a session that is blocked again asking for a reply."
                                  (line-end-position))))
         ;; Point stays on the last session rather than falling off the list.
         (let ((position (point)))
-          (should-error (agent-shell-vertico-sidebar-next-row)
-                        :type 'user-error)
+          (agent-shell-vertico-sidebar-next-row)
           (should (= (point) position)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-previous-row-leaves-current-row ()
-  "Previous-row moves to the row before the one point sits in."
+(ert-deftest agent-shell-vertico-sidebar-previous-row-enters-current-row ()
+  "Previous-row lands on the current row before leaving it.
+
+A session\='s detail lines belong to its row, so backing out of one goes to
+that row\'s own first line; only a second key leaves for the row above."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
@@ -1479,6 +1481,13 @@ a session that is blocked again asking for a reply."
         (agent-shell-vertico-sidebar-mode)
         (should (agent-shell-vertico-sidebar--goto-node (cons 'session beta)))
         (forward-line 1)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+        (agent-shell-vertico-sidebar-previous-row)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
+        (should (string-match-p "Review beta"
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))
         (agent-shell-vertico-sidebar-previous-row)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
         (should (string-match-p "Review alpha"
@@ -1486,9 +1495,39 @@ a session that is blocked again asking for a reply."
                                  (line-beginning-position)
                                  (line-end-position))))
         (let ((position (point)))
-          (should-error (agent-shell-vertico-sidebar-previous-row)
-                        :type 'user-error)
+          (agent-shell-vertico-sidebar-previous-row)
           (should (= (point) position)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-row-motion-with-one-session ()
+  "A lone session is still a row both keys can reach and rest on.
+
+Neither key has anywhere to go from the only row in the list, so point
+stays put and nothing is reported: a sidebar showing one session must not
+answer that it has none.  From that session\='s own detail lines, backing
+up still lands on its first line."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(status)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (goto-char (point-min))
+        (let ((row (point)))
+          (agent-shell-vertico-sidebar-next-row)
+          (should (= (point) row))
+          (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+          (agent-shell-vertico-sidebar-previous-row)
+          (should (= (point) row))
+          (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+          ;; The detail line under the title belongs to the same row.
+          (forward-line 1)
+          (should (> (point) row))
+          (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+          (agent-shell-vertico-sidebar-previous-row)
+          (should (= (point) row)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-row-motion-stops-on-project-headers ()
   "Row motion stops on each project header as well as each session.
@@ -1511,8 +1550,7 @@ reversible, and only the ends of the list refuse to move."
                     'project))
         ;; The first row is the top of the list, so nothing sits above it.
         (let ((position (point)))
-          (should-error (agent-shell-vertico-sidebar-previous-row)
-                        :type 'user-error)
+          (agent-shell-vertico-sidebar-previous-row)
           (should (= (point) position)))
         (agent-shell-vertico-sidebar-next-row)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
