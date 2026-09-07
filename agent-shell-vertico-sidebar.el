@@ -231,12 +231,12 @@ Values are plists with `:chunks', the message text in reverse arrival
 order, and `:open', whether the next chunk continues that message or
 starts a new one.")
 
-(defvar-local agent-shell-vertico-sidebar--rendered-current-session nil
-  "Session whose row the most recent render marked as current, or nil.
+(defvar-local agent-shell-vertico-sidebar--rendered-current-sessions nil
+  "Sessions whose rows the most recent render marked as current.
 
 A cache of what is drawn, never the answer itself: that comes from
-`agent-shell-vertico-sidebar--current-session' each time.  The selection
-hooks compare the two to decide whether the marker needs a redraw.")
+`agent-shell-vertico-sidebar--current-sessions' each time.  The selection
+hooks compare the two to decide whether the markers need a redraw.")
 
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
@@ -1247,7 +1247,7 @@ the window stable without any screen-row arithmetic."
         (setq position next)))))
 
 (defun agent-shell-vertico-sidebar--current-session-marker ()
-  "Return a zero-width fringe marker for the current session's row.
+  "Return a zero-width fringe marker for a current session's row.
 
 The marker is a `display' spec on one space, so it costs no columns in
 the text area: Emacs draws the fringe bitmap in its place instead of the
@@ -1269,12 +1269,12 @@ Indentation is a `line-prefix' display property rather than inserted
 spaces, as `agent-shell' does for its own fragments: the columns are
 visual only, so copied rows carry no leading whitespace and point at the
 beginning of a line is already on the row's first real character.  The
-row for the current session gets the same treatment for its fringe
-marker, prepended to whichever indentation prefix already applies, so it
-adds no columns of its own either."
-  (let* ((marker (and (eq kind 'session)
-                      (eq node
-                          agent-shell-vertico-sidebar--rendered-current-session)
+row of a session the reader can see gets the same treatment for its
+fringe marker, prepended to whichever indentation prefix already
+applies, so it adds no columns of its own either."
+  (let* ((current agent-shell-vertico-sidebar--rendered-current-sessions)
+         (marker (and (eq kind 'session)
+                      (memq node current)
                       (agent-shell-vertico-sidebar--current-session-marker)))
          (start (point))
          (first-prefix (concat marker (and nested "  ")))
@@ -1426,9 +1426,9 @@ a column of slack rather than pushing its count past the window edge."
           (agent-shell-vertico-sidebar--cancel-resize)
           (setq agent-shell-vertico-sidebar--dirty nil
                 agent-shell-vertico-sidebar--last-rendered-width width
-                agent-shell-vertico-sidebar--rendered-current-session
+                agent-shell-vertico-sidebar--rendered-current-sessions
                 (and buffers
-                     (agent-shell-vertico-sidebar--current-session buffers))
+                     (agent-shell-vertico-sidebar--current-sessions buffers))
                 header-line-format
                 (agent-shell-vertico-sidebar--header-line-from-snapshots
                  snapshots))
@@ -1974,24 +1974,38 @@ a viewport, saving a render its own query."
                 (or sessions
                     (seq-filter #'buffer-live-p (agent-shell-buffers)))))))
 
-(defun agent-shell-vertico-sidebar--current-session (&optional sessions)
-  "Return the live session shown in the selected window, or nil.
+(defun agent-shell-vertico-sidebar--current-sessions (&optional sessions)
+  "Return the live sessions on screen in the selected frame.
 
-The reader is in a session only while its buffer, or its viewport, is
-what the selected window shows.  Moving to any other buffer, a file,
-magit or the sidebar itself, leaves it, so nothing is current then.  The
-selected window already follows input focus across frames.  SESSIONS is
-passed on to `agent-shell-vertico-sidebar--session-for-buffer'."
-  (agent-shell-vertico-sidebar--session-for-buffer
-   (window-buffer (selected-window)) sessions))
+A session is current while the reader can see it: one of the frame's
+windows shows its buffer or its viewport.  The selected window alone is
+too narrow an answer, because a reader who moves to the sidebar, to a
+file or to magit beside a session is still working in that session.
+Windows on other frames do not count, and the selected frame already
+follows input focus.  SESSIONS is passed on to
+`agent-shell-vertico-sidebar--session-for-buffer', and is resolved once
+here when the caller has no list of its own: the hooks that ask this
+question run on every window change."
+  (let ((sessions (or sessions
+                      (seq-filter #'buffer-live-p (agent-shell-buffers)))))
+    (delete-dups
+     (delq nil
+           (mapcar (lambda (window)
+                     (agent-shell-vertico-sidebar--session-for-buffer
+                      (window-buffer window) sessions))
+                   (window-list nil 'no-minibuf))))))
 
 (defun agent-shell-vertico-sidebar--refresh-current-marker ()
-  "Schedule a redraw when the current session is not the one marked."
+  "Schedule a redraw when the sessions on screen are not the ones marked.
+
+Order is not part of the answer, so a window rearrangement that shows
+the same sessions redraws nothing."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
-    (unless (eq (agent-shell-vertico-sidebar--current-session)
-                (buffer-local-value
-                 'agent-shell-vertico-sidebar--rendered-current-session
-                 sidebar))
+    (unless (seq-set-equal-p
+             (agent-shell-vertico-sidebar--current-sessions)
+             (buffer-local-value
+              'agent-shell-vertico-sidebar--rendered-current-sessions
+              sidebar))
       (agent-shell-vertico-sidebar--schedule-refresh))))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
