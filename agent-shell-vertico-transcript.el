@@ -925,6 +925,54 @@ two weeks, which is what made them hard to tell apart."
 The first three are named after the availability they select, which is
 what `agent-shell-vertico-transcript--record-status' answers.")
 
+(defconst agent-shell-vertico-transcript--speaker-narrow-keys
+  '((?u "User" user)
+    (?a "Agent" agent)
+    (?m "Message" user agent)
+    (?h "Thoughts" thoughts)
+    (?T "Tool call" tool))
+  "Narrowing keys offered for a match, by who wrote the line it is on.
+
+Each entry is a key, the label the key help shows, and the speakers it
+selects.  One list, so a key cannot come to mean one thing in the help
+and another in the predicate.
+
+These are worth having because a transcript is mostly tool output:
+across this author's store, over ninety percent of the lines rg can match
+were written by a tool call rather than by anybody.  `m' is the filter
+that says so in one key.
+
+`T' is upper case because `t' already selects a transcript with no live
+or resumable session, and `a' is free only as long as no agent narrowing
+key is named `a': a speaker key wins, since it is looked up first."
+  )
+
+(defun agent-shell-vertico-transcript--match-narrow-keys ()
+  "Return the narrowing keys a match offers, speakers first."
+  (append
+   (mapcar
+    (lambda (entry) (cons (car entry) (cadr entry)))
+    agent-shell-vertico-transcript--speaker-narrow-keys)
+   agent-shell-vertico-transcript--narrow-keys))
+
+(defun agent-shell-vertico-transcript--match-narrow-p (key candidate context)
+  "Return non-nil when match CANDIDATE belongs to narrowing KEY.
+
+A speaker key asks who wrote the line the match is on; every other key
+asks what `agent-shell-vertico-transcript--narrow-p' asks of the
+transcript the match is in."
+  (if-let* ((entry
+             (assq key agent-shell-vertico-transcript--speaker-narrow-keys)))
+      (when-let* ((record
+                   (agent-shell-vertico-transcript--record-from-candidate
+                    candidate)))
+        (and
+         (memq
+          (agent-shell-vertico-transcript--speaker-for-record record)
+          (cddr entry))
+         t))
+    (agent-shell-vertico-transcript--narrow-p key candidate context)))
+
 (defun agent-shell-vertico-transcript--narrow-context ()
   "Return what a transcript narrowing predicate needs from the caller.
 
@@ -1545,6 +1593,123 @@ The return value is (CHARACTER LENGTH CLOSING-P)."
         "\\`[ \t]*\\'"
         (buffer-substring-no-properties
          (match-end 1) (line-end-position)))))))
+
+(defconst agent-shell-vertico-transcript--section-regexp
+  "^\\(?:[ \t]\\{0,3\\}\\(?:```+\\|~~~+\\)\\|## \\|### Tool Call \\[\\)"
+  "Every line a section scan has to look at.
+
+Searching for this and examining only what it finds leaves the rest of a
+transcript to the regexp engine, which matters because tool output is
+most of one: scanning the whole store this way costs half what looking at
+every line does.")
+
+(defun agent-shell-vertico-transcript--speaker-at-point ()
+  "Return who wrote the section beginning on the current line, or nil.
+Point is at the beginning of a line that is not inside a fence."
+  (cond
+   ((looking-at-p agent-shell-vertico-transcript--message-heading-regexp)
+    (if (looking-at-p "^## User") 'user 'agent))
+   ((looking-at-p agent-shell-vertico-transcript--thought-heading-regexp)
+    'thoughts)
+   ((looking-at-p agent-shell-vertico-transcript--tool-heading-regexp)
+    'tool)))
+
+(defun agent-shell-vertico-transcript--scan-sections ()
+  "Return the current buffer's sections as a vector of (LINE . SPEAKER).
+
+LINE is where the section's heading is, and the sections are in
+ascending order, so the section a line belongs to is the last one at or
+before it.  The whole of a transcript belongs to some section: the one
+before the first heading is `header', which is where the transcript's own
+metadata lives.
+
+Fences are tracked the way the clean view tracks them, and for the same
+reason: tool output is written inside a fence, and an agent that fetches
+a page or reads an older transcript puts lines beginning with `## ' in
+it.  Those lines belong to the tool call that produced them, not to a
+speaker."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((sections (list (cons 1 'header)))
+          (position (point-min))
+          (line 1)
+          fence)
+      (while (re-search-forward
+              agent-shell-vertico-transcript--section-regexp nil t)
+        (beginning-of-line)
+        (let ((fence-info
+               (agent-shell-vertico-transcript--clean-fence-at-point)))
+          (cond
+           (fence
+            (when (and fence-info
+                       (= (car fence-info) (car fence))
+                       (>= (cadr fence-info) (cdr fence))
+                       (caddr fence-info))
+              (setq fence nil)))
+           (fence-info
+            (setq fence (cons (car fence-info) (cadr fence-info))))
+           (t
+            (when-let* ((speaker
+                         (agent-shell-vertico-transcript--speaker-at-point)))
+              (setq line (+ line (count-lines position (point)))
+                    position (point))
+              (push (cons line speaker) sections)))))
+        (forward-line 1))
+      (vconcat (nreverse sections)))))
+
+(defvar agent-shell-vertico-transcript--sections-cache
+  (make-hash-table :test #'equal)
+  "Sections already scanned, mapping a file to its modification time and them.
+
+Search asks who wrote a match only for the matches it draws or filters,
+so a transcript is scanned when one of its matches is first asked about
+and never again while it is unchanged.  That laziness is what keeps the
+cost off the search: a query matching hundreds of transcripts would
+otherwise read every one of them before showing a row.")
+
+(defun agent-shell-vertico-transcript--sections (file)
+  "Return FILE's sections, scanning it only when it has changed.
+
+See `agent-shell-vertico-transcript--scan-sections' for what a section
+is, and `agent-shell-vertico-transcript--sections-cache' for why the
+answer is kept."
+  (when-let* ((attributes (file-attributes file)))
+    (let ((modified (file-attribute-modification-time attributes))
+          (cached (gethash file agent-shell-vertico-transcript--sections-cache)))
+      (if (and cached (equal (car cached) modified))
+          (cdr cached)
+        (let ((sections
+               (with-temp-buffer
+                 (insert-file-contents file)
+                 (agent-shell-vertico-transcript--scan-sections))))
+          (puthash
+           file (cons modified sections)
+           agent-shell-vertico-transcript--sections-cache)
+          sections)))))
+
+(defun agent-shell-vertico-transcript--section-for-line (sections line)
+  "Return who wrote the section of SECTIONS that LINE falls in.
+
+SECTIONS is what `agent-shell-vertico-transcript--sections' returns: a
+vector in ascending order, searched by halving rather than walked,
+because one transcript can hold thousands of sections and every match
+asks this question."
+  (when (and sections (> (length sections) 0) line)
+    (let ((low 0)
+          (high (1- (length sections))))
+      (while (< low high)
+        (let ((middle (/ (+ low high 1) 2)))
+          (if (<= (car (aref sections middle)) line)
+              (setq low middle)
+            (setq high (1- middle)))))
+      (cdr (aref sections low)))))
+
+(defun agent-shell-vertico-transcript--speaker-for-record (record)
+  "Return who wrote the match RECORD carries, or nil when it has none."
+  (when-let* ((line (agent-shell-vertico-transcript-record-match-line record))
+              (file (agent-shell-vertico-transcript-record-file record)))
+    (agent-shell-vertico-transcript--section-for-line
+     (agent-shell-vertico-transcript--sections file) line)))
 
 (defun agent-shell-vertico-transcript--show-clean-view ()
   "Show only user and agent messages in the current transcript buffer."

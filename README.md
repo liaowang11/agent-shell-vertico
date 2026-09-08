@@ -497,9 +497,13 @@ Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
 Session IDs are treated as opaque strings, so providers are not restricted to
 UUIDs.
 
-Content search runs `rg --json` asynchronously through Consult, aggregates
-matches per transcript as they arrive, and previews the first match. A changed
-query cancels the previous search process. Loading `agent-shell-vertico-consult`
+Content search runs `rg --json` asynchronously through Consult, one row per
+match rather than one per transcript, and previews the match under point. A row
+is `TITLE:LINE: TEXT`, and the annotation beside it adds only what the row
+cannot say for itself: the project, the agent, and whether the session can still
+be reached. rg is asked for the newest transcript first (`--sortr modified`), so
+matches stream to the reader in that order and nothing is held back to be sorted.
+A changed query cancels the previous search process. Loading `agent-shell-vertico-consult`
 also gives ordinary transcript browsing live preview. A preview opens in the
 same mode as the reader, so a candidate and the transcript it leads to look
 alike, with inline images turned off because a preview is scanned rather than
@@ -583,6 +587,16 @@ Transcripts, in browse, resume, and search:
 - `r` resumable, `t` transcript only
 - `p` this project
 - `d` changed today, `w` changed in the last seven days
+
+Search offers those, and narrows by who wrote the line a match is on:
+
+- `u` User, `a` Agent, `m` either of them
+- `h` the agent's thoughts, `T` a tool call
+
+A transcript is mostly tool output — over ninety percent of the lines rg
+can match, in this author's store — so `m` is usually the difference
+between reading a search result and scrolling past a hundred lines of
+tool output. `T` is upper case because `t` already means transcript only.
 
 `agent-shell`'s own session picker:
 

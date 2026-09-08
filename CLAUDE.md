@@ -194,6 +194,23 @@ are built in the Consult-free module, so both are plain functions to test;
 `agent-shell-vertico-consult--async-candidates` only turns rg's output
 into calls to them.
 
+**Who wrote a match.** Search narrows by speaker, which means answering
+which section of a transcript a matched line falls in.
+`--scan-sections` answers it for a whole buffer as a vector of
+`(LINE . SPEAKER)`, ascending, so `--section-for-line` finds a line's
+section by halving rather than walking. It tracks fences exactly as the
+clean view does, and for the same reason: tool output is written inside a
+fence, and an agent that fetches a page or reads an older transcript puts
+`## User` lines in it. Measured against this author's store, a scan of
+all 2429 transcripts (654 MB, 11.1M lines) costs 5.2 s, 2.1 ms a file, so
+the scan is lazy and cached by file plus modification time in
+`--sections-cache`: a transcript is read when one of its matches is first
+asked about and never again while it is unchanged. Drawing a screenful
+costs about 50 ms whatever the query matched; pressing a speaker key
+scans every matched transcript once, which is 0.1 s on a real query and
+2 s on a deliberately broad one. Nothing else in a search touches the
+speaker, so nothing else pays for it.
+
 **Jumping around a viewport's history.** A viewport shows one exchange at
 a time and steps through them one at a time.
 `agent-shell-vertico-viewport-goto-page` reads which exchange to show,

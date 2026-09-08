@@ -369,8 +369,8 @@ a choice with no transcript behind it previews nothing."
            :category 'agent-shell-transcript-match
            :narrow (agent-shell-vertico-consult--narrow
                     (agent-shell-vertico--narrow-keys
-                     agent-shell-vertico-transcript--narrow-keys)
-                    #'agent-shell-vertico-transcript--narrow-p
+                     (agent-shell-vertico-transcript--match-narrow-keys))
+                    #'agent-shell-vertico-transcript--match-narrow-p
                     (agent-shell-vertico-transcript--narrow-context))
            :group (agent-shell-vertico-consult--group
                    #'agent-shell-vertico-transcript--group)

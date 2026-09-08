@@ -7350,6 +7350,145 @@ built on it."
        'agent-shell-transcript embark-default-action-overrides)
       #'agent-shell-vertico-transcript-embark-open))))
 
+(defun agent-shell-vertico-tests--speaker-transcript (file)
+  "Write a transcript to FILE holding one section of every kind."
+  (with-temp-file file
+    (insert
+     "# Agent Shell Transcript\n\n"                      ;; 1
+     "**Agent:** Codex\n"                                ;; 3
+     "**Working Directory:** /work/project\n"            ;; 4
+     "**Session ID:** speakers\n\n"                      ;; 5
+     "---\n\n"                                           ;; 7
+     "## User (2026-09-08 10:00:00)\n\n"                 ;; 9
+     "a question\n\n"                                    ;; 11
+     "## Agent's Thoughts (2026-09-08 10:00:01)\n\n"     ;; 13
+     "a thought\n\n"                                     ;; 15
+     "### Tool Call [completed]: Tool: fetch/fetch\n\n"  ;; 17
+     "**Timestamp:** 2026-09-08 10:00:02\n\n"            ;; 19
+     "```\n"                                             ;; 21
+     "## User (2026-09-08 09:00:00)\n"                   ;; 22
+     "an echoed transcript inside tool output\n"         ;; 23
+     "```\n\n"                                           ;; 24
+     "## Agent (2026-09-08 10:00:03)\n\n"                ;; 26
+     "an answer\n\n"                                     ;; 28
+     "## User (steered) (2026-09-08 10:00:04)\n\n"       ;; 30
+     "a steered question\n")))                           ;; 32
+
+(ert-deftest agent-shell-vertico-transcript-sections-are-fence-aware ()
+  "A heading echoed inside a fenced tool result is not a section.
+Tool output is written inside a fence, and an agent that fetches a page
+or reads an older transcript puts `## User' lines in it."
+  (let ((file (make-temp-file "agent-shell-vertico-speakers-" nil ".md")))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (let ((sections (agent-shell-vertico-transcript--sections file)))
+            (should
+             (equal
+              (append sections nil)
+              '((1 . header)
+                (9 . user)
+                (13 . thoughts)
+                (17 . tool)
+                (26 . agent)
+                (30 . user))))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-section-for-line-covers-the-file ()
+  "Every line belongs to the section it falls in, echoed headings included."
+  (let ((file (make-temp-file "agent-shell-vertico-speakers-" nil ".md")))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (let ((sections (agent-shell-vertico-transcript--sections file)))
+            (should
+             (equal
+              (mapcar
+               (lambda (line)
+                 (agent-shell-vertico-transcript--section-for-line
+                  sections line))
+               '(3 9 11 15 21 22 23 27 31 999))
+              '(header user user thoughts tool tool tool agent user user)))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-sections-are-cached-until-changed ()
+  "A transcript is scanned once, and again only after it changes."
+  (let ((file (make-temp-file "agent-shell-vertico-speakers-" nil ".md"))
+        (scans 0))
+    (unwind-protect
+        (let ((scan
+               (symbol-function
+                'agent-shell-vertico-transcript--scan-sections)))
+          (clrhash agent-shell-vertico-transcript--sections-cache)
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--scan-sections)
+                     (lambda (&rest arguments)
+                       (cl-incf scans)
+                       (apply scan arguments))))
+            (agent-shell-vertico-tests--speaker-transcript file)
+            (agent-shell-vertico-transcript--sections file)
+            (agent-shell-vertico-transcript--sections file)
+            (should (= scans 1))
+            ;; Rewriting the transcript moves its lines, so the answer
+            ;; cannot be the one that was cached.
+            (with-temp-file file
+              (insert "---\n\n## Agent\n\nrewritten\n"))
+            (set-file-times file (time-add (current-time) 10))
+            (should
+             (equal
+              (append (agent-shell-vertico-transcript--sections file) nil)
+              '((1 . header) (3 . agent))))
+            (should (= scans 2))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-match-narrows-by-speaker ()
+  "Each speaker key selects the matches written by that speaker."
+  (let ((file (make-temp-file "agent-shell-vertico-speakers-" nil ".md")))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (let* ((candidate
+                  (lambda (line)
+                    (agent-shell-vertico-transcript--match-candidate
+                     (agent-shell-vertico-transcript-record-create
+                      :file file :title "speakers" :session-id "speakers"
+                      :match-line line :match-text "text")
+                     nil 80)))
+                 (narrows
+                  (lambda (key)
+                    (mapcar
+                     (lambda (line)
+                       (and
+                        (agent-shell-vertico-transcript--match-narrow-p
+                         key (funcall candidate line) nil)
+                        t))
+                     '(11 15 22 27 31)))))
+            ;; user, thoughts, tool, agent, steered user
+            (should (equal (funcall narrows ?u) '(t nil nil nil t)))
+            (should (equal (funcall narrows ?a) '(nil nil nil t nil)))
+            (should (equal (funcall narrows ?m) '(t nil nil t t)))
+            (should (equal (funcall narrows ?h) '(nil t nil nil nil)))
+            (should (equal (funcall narrows ?T) '(nil nil t nil nil)))
+            ;; A key that is not a speaker key still means what it means
+            ;; everywhere else: this transcript has a session ID and no
+            ;; live buffer.
+            (should (equal (funcall narrows ?r) '(t t t t t)))
+            (should (equal (funcall narrows ?l) '(nil nil nil nil nil)))
+            (should (equal (funcall narrows nil) '(t t t t t)))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-match-narrow-keys-add-speakers ()
+  "The match keys are the transcript keys plus the speakers."
+  (let ((keys (agent-shell-vertico-transcript--match-narrow-keys)))
+    (should (equal (alist-get ?u keys) "User"))
+    (should (equal (alist-get ?T keys) "Tool call"))
+    (should (equal (alist-get ?r keys) "Resumable"))
+    ;; No speaker key may take a key the transcript keys already use.
+    (should-not
+     (seq-intersection
+      (mapcar #'car agent-shell-vertico-transcript--speaker-narrow-keys)
+      (mapcar #'car agent-shell-vertico-transcript--narrow-keys)))))
+
 (ert-deftest agent-shell-vertico-transcript-match-embark-shares-the-map ()
   "Match candidates reach the transcript actions the browser reaches.
 The record travels under the same property, so the two categories share
@@ -10213,6 +10352,7 @@ the minibuffer is not the project the reader was asked about."
       (agent-shell-vertico-consult--search '("/work/project/")))
     (let ((narrow (plist-get options :narrow)))
       (should (equal (alist-get ?r (plist-get narrow :keys)) "Resumable"))
+      (should (equal (alist-get ?u (plist-get narrow :keys)) "User"))
       (let ((consult--narrow ?r))
         (should (funcall (plist-get narrow :predicate) candidate))))))
 
