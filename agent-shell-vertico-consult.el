@@ -52,104 +52,48 @@
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
 
-(defun agent-shell-vertico-consult--one-line (text)
-  "Return TEXT collapsed to one trimmed display line."
-  (string-trim
-   (replace-regexp-in-string "[ \t\n\r]+" " " (or text ""))))
-
-(defun agent-shell-vertico-consult--candidate (record)
-  "Return an aggregated Consult candidate for transcript RECORD."
-  (let* ((project
-          (or
-           (agent-shell-vertico-transcript-record-project-name record)
-           "Unscoped"))
-         (count
-          (or
-           (agent-shell-vertico-transcript-record-match-count record)
-           0))
-         (started
-          (or
-           (agent-shell-vertico-transcript-record-started record)
-           (format-time-string
-            "%F %R"
-            (agent-shell-vertico-transcript-record-modified-time
-             record))))
-         (text
-          (truncate-string-to-width
-           (agent-shell-vertico-consult--one-line
-            (agent-shell-vertico-transcript-record-match-text record))
-           100 nil nil "…"))
-         (candidate
-          (format "[%s] [%d] %s  %s"
-                  project count started text)))
-    (add-text-properties
-     0 (length candidate)
-     (list
-      'agent-shell-vertico-transcript-record record
-      'agent-shell-vertico-transcript-file
-      (agent-shell-vertico-transcript-record-file record)
-      'agent-shell-vertico-transcript-line
-      (agent-shell-vertico-transcript-record-match-line record))
-     candidate)
-    candidate))
-
 (defun agent-shell-vertico-consult--async-candidates (project-roots)
-  "Return an async stage aggregating rg output for PROJECT-ROOTS."
+  "Return an async stage turning rg output for PROJECT-ROOTS into candidates.
+
+Every match rg reports becomes a candidate of its own, passed on as it
+arrives.  Nothing is held back to be ordered afterwards, because
+`agent-shell-vertico-transcript--rg-command\=' has already asked rg for the
+order the reader wants.
+
+Two things outlive one chunk of output.  The transcript each match is in
+is parsed once and cached, which matters because a query can match a
+transcript thousands of times, and the cache is kept across a change of
+input as well: rg is re-run on every keystroke over largely the same
+files.  The index that keys candidates apart runs across the whole
+search and restarts only when the input does."
   (lambda (sink)
     (let ((records (make-hash-table :test #'equal))
-          (ignored (make-symbol "ignored")))
+          (index 0)
+          (width
+           (agent-shell-vertico-transcript--candidate-width
+            (window-width (minibuffer-window))
+            agent-shell-vertico-transcript--match-annotation-columns)))
       (lambda (action)
         (cond
          ((stringp action)
-          (clrhash records)
-          (funcall sink action))
-         ((eq action 'flush)
-          (clrhash records)
+          (setq index 0)
           (funcall sink action))
          ((consp action)
-          (dolist (line action)
-            (when-let* ((entry
-                         (agent-shell-vertico-transcript--rg-match-from-json
-                          line)))
-              (let* ((file (car entry))
-                     (match (cdr entry))
-                     (record (gethash file records)))
-                (cond
-                 ((eq record ignored))
-                 ((agent-shell-vertico-transcript-record-p record)
-                  (setf
-                   (agent-shell-vertico-transcript-record-match-count
-                    record)
-                   (1+
-                    (agent-shell-vertico-transcript-record-match-count
-                     record))))
-                 (t
-                  (setq record
-                        (agent-shell-vertico-transcript--record-for-match
-                         file match project-roots))
-                  (puthash file (or record ignored) records))))))
-          (let (found)
-            (maphash
-             (lambda (_file record)
-               (unless (eq record ignored)
-                 (push record found)))
-             records)
-            (setq found
-                  (seq-sort
-                   (lambda (left right)
-                     (time-less-p
-                      (agent-shell-vertico-transcript-record-modified-time
-                       right)
-                      (agent-shell-vertico-transcript-record-modified-time
-                       left)))
-                   found))
-            (funcall sink 'flush)
-            (when found
-              (funcall
-               sink
-               (mapcar
-                #'agent-shell-vertico-consult--candidate
-                found)))))
+          (let (candidates)
+            (dolist (line action)
+              (when-let* ((entry
+                           (agent-shell-vertico-transcript--rg-match-from-json
+                            line))
+                          (record
+                           (agent-shell-vertico-transcript--record-for-match
+                            (car entry) (cdr entry) project-roots records)))
+                (push
+                 (agent-shell-vertico-transcript--match-candidate
+                  record index width)
+                 candidates)
+                (setq index (1+ index))))
+            (when candidates
+              (funcall sink (nreverse candidates)))))
          (t
           (funcall sink action)))))))
 
@@ -412,7 +356,6 @@ a choice with no transcript behind it previews nothing."
          (collection
           (consult--process-collection
            builder
-           :min-input 1
            :transform
            (agent-shell-vertico-consult--async-candidates
             project-roots)))
@@ -423,7 +366,7 @@ a choice with no transcript behind it previews nothing."
            :lookup #'consult--lookup-member
            :state (agent-shell-vertico-consult--state)
            :require-match t
-           :category 'agent-shell-transcript
+           :category 'agent-shell-transcript-match
            :narrow (agent-shell-vertico-consult--narrow
                     (agent-shell-vertico--narrow-keys
                      agent-shell-vertico-transcript--narrow-keys)
@@ -433,10 +376,10 @@ a choice with no transcript behind it previews nothing."
                    #'agent-shell-vertico-transcript--group)
            :history '(:input agent-shell-vertico-consult-history)
            :sort nil)))
-    (when selection
-      (agent-shell-vertico-transcript--open-record
-       (get-text-property
-        0 'agent-shell-vertico-transcript-record selection)))))
+    (when-let* ((record
+                 (agent-shell-vertico-transcript--record-from-candidate
+                  selection)))
+      (agent-shell-vertico-transcript--open-record record))))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-search ()

@@ -169,6 +169,31 @@ too), reads that buffer's `agent-shell--transcript-file`, and opens it through
 alone: this is a command to bind, not advice, so nothing changes for anyone
 who has not bound it.
 
+**Searching transcripts is per match, browsing is per transcript.** A
+search row is one rg match, the way `consult-ripgrep` works, not one
+transcript with a match count: which line a match is on is the answer the
+reader is after. `--rg-matches` therefore returns one entry per match and
+`--record-for-match` copies the transcript's record once per match,
+stamping that match's line and text; a `cache` argument keeps the
+transcript parsed once however many times it matches, and holds
+`--unlisted` for a file belonging to no known project, because nil is
+also how a hash table reports it knows nothing. Ordering is rg's:
+`--rg-command` passes `--sortr modified`, so nothing sorts afterwards and
+the Consult stage can stream each chunk straight through instead of
+rebuilding and re-sorting the whole list on every chunk. That costs rg its
+parallelism, which a store of transcripts is far too small to miss.
+
+Match rows are their own completion category, `agent-shell-transcript-match`.
+The row is `TITLE:LINE: TEXT` and the annotation is project, agent and
+status — what the row cannot say for itself. Splitting the category is
+what lets the two annotations differ; it reuses
+`agent-shell-vertico-transcript-embark-map` rather than defining its own,
+as the session picker's category does, because a match candidate carries
+its record under the same text property. The candidate and the annotation
+are built in the Consult-free module, so both are plain functions to test;
+`agent-shell-vertico-consult--async-candidates` only turns rg's output
+into calls to them.
+
 **Jumping around a viewport's history.** A viewport shows one exchange at
 a time and steps through them one at a time.
 `agent-shell-vertico-viewport-goto-page` reads which exchange to show,

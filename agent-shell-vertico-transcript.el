@@ -79,7 +79,6 @@ it takes to open."
   working-directory
   preview
   modified-time
-  match-count
   match-line
   match-text)
 
@@ -340,7 +339,13 @@ directory; every record parsed from it is returned, newest first."
      project-roots))))
 
 (defun agent-shell-vertico-transcript--rg-command (directories query)
-  "Return an rg command searching DIRECTORIES for QUERY."
+  "Return an rg command searching DIRECTORIES for QUERY.
+
+`--sortr modified' asks rg for the newest transcript first, which is the
+order the readers present matches in.  Sorting is what lets a caller
+stream rg\='s output straight to the reader instead of holding every match
+to order it, and it is why nothing here sorts afterwards.  It costs rg
+its parallelism, which a store of transcripts is far too small to miss."
   (when (and directories
              (stringp query)
              (not (string-empty-p query)))
@@ -348,7 +353,7 @@ directory; every record parsed from it is returned, newest first."
       (user-error "The rg executable is required for transcript search"))
     (append
      '("rg" "--json" "--smart-case" "--hidden" "--no-ignore"
-       "--glob" "*.md" "--")
+       "--sortr" "modified" "--glob" "*.md" "--")
      (list query)
      directories)))
 
@@ -379,7 +384,6 @@ output would otherwise stop the search at its first match."
           (cons
            path
            (list
-            :count 1
             :line (map-elt data 'line_number)
             :text
             (string-trim-right
@@ -388,9 +392,13 @@ output would otherwise stop the search at its first match."
 
 (defun agent-shell-vertico-transcript--rg-matches
     (directories query)
-  "Return an alist of transcript matches for QUERY in DIRECTORIES.
+  "Return one entry per match for QUERY in DIRECTORIES, in rg's order.
 
-Each value is a plist containing `:count', `:line', and `:text'."
+Each entry is a file and a plist containing `:line' and `:text'.  A
+transcript matching several times appears once per match: which line a
+match is on is the answer the reader is after, and only rg knows it.
+The order is rg's own, which `--rg-command' asks to be newest transcript
+first and is ascending by line within one transcript."
   (when-let* ((command
                (agent-shell-vertico-transcript--rg-command
                 directories query)))
@@ -406,7 +414,7 @@ Each value is a plist containing `:count', `:line', and `:text'."
                       (string-trim (buffer-string))))
          (t
           (goto-char (point-min))
-          (let ((matches (make-hash-table :test #'equal)))
+          (let (matches)
             (while (not (eobp))
               (let ((line
                      (buffer-substring-no-properties
@@ -416,20 +424,9 @@ Each value is a plist containing `:count', `:line', and `:text'."
                   (when-let* ((entry
                                (agent-shell-vertico-transcript--rg-match-from-json
                                 line)))
-                    (let* ((file (car entry))
-                           (match (gethash file matches)))
-                      (if match
-                          (plist-put
-                           match :count
-                           (1+ (plist-get match :count)))
-                        (puthash file (cdr entry) matches))))))
+                    (push entry matches))))
               (forward-line 1))
-            (let (result)
-              (maphash
-               (lambda (file match)
-                 (push (cons file match) result))
-               matches)
-              (nreverse result)))))))))
+            (nreverse matches))))))))
 
 (defun agent-shell-vertico-transcript--root-for-record
     (record project-roots)
@@ -455,9 +452,11 @@ Each value is a plist containing `:count', `:line', and `:text'."
        (agent-shell-vertico-transcript--directory root)))
     project-roots)))
 
-(defun agent-shell-vertico-transcript--record-for-match
-    (file match project-roots)
-  "Return a record for FILE and MATCH within PROJECT-ROOTS."
+(defun agent-shell-vertico-transcript--project-record (file project-roots)
+  "Return the record FILE describes when it belongs to PROJECT-ROOTS.
+
+The record carries no match: it is what every match in FILE shares, so
+one parse serves them all."
   (let* ((fallback-root
           (or (car project-roots)
               (file-name-directory file)))
@@ -476,10 +475,53 @@ Each value is a plist containing `:count', `:line', and `:text'."
        (agent-shell-vertico-transcript-record-project-root record)
        project-root
        (agent-shell-vertico-transcript-record-project-name record)
-       (file-name-nondirectory
-        (directory-file-name project-root))
-       (agent-shell-vertico-transcript-record-match-count record)
-       (plist-get match :count)
+       (agent-shell-vertico-transcript--directory-basename project-root))
+      record)))
+
+(defconst agent-shell-vertico-transcript--unlisted
+  'agent-shell-vertico-transcript--unlisted
+  "Cached answer for a file that belongs to no known project.
+
+A cache cannot hold nil for such a file, because nil is also how a hash
+table reports that it holds nothing for a key, and re-parsing a
+transcript on every one of its matches is what the cache exists to
+avoid.")
+
+(defun agent-shell-vertico-transcript--cached-project-record
+    (file project-roots cache)
+  "Return the record FILE describes within PROJECT-ROOTS, through CACHE.
+
+CACHE is a hash table mapping a file to the record parsed from it, or to
+`agent-shell-vertico-transcript--unlisted\=' when it belongs to no known
+project.  With no CACHE the file is parsed every time, which is what a
+one-shot caller wants."
+  (let ((cached (if cache (gethash file cache 'missing) 'missing)))
+    (if (eq cached 'missing)
+        (let ((record
+               (agent-shell-vertico-transcript--project-record
+                file project-roots)))
+          (when cache
+            (puthash
+             file
+             (or record agent-shell-vertico-transcript--unlisted)
+             cache))
+          record)
+      (unless (eq cached agent-shell-vertico-transcript--unlisted)
+        cached))))
+
+(defun agent-shell-vertico-transcript--record-for-match
+    (file match project-roots &optional cache)
+  "Return a record for one MATCH in FILE within PROJECT-ROOTS.
+
+Every match is its own record, so a transcript matching several times
+offers the reader every one of them rather than only the first.  The
+record is a copy of the one FILE describes, which CACHE keeps so that
+the file is parsed once however many times it matches."
+  (when-let* ((record
+               (agent-shell-vertico-transcript--cached-project-record
+                file project-roots cache)))
+    (let ((record (copy-agent-shell-vertico-transcript-record record)))
+      (setf
        (agent-shell-vertico-transcript-record-match-line record)
        (plist-get match :line)
        (agent-shell-vertico-transcript-record-match-text record)
@@ -489,8 +531,9 @@ Each value is a plist containing `:count', `:line', and `:text'."
 (defun agent-shell-vertico-transcript--search (project-roots query)
   "Search PROJECT-ROOTS for transcripts matching QUERY.
 
-Return one record per matching transcript, ordered by modification
-time with the newest first."
+Return one record per match, in the order `--rg-command\=' asks rg for:
+newest transcript first, ascending by line within one transcript.
+Nothing is sorted here, because rg has already done it."
   (let* ((project-roots
           (mapcar
            #'agent-shell-vertico-transcript--normalize-directory
@@ -501,18 +544,14 @@ time with the newest first."
          (matches
           (agent-shell-vertico-transcript--rg-matches
            directories query))
+         (cache (make-hash-table :test #'equal))
          records)
     (dolist (entry matches)
       (when-let* ((record
                    (agent-shell-vertico-transcript--record-for-match
-                    (car entry) (cdr entry) project-roots)))
+                    (car entry) (cdr entry) project-roots cache)))
         (push record records)))
-    (seq-sort
-     (lambda (left right)
-       (time-less-p
-        (agent-shell-vertico-transcript-record-modified-time right)
-        (agent-shell-vertico-transcript-record-modified-time left)))
-     records)))
+    (nreverse records)))
 
 (defun agent-shell-vertico-transcript--activate (record)
   "Switch to, resume, or open transcript RECORD."
@@ -606,8 +645,12 @@ separated by `marginalia-separator', as marginalia's own annotations are."
     fields
     "")))
 
-(defun agent-shell-vertico-transcript--annotation-width (window-width)
-  "Return the widest annotation the columns produce in WINDOW-WIDTH.
+(defun agent-shell-vertico-transcript--annotation-width
+    (window-width &optional columns)
+  "Return the widest annotation COLUMNS produce in WINDOW-WIDTH.
+
+COLUMNS defaults to `--annotation-columns', the columns a browsed
+transcript is annotated with.
 
 Marginalia resolves a fractional column against half the window, capped
 by `marginalia-field-width', and puts `marginalia-separator' before every
@@ -615,7 +658,8 @@ column."
   (let ((field-width (min (/ window-width 2) marginalia-field-width))
         (separator (string-width marginalia-separator)))
     (cl-loop
-     for (_name . width) in agent-shell-vertico-transcript--annotation-columns
+     for (_name . width)
+     in (or columns agent-shell-vertico-transcript--annotation-columns)
      sum (+ separator
             (if (floatp width)
                 (round (* width field-width))
@@ -631,8 +675,12 @@ Below roughly ninety columns of window the annotation no longer fits
 beside a readable candidate.  The annotation is cut there rather than the
 candidate shrinking to nothing.")
 
-(defun agent-shell-vertico-transcript--candidate-width (window-width)
+(defun agent-shell-vertico-transcript--candidate-width
+    (window-width &optional columns)
   "Return the display width a candidate may use inside WINDOW-WIDTH.
+
+COLUMNS names the annotation columns to leave room for, defaulting to
+the ones a browsed transcript is annotated with.
 
 Marginalia starts the annotation at the widest candidate rounded up to a
 multiple of `--candidate-width-step' and never checks that the annotation
@@ -646,7 +694,7 @@ marginalia measures."
          (1- (* step
                 (/ (- window-width
                       (agent-shell-vertico-transcript--annotation-width
-                       window-width))
+                       window-width columns))
                    step))))))
 
 (defun agent-shell-vertico-transcript--truncate (string width)
@@ -704,6 +752,107 @@ minibuffer leaves once the annotation has its room."
      (lambda (record index)
        (agent-shell-vertico-transcript--record-candidate record index width))
      records)))
+
+(defconst agent-shell-vertico-transcript--match-annotation-columns
+  '((project . 0.3)
+    (agent . 0.14)
+    (status . 16))
+  "Truncation width of each match annotation column, in display order.
+
+A match row names its own transcript and shows its own line, so the
+columns a browsed transcript carries would repeat that and say nothing
+about the match.  What is left is what the row cannot say for itself:
+which project it belongs to, which agent wrote it, and whether the
+session behind it can still be reached.
+
+The two time columns are gone as well.  They describe the transcript,
+not the match, and the reader already sees recency in the order: rg is
+asked for the newest transcript first.")
+
+(defconst agent-shell-vertico-transcript--match-label-width 28
+  "Columns a match row spends naming the transcript the match is in.
+
+Wide enough for a title to be recognised, narrow enough that the matched
+line, which is what the reader is searching for, keeps most of the row.")
+
+(defun agent-shell-vertico-transcript--one-line (text)
+  "Return TEXT collapsed to one trimmed display line.
+A matched line arrives with its indentation and can hold a tab, and a
+row that is one line high cannot show either."
+  (string-trim
+   (replace-regexp-in-string "[ \t\n\r]+" " " (or text ""))))
+
+(defun agent-shell-vertico-transcript--match-candidate
+    (record &optional index width)
+  "Return a completion candidate for one match carried by RECORD.
+
+The row is the transcript's name, the line the match is on, and the
+matched line itself: `TITLE:LINE: TEXT', which is the shape a grep
+reader has.  Nothing the annotation shows is repeated here, and nothing
+here is repeated by the annotation.
+
+With INDEX, append the invisible key that keeps candidates distinct: two
+transcripts of the same name can match the same text on the same line.
+WIDTH is how many columns the whole row may use, by default whatever the
+minibuffer leaves once the annotation has its room."
+  (let* ((width
+          (or width
+              (agent-shell-vertico-transcript--candidate-width
+               (window-width (minibuffer-window))
+               agent-shell-vertico-transcript--match-annotation-columns)))
+         (label
+          (agent-shell-vertico-transcript--truncate
+           (agent-shell-vertico-transcript--candidate-text record)
+           agent-shell-vertico-transcript--match-label-width))
+         (line (agent-shell-vertico-transcript-record-match-line record))
+         (prefix
+          (concat label ":" (and line (number-to-string line)) ": "))
+         (text
+          (agent-shell-vertico-transcript--truncate
+           (agent-shell-vertico-transcript--one-line
+            (agent-shell-vertico-transcript-record-match-text record))
+           (max 1 (- width (string-width prefix)))))
+         (candidate
+          (concat prefix text
+                  (when index
+                    (agent-shell-vertico--candidate-key index)))))
+    (put-text-property 0 (length prefix) 'face 'shadow candidate)
+    (add-text-properties
+     0 (length candidate)
+     (list
+      'agent-shell-vertico-transcript-record record
+      'agent-shell-vertico-transcript-file
+      (agent-shell-vertico-transcript-record-file record)
+      'agent-shell-vertico-transcript-line line)
+     candidate)
+    candidate))
+
+(defun agent-shell-vertico-transcript--match-annotation (candidate)
+  "Return an annotation for match CANDIDATE.
+
+Only what the row cannot say for itself: see
+`agent-shell-vertico-transcript--match-annotation-columns'."
+  (when-let* ((record
+               (agent-shell-vertico-transcript--record-from-candidate
+                candidate)))
+    (agent-shell-vertico-transcript--fields
+     (list
+      (list (or (agent-shell-vertico-transcript-record-project-name record) "-")
+            (alist-get
+             'project agent-shell-vertico-transcript--match-annotation-columns)
+            'marginalia-value)
+      (list (or (agent-shell-vertico-transcript-record-agent record) "-")
+            (alist-get
+             'agent agent-shell-vertico-transcript--match-annotation-columns)
+            'marginalia-value)
+      (list (agent-shell-vertico-transcript--record-status record)
+            (alist-get
+             'status agent-shell-vertico-transcript--match-annotation-columns)
+            'marginalia-type)))))
+
+(add-to-list 'marginalia-annotators
+             '(agent-shell-transcript-match
+               agent-shell-vertico-transcript--match-annotation none))
 
 (defun agent-shell-vertico-transcript--record-from-candidate (candidate)
   "Return the transcript record carried by CANDIDATE."
@@ -1639,9 +1788,20 @@ through and landed on whatever preceded the first one."
    'embark-keymap-alist
    '(agent-shell-transcript
      agent-shell-vertico-transcript-embark-map))
+  ;; A match candidate carries its record under the same property a
+  ;; browsed one does, so every action already works on it and the two
+  ;; categories share one keymap, as the session picker's does.
+  (add-to-list
+   'embark-keymap-alist
+   '(agent-shell-transcript-match
+     agent-shell-vertico-transcript-embark-map))
   (add-to-list
    'embark-default-action-overrides
    '(agent-shell-transcript
+     . agent-shell-vertico-transcript-embark-open))
+  (add-to-list
+   'embark-default-action-overrides
+   '(agent-shell-transcript-match
      . agent-shell-vertico-transcript-embark-open)))
 
 (defun agent-shell-vertico-transcript--all-records (&optional project-roots)

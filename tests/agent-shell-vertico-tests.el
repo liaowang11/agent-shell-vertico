@@ -6380,7 +6380,10 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
       (should (eq activated record))
       (should (equal requested-root "/work/project/")))))
 
-(ert-deftest agent-shell-vertico-transcript-search-aggregates-by-transcript ()
+(ert-deftest agent-shell-vertico-transcript-search-returns-one-record-per-match ()
+  "Search answers with a match, not with a transcript.
+Two matching lines in one transcript are two records, each carrying its
+own line and text, so the reader can go to either one."
   (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
          (directory (expand-file-name ".agent-shell/transcripts" root))
          (agent-shell-dot-subdir-function
@@ -6406,24 +6409,25 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
                   (agent-shell-vertico-transcript--search
                    (list root) "viewport history"))
                  (first
-                  (seq-find
+                  (seq-filter
                    (lambda (record)
                      (equal
                       (agent-shell-vertico-transcript-record-session-id
                        record)
                       "first"))
                    records)))
-            (should (= (length records) 2))
-            (should (= 2
-                       (agent-shell-vertico-transcript-record-match-count
-                        first)))
-            (should (= 8
-                       (agent-shell-vertico-transcript-record-match-line
-                        first)))
+            (should (= (length records) 3))
+            (should (= (length first) 2))
             (should
              (equal
-              (agent-shell-vertico-transcript-record-match-text first)
-              "viewport history"))))
+              (mapcar
+               #'agent-shell-vertico-transcript-record-match-line first)
+              '(8 12)))
+            (should
+             (equal
+              (mapcar
+               #'agent-shell-vertico-transcript-record-match-text first)
+              '("viewport history" "viewport history works")))))
       (delete-directory root t))))
 
 (ert-deftest agent-shell-vertico-transcript-search-filters-shared-directory ()
@@ -6462,18 +6466,27 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
     (agent-shell-vertico-transcript--rg-command
      '("/tmp/one" "/tmp/two") "needle")
     '("rg" "--json" "--smart-case" "--hidden" "--no-ignore"
-      "--glob" "*.md" "--" "needle" "/tmp/one" "/tmp/two")))
+      "--sortr" "modified" "--glob" "*.md" "--"
+      "needle" "/tmp/one" "/tmp/two")))
   (should-not
    (agent-shell-vertico-transcript--rg-command '("/tmp/one") "")))
 
-(ert-deftest agent-shell-vertico-consult-async-candidates-aggregate-matches ()
+(ert-deftest agent-shell-vertico-consult-async-candidates-emit-one-per-match ()
+  "Every match is a candidate of its own, and the transcript is parsed once."
   (let* ((root (make-temp-file "agent-shell-vertico-search-root-" t))
          (directory (make-temp-file "agent-shell-vertico-search-dir-" t))
          (file (expand-file-name "transcript.md" directory))
          (agent-shell-dot-subdir-function (lambda (_subdir) directory))
+         (parse
+          (symbol-function 'agent-shell-vertico-transcript--parse-file))
+         (parses 0)
          actions)
     (unwind-protect
-        (progn
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-transcript--parse-file)
+                   (lambda (&rest arguments)
+                     (cl-incf parses)
+                     (apply parse arguments))))
           (with-temp-file file
             (insert (format "**Working Directory:** %s\n"
                             (directory-file-name root))
@@ -6501,19 +6514,17 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
             (funcall handler
                      (list (funcall match 7) (funcall match 9)))
             (let* ((candidates (car actions))
-                   (record
-                    (get-text-property
-                     0 'agent-shell-vertico-transcript-record
-                     (car candidates))))
-              (should (= (length candidates) 1))
-              (should
-               (= (agent-shell-vertico-transcript-record-match-count
-                   record)
-                  2))
-              (should
-               (= (agent-shell-vertico-transcript-record-match-line
-                   record)
-                  7)))))
+                   (lines
+                    (mapcar
+                     (lambda (candidate)
+                       (agent-shell-vertico-transcript-record-match-line
+                        (agent-shell-vertico-transcript--record-from-candidate
+                         candidate)))
+                     candidates)))
+              (should (= (length candidates) 2))
+              (should (equal lines '(7 9)))
+              (should (= parses 1))
+              (should-not (equal (nth 0 candidates) (nth 1 candidates))))))
       (delete-directory root t)
       (delete-directory directory t))))
 
@@ -6523,7 +6534,7 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
            :file "/tmp/transcript.md"
            :match-line 12))
          (candidate
-          (agent-shell-vertico-consult--candidate record))
+          (agent-shell-vertico-transcript--match-candidate record))
          process-called
          opened)
     (cl-letf
@@ -6562,7 +6573,7 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
            :file "/tmp/transcript.md"
            :match-line 7))
          (candidate
-          (agent-shell-vertico-consult--candidate record))
+          (agent-shell-vertico-transcript--match-candidate record))
          (temporary-buffer (generate-new-buffer " *transcript preview*"))
          actions
          previewed
@@ -6601,20 +6612,23 @@ Binds `shell' to the shell buffer, `file' to its transcript file, and
           (should-not (memq 'return actions)))
       (kill-buffer temporary-buffer))))
 
-(ert-deftest agent-shell-vertico-consult-candidate-carries-preview-location ()
+(ert-deftest agent-shell-vertico-transcript-match-candidate-carries-location ()
   (let* ((record
           (agent-shell-vertico-transcript-record-create
            :file "/tmp/transcript.md"
            :project-name "agent-shell"
+           :title "session title"
            :started "2026-07-30 10:20:30"
-           :match-count 3
            :match-line 42
            :match-text "matching transcript line"))
          (candidate
-          (agent-shell-vertico-consult--candidate record)))
-    (should (string-match-p "\\[agent-shell\\]" candidate))
-    (should (string-match-p "\\[3\\]" candidate))
+          (agent-shell-vertico-transcript--match-candidate record 0 80)))
+    ;; The row names its transcript, says which line the match is on, and
+    ;; shows the line.  Nothing the annotation carries is repeated.
+    (should (string-prefix-p "session title:42: " candidate))
     (should (string-match-p "matching transcript line" candidate))
+    (should-not (string-match-p "agent-shell" candidate))
+    (should-not (string-match-p "2026-07-30" candidate))
     (should
      (eq
       (get-text-property
@@ -7335,6 +7349,68 @@ built on it."
       (alist-get
        'agent-shell-transcript embark-default-action-overrides)
       #'agent-shell-vertico-transcript-embark-open))))
+
+(ert-deftest agent-shell-vertico-transcript-match-embark-shares-the-map ()
+  "Match candidates reach the transcript actions the browser reaches.
+The record travels under the same property, so the two categories share
+one keymap and one default action."
+  (let (embark-keymap-alist embark-default-action-overrides)
+    (agent-shell-vertico-transcript-setup-embark)
+    (should
+     (equal
+      (alist-get 'agent-shell-transcript-match embark-keymap-alist)
+      '(agent-shell-vertico-transcript-embark-map)))
+    (should
+     (eq
+      (alist-get
+       'agent-shell-transcript-match embark-default-action-overrides)
+      #'agent-shell-vertico-transcript-embark-open))))
+
+(ert-deftest agent-shell-vertico-transcript-match-candidate-fits-the-width ()
+  "A long matched line is cut to the room the annotation leaves.
+The whole line stays reachable on `help-echo', and a line arrives with
+its own indentation and tabs, which one row cannot show."
+  (let* ((text (concat "\tindented\n  and  wrapped  " (make-string 300 ?x)))
+         (record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :title "a transcript"
+           :match-line 7
+           :match-text text))
+         (candidate
+          (agent-shell-vertico-transcript--match-candidate record nil 40))
+         (collapsed
+          (agent-shell-vertico-transcript--one-line text)))
+    (should (<= (string-width candidate) 40))
+    (should (string-prefix-p "a transcript:7: " candidate))
+    (should-not (string-match-p "[\t\n]" candidate))
+    (should
+     (equal
+      (get-text-property (1- (length candidate)) 'help-echo candidate)
+      collapsed))))
+
+(ert-deftest agent-shell-vertico-transcript-match-annotation-adds-no-repeats ()
+  "The match annotation says only what the row cannot say for itself."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :project-name "agent-shell-vertico"
+           :agent "Codex"
+           :title "a transcript"
+           :started "2026-07-30 10:20:30"
+           :modified-time (current-time)
+           :match-line 7
+           :match-text "matched line"))
+         (annotation
+          (agent-shell-vertico-transcript--match-annotation
+           (agent-shell-vertico-transcript--match-candidate record nil 80))))
+    (should (string-match-p "agent-shell-vertico" annotation))
+    (should (string-match-p "Codex" annotation))
+    (should (string-match-p "Transcript only" annotation))
+    ;; The transcript's own times belong to the transcript, not to the
+    ;; match, and the order already carries recency.
+    (should-not (string-match-p "2026-07-30" annotation))
+    (should-not (string-match-p "matched line" annotation))))
 
 (ert-deftest agent-shell-vertico-transcript-set-session-id-updates-legacy-header ()
   (should
@@ -10115,7 +10191,8 @@ the minibuffer is not the project the reader was asked about."
 (ert-deftest agent-shell-vertico-consult-search-narrows-by-key ()
   "Transcript search narrows over the same keys the browser does."
   (let* ((record (agent-shell-vertico-tests--narrow-record))
-         (candidate (agent-shell-vertico-consult--candidate record))
+         (candidate
+          (agent-shell-vertico-transcript--match-candidate record))
          options)
     (cl-letf
         (((symbol-function
