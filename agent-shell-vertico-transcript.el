@@ -770,10 +770,13 @@ not the match, and the reader already sees recency in the order: rg is
 asked for the newest transcript first.")
 
 (defconst agent-shell-vertico-transcript--match-label-width 28
-  "Columns a match row spends naming the transcript the match is in.
+  "Most columns a match row spends naming the transcript the match is in.
 
 Wide enough for a title to be recognised, narrow enough that the matched
-line, which is what the reader is searching for, keeps most of the row.")
+line, which is what the reader is searching for, keeps most of the row.
+It is a cap rather than a width: on a narrow frame the label is held to a
+third of the row, because a fixed label there would leave the matched
+line a few columns and the row would say nothing at all.")
 
 (defun agent-shell-vertico-transcript--one-line (text)
   "Return TEXT collapsed to one trimmed display line.
@@ -803,7 +806,9 @@ minibuffer leaves once the annotation has its room."
          (label
           (agent-shell-vertico-transcript--truncate
            (agent-shell-vertico-transcript--candidate-text record)
-           agent-shell-vertico-transcript--match-label-width))
+           (max 8
+                (min agent-shell-vertico-transcript--match-label-width
+                     (/ width 3)))))
          (line (agent-shell-vertico-transcript-record-match-line record))
          (prefix
           (concat label ":" (and line (number-to-string line)) ": "))

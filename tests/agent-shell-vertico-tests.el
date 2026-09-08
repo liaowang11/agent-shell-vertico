@@ -7528,6 +7528,29 @@ its own indentation and tabs, which one row cannot show."
       (get-text-property (1- (length candidate)) 'help-echo candidate)
       collapsed))))
 
+(ert-deftest agent-shell-vertico-transcript-match-candidate-keeps-the-line ()
+  "A narrow row spends less on the transcript's name, not on the match.
+A fixed label would leave the matched line a few columns, and the row
+would then say nothing the annotation does not already say."
+  (let* ((record
+          (agent-shell-vertico-transcript-record-create
+           :file "/tmp/transcript.md"
+           :title (make-string 60 ?t)
+           :match-line 7
+           :match-text (make-string 200 ?x)))
+         (narrow
+          (agent-shell-vertico-transcript--match-candidate record nil 39))
+         (wide
+          (agent-shell-vertico-transcript--match-candidate record nil 120)))
+    (should (<= (string-width narrow) 39))
+    (should (<= (string-width wide) 120))
+    ;; Enough of the matched line to read on either.
+    (should (string-match-p (make-string 12 ?x) narrow))
+    (should (string-match-p (make-string 60 ?x) wide))
+    ;; The label is capped, so a wide row spends the extra on the line.
+    (should (string-match-p (concat "^" (make-string 12 ?t) "…:7: ") narrow))
+    (should (string-match-p (concat "^" (make-string 27 ?t) "…:7: ") wide))))
+
 (ert-deftest agent-shell-vertico-transcript-match-annotation-adds-no-repeats ()
   "The match annotation says only what the row cannot say for itself."
   (let* ((record
