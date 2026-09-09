@@ -331,6 +331,23 @@ Keys are positional on purpose: under `priority` sorting rows move, so a
 per-session sticky key would need a persistent label column to be readable,
 and that is a separate feature.
 
+**Jumping to a session by position.** `--jump-to-index` is the blind jump the
+`agent-shell-vertico-sidebar-jump-to-1' family is bound to, and it answers a
+different question from `-jump-by-key': nothing is drawn, so there is nothing
+to restrict to the rows on screen, and it reads `--sort-buffers' directly
+rather than a rendered sidebar it would have to open. Positions count from 1,
+so a command's number is the key a user binds it to, unlike
+`+workspace/switch-to-N' which is 0-based behind 1-based keys. The commands
+are generated with `defalias' over a `dotimes' exactly as that family is,
+because a named command is bindable in a `map!' without a lambda and findable
+through `execute-extended-command'; each closure captures its own index, which
+a test pins by calling three of them. The index is deliberately not a stable
+name for a session: the order is whatever
+`agent-shell-vertico-sidebar-sort-by' says, and under `priority' the act of
+jumping reads the session and moves it out of the attention tier, so the same
+key answers differently next time. That was the user's call, a quick jump
+rather than an address, and it is why the reading jump exists beside it.
+
 **Dispatching an action from a jump.** `--read-jump-keys` is the loop
 `ace-window` runs for `aw-dispatch-alist`: a key is either a session, an
 action, or `?`. A session ends the read, an action records what the next

@@ -2927,6 +2927,56 @@ prompt it is drawn above."
     "\n")
    "\n\n"))
 
+;;;###autoload
+(defun agent-shell-vertico-sidebar-jump-to-index (index &optional other-window)
+  "Display the session at INDEX in the order the sidebar lists them.
+
+INDEX counts from 1, so session 1 is the row at the top of the sidebar,
+the one `agent-shell-vertico-sidebar-jump-by-key' gives its first key.
+Every live session counts, whether the sidebar is showing it or not,
+because this jump draws nothing for the reader to look at: it is the
+blind jump the `agent-shell-vertico-sidebar-jump-to-1' family is bound
+to, and it opens no sidebar of its own.
+
+The order is `agent-shell-vertico-sidebar-sort-by', so an index is a
+position and not a name for a session: under `priority' a finished turn
+moves its session up and the same index answers differently.  That is
+the trade a quick jump makes; press `?' during
+`agent-shell-vertico-sidebar-jump-by-key' to choose from what is on
+screen instead.
+
+With OTHER-WINDOW, display the session in another window."
+  (interactive
+   (list (or (and current-prefix-arg (prefix-numeric-value current-prefix-arg))
+             (read-number "Jump to session #: "))))
+  (let ((buffers (agent-shell-vertico-sidebar--sort-buffers
+                  (seq-filter #'buffer-live-p (agent-shell-buffers))
+                  agent-shell-vertico-sidebar-sort-by)))
+    (unless buffers
+      (user-error "No agent-shell sessions"))
+    (let ((buffer (and (> index 0) (nth (1- index) buffers))))
+      (unless buffer
+        (user-error "No session at #%d" index))
+      (if other-window
+          (agent-shell-vertico-sidebar--jump-display-other-window buffer)
+        (agent-shell-vertico-sidebar--jump-display buffer))
+      (agent-shell-vertico-sidebar-refresh))))
+
+;; One command a session, the way `+workspace/switch-to-N' is generated
+;; for workspaces: a named command is bindable in a `map!' without a
+;; lambda, findable through `execute-extended-command', and carries its
+;; own index rather than reading it back out of the key that ran it.
+;; These count from 1, unlike Doom's, so a command's number is the key.
+;;;###autoload
+(dotimes (offset 9)
+  (let ((index (1+ offset)))
+    (defalias (intern (format "agent-shell-vertico-sidebar-jump-to-%d" index))
+      (lambda (&optional other-window)
+        (interactive "P")
+        (agent-shell-vertico-sidebar-jump-to-index index other-window))
+      (format "Jump to session #%d in the order the sidebar lists them."
+              index))))
+
 (defun agent-shell-vertico-sidebar--session-rows ()
   "Return (BUFFER . POSITION) for each session row, top to bottom."
   (seq-keep (pcase-lambda (`((,kind . ,node) . ,position))

@@ -9809,6 +9809,146 @@ the label is drawn where it belongs."
                   (lambda (left right)
                     (< (overlay-start left) (overlay-start right)))))))
 
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-follows-the-sidebar-order ()
+  "Index 1 is the session the sidebar lists first under its own sort."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-sort-by 'priority))
+      ;; Unread beta leads the priority order, so it is session 1.
+      (puthash beta 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar-jump-to-index 1)
+      (should (eq agent-shell-test-displayed-buffer beta))
+      ;; And that jump read beta, which drops it out of the attention
+      ;; tier, so the same index now answers with the other session.  An
+      ;; index is a position and not a name: this is the trade a quick
+      ;; jump makes, and jumping is itself one of the things that moves
+      ;; the rows.
+      (should-not (agent-shell-vertico-sidebar--unread-p beta))
+      (agent-shell-vertico-sidebar-jump-to-index 1)
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (agent-shell-vertico-sidebar-jump-to-index 2)
+      (should (eq agent-shell-test-displayed-buffer beta)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-needs-no-sidebar ()
+  "The blind jump reaches every session, shown or not, and opens nothing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (should-not (get-buffer "*Agent Shell Sessions*"))
+      (agent-shell-vertico-sidebar-jump-to-index 2)
+      (should (eq agent-shell-test-displayed-buffer beta))
+      ;; Nothing is drawn to read, so no sidebar is created for it.
+      (should-not (get-buffer-window "*Agent Shell Sessions*")))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-marks-the-session-seen ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (puthash alpha 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar-jump-to-index 1)
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-other-window ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          other-window-buffer)
+      (cl-letf (((symbol-function 'switch-to-buffer-other-window)
+                 (lambda (buffer &rest _) (setq other-window-buffer buffer))))
+        (agent-shell-vertico-sidebar-jump-to-index 1 t))
+      (should (eq other-window-buffer alpha))
+      (should-not agent-shell-test-displayed-buffer))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-reports-a-missing-session ()
+  "An index past the end, or below one, names itself in the error."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (equal (should-error
+                      (agent-shell-vertico-sidebar-jump-to-index 2)
+                      :type 'user-error)
+                     '(user-error "No session at #2")))
+      (should (equal (should-error
+                      (agent-shell-vertico-sidebar-jump-to-index 0)
+                      :type 'user-error)
+                     '(user-error "No session at #0")))
+      (should-not agent-shell-test-displayed-buffer))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-reports-no-sessions ()
+  (let ((agent-shell-test-buffers nil))
+    (should (equal (should-error (agent-shell-vertico-sidebar-jump-to-index 1)
+                                 :type 'user-error)
+                   '(user-error "No agent-shell sessions")))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-n-commands-are-generated ()
+  "Nine commands exist, one a session, named and documented from 1 up.
+
+They follow `+workspace/switch-to-N', which is what makes a numbered
+jump bindable and findable through \\[execute-extended-command] rather
+than needing a lambda in the user's configuration.  Unlike Doom's, the
+names count from 1, so the command's number is the key it is bound to."
+  (dotimes (offset 9)
+    (let* ((index (1+ offset))
+           (command (intern (format "agent-shell-vertico-sidebar-jump-to-%d"
+                                    index))))
+      (should (commandp command))
+      (should (equal (documentation command)
+                     (format
+                      "Jump to session #%d in the order the sidebar lists them."
+                      index)))
+      ;; Each one carries its own index, which a shared closure would
+      ;; get wrong.
+      (should (equal (interactive-form command) '(interactive "P")))))
+  (should-not (fboundp 'agent-shell-vertico-sidebar-jump-to-0))
+  (should-not (fboundp 'agent-shell-vertico-sidebar-jump-to-10)))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-to-n-passes-its-own-index ()
+  "Each generated command jumps to its own session, not a shared one."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)
+                                           (cons gamma 'ready)))
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (call-interactively 'agent-shell-vertico-sidebar-jump-to-3)
+      (should (eq agent-shell-test-displayed-buffer gamma))
+      (call-interactively 'agent-shell-vertico-sidebar-jump-to-1)
+      (should (eq agent-shell-test-displayed-buffer alpha))
+      ;; And its prefix argument means the other window, as the reading
+      ;; jump's does, rather than naming an index.
+      (let (other-window-buffer)
+        (cl-letf (((symbol-function 'switch-to-buffer-other-window)
+                   (lambda (buffer &rest _)
+                     (setq other-window-buffer buffer))))
+          (let ((current-prefix-arg '(4)))
+            (call-interactively 'agent-shell-vertico-sidebar-jump-to-2)))
+        (should (eq other-window-buffer beta))))))
+
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-labels-rows-in-order ()
   "Keys follow the flat row order, and the chosen key's session is shown."
   (agent-shell-vertico-tests--with-session-buffers

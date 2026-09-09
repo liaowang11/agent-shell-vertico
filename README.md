@@ -196,6 +196,17 @@ list is red once the unkeyed rows are dimmed, so red means a key.  The
 action list keeps its own colour, since in the echo area there is nothing
 to confuse it with.
 
+For a jump with nothing to read, `agent-shell-vertico-sidebar-jump-to-1`
+through `agent-shell-vertico-sidebar-jump-to-9` display the session at
+that position in the sidebar's order, and
+`agent-shell-vertico-sidebar-jump-to-index` takes any position.  These
+open no sidebar and count every live session, not only the rows a window
+shows, because there is nothing to look at.  One command per position,
+generated the way Doom generates `+workspace/switch-to-N`, so each is
+bindable without a lambda and reachable through `M-x`.  A position is not
+a name for a session: under `priority` sorting a finished turn moves its
+session up, and jumping to a session reads it, which moves it too.
+
 `?` during the read lists the actions in
 `agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its
 key coloured, and pressing an
