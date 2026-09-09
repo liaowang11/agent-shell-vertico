@@ -162,6 +162,55 @@ derived from its live status rather than recorded: it cannot proceed until
 you answer it.  New output marks the session again, whether a turn finishes
 or a background stream goes quiet.
 
+`agent-shell-vertico-sidebar-jump-by-key` picks a session the way
+`ace-window` picks a window.  The sessions are listed flat in the sidebar,
+each row's status mark replaced by a key from
+`agent-shell-vertico-sidebar-jump-keys`, digits `1`-`9` then the home row
+by default, in row order; press a key and that session is displayed.  A
+hidden sidebar is shown for the read and closed again after it, and a
+grouped one is grouped again after, folds as they were, so the command
+works from anywhere without changing the sidebar.  The keys follow the
+rows, so they are assigned afresh each time and read off the sidebar
+rather than remembered: under `priority` sorting a session that just
+finished moves up and takes a new key.  A single live session is displayed
+without asking, and a prefix argument displays the session in another
+window.
+
+Only the rows the sidebar window shows are keyed, and only as many as
+there are keys.  Nothing scrolls, because the read cannot be interrupted
+to scroll for a key that is off screen.  The prompt counts whatever is
+left over, and `agent-shell-vertico-switch` reaches those sessions.
+
+While the keys are up, the frame's other windows are dimmed and the
+sidebar is not, so the sidebar is what stands out while the question is
+open.  `ace-window` dims every window because a window is chosen by where
+it is; a session is chosen by reading its title and project, so dimming
+the list would take away what you are looking at.  Inside the sidebar,
+only a row that carries no key is dimmed, because such a row is not one
+of the answers.  Set `agent-shell-vertico-sidebar-jump-dim-others` to nil
+to dim nothing.
+
+A key needs no background of its own against that: it is a red character
+in the frame's own font, following your `error` face.  Nothing else on the
+list is red once the unkeyed rows are dimmed, so red means a key.  The
+action list keeps its own colour, since in the echo area there is nothing
+to confuse it with.
+
+`?` during the read lists the actions in
+`agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its
+key coloured, and pressing an
+action's key does that to the next session chosen instead of displaying
+it, the way `ace-window` dispatches on `aw-dispatch-alist`.  The shipped
+actions are `o` open in another window, `x` kill, `r` restart, `i`
+interrupt, `m` set mode, `M` set model, `t` open transcript, `T` view
+traffic, `u` mark unread, and `!` mark read.  The prompt names the
+pending action, the keys stay drawn while you choose, and the action runs
+once the sidebar is back as it was, so a command that asks something of
+its own has a window to ask in.  Each entry is a key, a function of one
+session buffer, and a description, so a custom action is a three-element
+list.  A session key wins over an action key, which is why no shipped
+action key is also a shipped session key.
+
 An agent can also produce output with no turn in flight: background tasks
 such as subagents keep streaming after a turn ends, and a prompt steered in
 too late makes the agent start a turn of its own.  `agent-shell` reports
@@ -265,12 +314,16 @@ built-in `help-at-pt` support:
 (use-package agent-shell-vertico-sidebar
   :load-path "/path/to/agent-shell-vertico"
   :after agent-shell-vertico
-  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle))
+  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)
+         ("C-c a j" . agent-shell-vertico-sidebar-jump-by-key))
   :custom
   (agent-shell-vertico-sidebar-side 'left)
   (agent-shell-vertico-sidebar-width 40)
   (agent-shell-vertico-sidebar-max-width-fraction 0.3)
   (agent-shell-vertico-sidebar-title-max-length 80)
+  (agent-shell-vertico-sidebar-jump-keys
+   '(?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9 ?a ?s ?d ?f ?g ?h ?j ?k ?l))
+  (agent-shell-vertico-sidebar-jump-dim-others t)
   (agent-shell-vertico-sidebar-group-by nil)
   (agent-shell-vertico-sidebar-expand-by-default nil)
   (agent-shell-vertico-sidebar-show-details nil)

@@ -9724,6 +9724,801 @@ resolves its shell from its own buffer name."
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
 
+(defmacro agent-shell-vertico-tests--with-jump-by-key (key &rest body)
+  "Evaluate BODY with the jump-key reader answering KEY.
+
+KEY is evaluated inside the reader, with the sidebar current, so a
+form can look at what the read showed before answering.  The sidebar
+buffer and the selected window are put back afterwards."
+  (declare (indent 1))
+  `(let ((original (selected-window)))
+     (unwind-protect
+         (cl-letf (((symbol-function
+                     'agent-shell-vertico-sidebar--read-jump-key)
+                    (lambda (prompt)
+                      (setq agent-shell-vertico-tests--jump-prompt prompt)
+                      (setq agent-shell-vertico-tests--jump-prompts
+                            (append agent-shell-vertico-tests--jump-prompts
+                                    (list prompt)))
+                      ,key)))
+           (setq agent-shell-vertico-tests--jump-prompt nil
+                 agent-shell-vertico-tests--jump-prompts nil)
+           ,@body)
+       (when (window-live-p original)
+         (select-window original))
+       (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+         (kill-buffer sidebar)))))
+
+(defvar agent-shell-vertico-tests--jump-prompt nil
+  "The prompt the last stubbed jump-key read was given.")
+
+(defvar agent-shell-vertico-tests--jump-prompts nil
+  "Every prompt the stubbed jump-key reads were given, in order.")
+
+(defun agent-shell-vertico-tests--dimmed-overlays (buffer)
+  "Return the overlays dimming BUFFER while a jump reads a key."
+  (with-current-buffer (get-buffer buffer)
+    (seq-filter (lambda (overlay)
+                  (eq (overlay-get overlay 'face)
+                      'agent-shell-vertico-sidebar-jump-dimmed))
+                (overlays-in (point-min) (point-max)))))
+
+(defun agent-shell-vertico-tests--label-overlays ()
+  "Return the key label overlays in the current buffer, top to bottom."
+  (sort (seq-filter
+         (lambda (overlay)
+           (overlay-get overlay 'agent-shell-vertico-sidebar-jump-key))
+         (overlays-in (point-min) (point-max)))
+        (lambda (left right)
+          (< (overlay-start left) (overlay-start right)))))
+
+(defun agent-shell-vertico-tests--jump-label-spans ()
+  "Return the (KEY . MARK-CHARACTER) each drawn label covers.
+
+The row-wide node property cannot tell a label on the mark from one a
+column off, and an erased buffer leaves an empty overlay that still
+answers `overlay-get', so the character the overlay spans is what says
+the label is drawn where it belongs."
+  (with-current-buffer "*Agent Shell Sessions*"
+    (mapcar (pcase-lambda (`(,key . ,_))
+              (let ((overlay
+                     (seq-find
+                      (lambda (candidate)
+                        (eq key (overlay-get
+                                 candidate
+                                 'agent-shell-vertico-sidebar-jump-key)))
+                      (overlays-in (point-min) (point-max)))))
+                (cons key
+                      (and (= (overlay-end overlay)
+                              (1+ (overlay-start overlay)))
+                           (char-after (overlay-start overlay))))))
+            (agent-shell-vertico-tests--jump-labels-shown))))
+
+(defun agent-shell-vertico-tests--jump-labels-shown ()
+  "Return the (KEY . BUFFER) labels drawn in the sidebar, top to bottom."
+  (with-current-buffer "*Agent Shell Sessions*"
+    (mapcar (lambda (overlay)
+              (cons (overlay-get overlay 'agent-shell-vertico-sidebar-jump-key)
+                    (get-text-property (overlay-start overlay)
+                                       'agent-shell-vertico-sidebar-node)))
+            (sort (seq-filter
+                   (lambda (overlay)
+                     (overlay-get overlay
+                                  'agent-shell-vertico-sidebar-jump-key))
+                   (overlays-in (point-min) (point-max)))
+                  (lambda (left right)
+                    (< (overlay-start left) (overlay-start right)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-labels-rows-in-order ()
+  "Keys follow the flat row order, and the chosen key's session is shown."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-sort-by 'priority)
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          seen spans)
+      ;; Unread beta leads the priority order, so it takes the first key.
+      (puthash beta 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown)
+                       spans (agent-shell-vertico-tests--jump-label-spans))
+                 ?2)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (equal seen (list (cons ?1 beta) (cons ?2 alpha))))
+        (should (equal spans (list (cons ?1 ?✓) (cons ?2 ?✓))))
+        (should (equal agent-shell-vertico-tests--jump-prompt
+                       "Jump to session: "))
+        (should (eq agent-shell-test-displayed-buffer alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-shows-hidden-sidebar-for-the-read ()
+  "A hidden sidebar is shown while the key is read and closed after."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          shown-during)
+      (should-not (get-buffer-window "*Agent Shell Sessions*"))
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq shown-during
+                       (window-live-p
+                        (get-buffer-window "*Agent Shell Sessions*")))
+                 ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should shown-during)
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))
+        (should-not (agent-shell-vertico-tests--jump-labels-shown))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-flattens-grouped-sidebar-then-restores-it ()
+  "A grouped, folded sidebar shows every session flat for the read only."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-test-project-names
+           (list (cons alpha "Alpha Workspace") (cons beta "Beta Workspace")))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          seen kinds-during)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown)
+                       kinds-during
+                       (with-current-buffer "*Agent Shell Sessions*"
+                         (mapcar
+                          #'caar
+                          (agent-shell-vertico-sidebar--node-positions))))
+                 ?2)
+        (save-selected-window (agent-shell-vertico-sidebar--display-buffer))
+        (let ((window (get-buffer-window "*Agent Shell Sessions*")))
+          (should (string-match-p
+                   "Alpha Workspace"
+                   (with-current-buffer "*Agent Shell Sessions*"
+                     (buffer-string))))
+          (agent-shell-vertico-sidebar-jump-by-key)
+          ;; Both sessions had a row and a key, though their projects
+          ;; are folded, and no project header was drawn.
+          (should (= (length seen) 2))
+          (should (member (cons ?1 alpha) seen))
+          (should (member (cons ?2 beta) seen))
+          (should (equal kinds-during '(session session)))
+          ;; The sidebar stays open, grouped and folded again.
+          (should (window-live-p window))
+          (with-current-buffer "*Agent Shell Sessions*"
+            (should (equal (mapcar
+                            #'caar
+                            (agent-shell-vertico-sidebar--node-positions))
+                           '(project project)))
+            (should-not (agent-shell-vertico-tests--jump-labels-shown))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-dispatch-help-lists-every-action ()
+  "The help gives each action its own line, keyed and faced like ace-window."
+  (let* ((agent-shell-vertico-sidebar-jump-dispatch-alist
+          '((?x agent-shell-vertico-kill-session "kill")
+            (?r agent-shell-vertico-restart-session "restart")))
+         (help (agent-shell-vertico-sidebar--dispatch-help)))
+    (should (equal (substring-no-properties help) "x: kill\nr: restart\n\n"))
+    ;; The key is coloured and the description is not, which is what
+    ;; makes the column of keys scannable.
+    (should (eq (get-text-property 0 'face help)
+                'agent-shell-vertico-sidebar-jump-help-key))
+    (should-not (get-text-property (string-match "kill" help) 'face help)))
+  (let* ((help (agent-shell-vertico-sidebar--dispatch-help))
+         (lines (split-string (substring-no-properties help) "\n" t)))
+    ;; One line an action, and a blank line before the prompt below.
+    (should (= (length lines)
+               (length agent-shell-vertico-sidebar-jump-dispatch-alist)))
+    (should (string-suffix-p "\n\n" help))
+    (pcase-dolist (`(,key ,_ ,description)
+                   agent-shell-vertico-sidebar-jump-dispatch-alist)
+      (should (member (format "%c: %s" key description) lines)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-prompt-names-the-pending-action ()
+  (should (equal (agent-shell-vertico-sidebar--jump-prompt 2 2 nil)
+                 "Jump to session: "))
+  (should (equal (agent-shell-vertico-sidebar--jump-prompt 2 2 "kill")
+                 "Session to kill: "))
+  ;; The leftover count is reported whichever action is pending.
+  (should (equal (agent-shell-vertico-sidebar--jump-prompt 1 3 "kill")
+                 (concat "Session to kill "
+                         "(2 more, use agent-shell-vertico-switch): "))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-dispatches-an-action ()
+  "An action key then a session key runs that action on that session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (keys (list ?i ?2))
+          acted window-during)
+      (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
+             `((?i ,(lambda (buffer)
+                      (setq acted buffer
+                            ;; The action runs after the read is over, so
+                            ;; a borrowed sidebar window is already gone
+                            ;; and a prompt of its own has room.
+                            window-during
+                            (get-buffer-window "*Agent Shell Sessions*")))
+                   "interrupt"))))
+        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should (eq acted beta))
+          (should-not window-during)
+          ;; Dispatching is not displaying.
+          (should-not agent-shell-test-displayed-buffer)
+          (should (equal agent-shell-vertico-tests--jump-prompts
+                         '("Jump to session: " "Session to interrupt: "))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-shows-the-actions-on-question-mark ()
+  "`?' adds the action list to the prompt and keeps reading."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (keys (list ?? ?1)))
+      (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        ;; The read went on after the help and still selected a session.
+        (should (eq agent-shell-test-displayed-buffer alpha))
+        (should (= (length agent-shell-vertico-tests--jump-prompts) 2))
+        (should (equal (car agent-shell-vertico-tests--jump-prompts)
+                       "Jump to session: "))
+        (should (string-suffix-p
+                 "Jump to session: "
+                 (cadr agent-shell-vertico-tests--jump-prompts)))
+        (should (string-match-p
+                 "x: kill"
+                 (cadr agent-shell-vertico-tests--jump-prompts)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-keeps-the-help-while-choosing-an-action ()
+  "The action list stays up until a session is chosen."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (keys (list ?? ?u ?1))
+          acted)
+      (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
+             `((?u ,(lambda (buffer) (setq acted buffer)) "mark unread"))))
+        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should (eq acted alpha))
+          (let ((prompts agent-shell-vertico-tests--jump-prompts))
+            (should (= (length prompts) 3))
+            (should (string-match-p "u: mark unread" (nth 1 prompts)))
+            ;; Still listed, and now naming the action it is waiting for.
+            (should (string-match-p "u: mark unread" (nth 2 prompts)))
+            (should (string-suffix-p "Session to mark unread: "
+                                     (nth 2 prompts)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-session-keys-beat-action-keys ()
+  "A key that is both a session key and an action key selects the session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?x ?2))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          ;; A finite list, so an implementation that took the action
+          ;; branch and asked again fails the read rather than looping
+          ;; on a stub that would answer the same key forever.
+          (keys (list ?x ?x ?x))
+          acted)
+      (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
+             `((?x ,(lambda (buffer) (setq acted buffer)) "kill"))))
+        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should-not acted)
+          (should (eq agent-shell-test-displayed-buffer alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-quits-out-of-a-pending-action ()
+  "Quitting after an action key runs nothing and cleans up."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (keys (list ?x ?\e))
+          acted)
+      (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
+             `((?x ,(lambda (buffer) (setq acted buffer)) "kill"))))
+        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+          (should (eq (condition-case nil
+                          (progn (agent-shell-vertico-sidebar-jump-by-key) nil)
+                        (quit 'quit))
+                      'quit))
+          (should-not acted)
+          (should-not agent-shell-test-displayed-buffer)
+          (should-not (get-buffer-window "*Agent Shell Sessions*")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-dispatch-defaults-avoid-the-default-keys ()
+  "No shipped action key is also a shipped session key.
+
+A session key wins, so an overlap would make that action unreachable
+without the reader being told why."
+  (dolist (entry agent-shell-vertico-sidebar-jump-dispatch-alist)
+    (should-not (memq (car entry)
+                      (append agent-shell-vertico-sidebar-jump-keys
+                              (list ??))))
+    ;; Every shipped action names a function that exists and a
+    ;; description the prompt can use.
+    (should (functionp (nth 1 entry)))
+    (should (stringp (nth 2 entry)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-mark-actions-reach-the-chosen-session ()
+  "The mark actions act on the session passed in, not the current buffer."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar--jump-mark-unread alpha)
+        (should (agent-shell-vertico-sidebar--unread-p alpha))
+        (agent-shell-vertico-sidebar--jump-mark-read alpha)
+        (should-not (agent-shell-vertico-sidebar--unread-p alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-visible-rows-drops-rows-below-the-window ()
+  "Only the rows a window shows are keyed, and a dead window keys all."
+  (let ((rows nil))
+    (with-temp-buffer
+      (dotimes (index 200) (insert (format "line %d\n" index)))
+      (goto-char (point-min))
+      (dotimes (index 200)
+        (push (cons (intern (format "row-%d" index)) (point)) rows)
+        (forward-line 1))
+      (setq rows (nreverse rows))
+      (setq truncate-lines t)
+      (let ((window (display-buffer (current-buffer))))
+        (unwind-protect
+            (let ((height (window-body-height window)))
+              (should (< height (length rows)))
+              (set-window-start window (point-min))
+              (let ((visible (agent-shell-vertico-sidebar--visible-rows
+                              rows window)))
+                ;; One line a row, so the window shows exactly its own
+                ;; height worth of them, starting at the top.
+                (should (equal visible (seq-take rows height))))
+              ;; Scrolling moves which rows are keyed: the rows above the
+              ;; window are dropped along with the rows below it.
+              (set-window-start window (cdr (nth 100 rows)))
+              (let ((visible (agent-shell-vertico-sidebar--visible-rows
+                              rows window)))
+                (should (equal visible
+                               (seq-subseq rows 100 (+ 100 height))))))
+          (when (window-live-p window) (delete-window window)))))
+    ;; No window to measure, so nothing is hidden.
+    (should (equal (agent-shell-vertico-sidebar--visible-rows rows nil)
+                   rows))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-leaves-offscreen-rows-unkeyed ()
+  "A session below the sidebar window gets no key and is counted instead."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((extra nil))
+      (unwind-protect
+          (progn
+            ;; Two lines a row and a 23-line window, so 16 sessions
+            ;; cannot all be shown however the frame is sized in batch.
+            (dotimes (index 15)
+              (let ((buffer (generate-new-buffer
+                             (format "Codex Agent @ extra-%d" index))))
+                (push buffer extra)
+                (with-current-buffer buffer
+                  (agent-shell-mode)
+                  (setq default-directory "/work/extra/")
+                  (setq-local agent-shell--state
+                              `((:session . ((:id . ,(format "e%d" index))
+                                             (:title . ,(format "Extra %d"
+                                                                index)))))))))
+            (let ((agent-shell-test-buffers (cons alpha extra))
+                  (agent-shell-vertico-sidebar-jump-keys
+                   (number-sequence ?a ?z))
+                  seen rows window-bottom)
+              (agent-shell-vertico-tests--with-jump-by-key
+                  (progn
+                    (setq seen (agent-shell-vertico-tests--jump-labels-shown))
+                    (with-current-buffer "*Agent Shell Sessions*"
+                      (setq rows (agent-shell-vertico-sidebar--session-rows)
+                            window-bottom
+                            (save-excursion
+                              (let ((window (get-buffer-window
+                                             "*Agent Shell Sessions*")))
+                                (goto-char (window-start window))
+                                (forward-line (window-body-height window))
+                                (point)))))
+                    ?a)
+                (agent-shell-vertico-sidebar-jump-by-key)
+                (should (= (length rows) 16))
+                ;; More keys than sessions, so only the window limits
+                ;; what is labelled.
+                (should (< (length seen) (length rows)))
+                (should (seq-every-p
+                         (lambda (label)
+                           (< (cdr (assq (cdr label) rows)) window-bottom))
+                         seen))
+                (should (equal agent-shell-vertico-tests--jump-prompt
+                               (format (concat "Jump to session (%d more, "
+                                               "use agent-shell-vertico-"
+                                               "switch): ")
+                                       (- 16 (length seen))))))))
+        (mapc (lambda (buffer)
+                (when (buffer-live-p buffer) (kill-buffer buffer)))
+              extra)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-quits-on-escape ()
+  "ESC quits the read, which is the key that reaches the branch."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready))))
+      (agent-shell-vertico-tests--with-jump-by-key ?\e
+        (should (eq (condition-case nil
+                        (progn (agent-shell-vertico-sidebar-jump-by-key) nil)
+                      (quit 'quit))
+                    'quit))
+        (should-not agent-shell-test-displayed-buffer)
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-regroups-a-hidden-sidebar-after-an-abort ()
+  "An abort leaves the sidebar buffer grouped, not flat, even when hidden."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-test-project-names
+           (list (cons alpha "Alpha Workspace") (cons beta "Beta Workspace")))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil))
+      (agent-shell-vertico-tests--with-jump-by-key ?z
+        (should-error (agent-shell-vertico-sidebar-jump-by-key)
+                      :type 'user-error)
+        ;; The window the read borrowed is gone, and the buffer it left
+        ;; behind is grouped again rather than flat.
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))
+        (with-current-buffer "*Agent Shell Sessions*"
+          (should (equal (mapcar
+                          #'caar
+                          (agent-shell-vertico-sidebar--node-positions))
+                         '(project project))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-key-face-colours-without-a-block ()
+  "The key is a red character, not a block of colour.
+
+`ace-window' draws its leading char as a red foreground over the
+ordinary background; a background here would also outweigh the dimming
+around it.  Red comes from `error', so it follows the theme, with bold
+and the frame's font specified around it."
+  (should (equal (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                                 :background nil t)
+                 (face-attribute 'default :background nil t)))
+  (should (equal (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                                 :inherit nil nil)
+                 '(bold error default)))
+  (should (eq (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                              :weight nil t)
+              'bold))
+  ;; A bare Emacs leaves `error' no colour of its own, so set one for
+  ;; the length of the check to see it reach the key.
+  (let ((original (face-attribute 'error :foreground nil nil)))
+    (unwind-protect
+        (progn
+          (set-face-attribute 'error nil :foreground "#fc4346")
+          (should (equal (face-attribute
+                          'agent-shell-vertico-sidebar-jump-key
+                          :foreground nil t)
+                         "#fc4346")))
+      (set-face-attribute 'error nil :foreground original))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-key-is-not-a-status-colour ()
+  "Only the unread mark shares the key's red, and that mark is dimmed.
+
+The colour the action list uses is `font-lock-builtin-face', which the
+working status also inherits, and that collision is what moved the row
+label to red.  Comparing resolved colours needs a theme, so compare
+where each face takes its colour from instead."
+  (should (memq 'error
+                (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                                :inherit nil nil)))
+  ;; The statuses a keyed row can show take their colour elsewhere.
+  (dolist (status '(agent-shell-vertico-sidebar-working
+                    agent-shell-vertico-sidebar-ready
+                    agent-shell-vertico-sidebar-unresolved
+                    agent-shell-vertico-sidebar-detail))
+    (let ((inherit (face-attribute status :inherit nil nil)))
+      (should-not (memq 'error (if (listp inherit) inherit (list inherit))))))
+  ;; The unread mark is red as well, which is why a row with no key is
+  ;; dimmed rather than left to compete with the keys.
+  (let ((inherit (face-attribute 'agent-shell-vertico-sidebar-attention
+                                 :inherit nil nil)))
+    (should (memq 'error (if (listp inherit) inherit (list inherit))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-dims-other-windows-not-the-list ()
+  "The frame's other windows dim; the sidebar the reader is reading does not."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          (agent-shell-vertico-sidebar-jump-dim-others t)
+          (elsewhere (get-buffer-create "*jump-dim-elsewhere*"))
+          in-sidebar in-elsewhere windows label-faces)
+      (with-current-buffer elsewhere (insert "code the reader is not reading"))
+      (set-window-buffer (selected-window) elsewhere)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn
+            (setq in-sidebar
+                  (agent-shell-vertico-tests--dimmed-overlays
+                   "*Agent Shell Sessions*")
+                  in-elsewhere
+                  (agent-shell-vertico-tests--dimmed-overlays elsewhere)
+                  windows (mapcar (lambda (overlay)
+                                    (overlay-get overlay 'window))
+                                  in-elsewhere)
+                  label-faces
+                  (with-current-buffer "*Agent Shell Sessions*"
+                    (mapcar (lambda (overlay) (overlay-get overlay 'face))
+                            (agent-shell-vertico-tests--label-overlays))))
+            ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        ;; Every row carries a key here, so nothing in the list is dimmed.
+        (should-not in-sidebar)
+        ;; The window beside it is, and only in that window, so a buffer
+        ;; shown twice does not go grey where the reader is looking.
+        (should (= (length in-elsewhere) 1))
+        (should (seq-every-p #'windowp windows))
+        (should (equal label-faces '(agent-shell-vertico-sidebar-jump-key
+                                     agent-shell-vertico-sidebar-jump-key)))
+        ;; And the dimming goes when the read is over.
+        (should-not (agent-shell-vertico-tests--dimmed-overlays elsewhere))
+        (when (buffer-live-p elsewhere) (kill-buffer elsewhere))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-dims-a-row-with-no-key ()
+  "A row nobody can press is dimmed; the rows with keys are not."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          ;; One key for two sessions, so the second row is unreachable.
+          (agent-shell-vertico-sidebar-jump-keys '(?1))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          spans rows)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn
+            (with-current-buffer "*Agent Shell Sessions*"
+              ;; Read the spans now: the cleanup deletes the overlays,
+              ;; and a deleted overlay reports no position at all.
+              (setq rows (agent-shell-vertico-sidebar--session-rows)
+                    spans (mapcar (lambda (overlay)
+                                    (cons (overlay-start overlay)
+                                          (overlay-end overlay)))
+                                  (agent-shell-vertico-tests--dimmed-overlays
+                                   (current-buffer)))))
+            ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (= (length rows) 2))
+        (should (= (length spans) 1))
+        ;; It covers the unkeyed row, from its start to the end of the list.
+        (should (equal (caar spans) (cdr (nth 1 rows))))
+        (should (> (cdar spans) (caar spans)))
+        ;; The keyed row keeps its contrast.
+        (should (< (cdr (nth 0 rows)) (caar spans)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-dimming-can-be-turned-off ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          (agent-shell-vertico-sidebar-jump-dim-others nil)
+          (elsewhere (get-buffer-create "*jump-dim-elsewhere*"))
+          dimmed labels)
+      (set-window-buffer (selected-window) elsewhere)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn
+            (setq dimmed
+                  (append (agent-shell-vertico-tests--dimmed-overlays
+                           "*Agent Shell Sessions*")
+                          (agent-shell-vertico-tests--dimmed-overlays
+                           elsewhere))
+                  labels (agent-shell-vertico-tests--jump-labels-shown))
+            ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should-not dimmed)
+        ;; The keys are still drawn; only the dimming is gone.
+        (should (= (length labels) 2))
+        (when (buffer-live-p elsewhere) (kill-buffer elsewhere))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-key-face-specifies-its-own-font ()
+  "The label face resets family and height, so it never inherits the
+icon font of the mark it is drawn over."
+  (dolist (attribute '(:family :height))
+    (should-not (eq (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                                    attribute nil t)
+                    'unspecified)))
+  (should (eq (face-attribute 'agent-shell-vertico-sidebar-jump-key
+                              :weight nil t)
+              'bold)))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-single-session-needs-no-key ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (agent-shell-vertico-tests--with-jump-by-key
+          (ert-fail "Read a key for a single session")
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (eq agent-shell-test-displayed-buffer alpha))
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-reports-no-sessions ()
+  (let ((agent-shell-test-buffers nil))
+    (agent-shell-vertico-tests--with-jump-by-key
+        (ert-fail "Read a key with no sessions")
+      (should (equal (should-error (agent-shell-vertico-sidebar-jump-by-key)
+                                   :type 'user-error)
+                     '(user-error "No agent-shell sessions"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-unknown-key-signals-and-cleans-up ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2)))
+      (agent-shell-vertico-tests--with-jump-by-key ?z
+        (should (equal (should-error (agent-shell-vertico-sidebar-jump-by-key)
+                                     :type 'user-error)
+                       '(user-error "No session on z")))
+        (should-not agent-shell-test-displayed-buffer)
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))
+        (should-not (agent-shell-vertico-tests--jump-labels-shown))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-quits-on-c-g ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready))))
+      (agent-shell-vertico-tests--with-jump-by-key ?\C-g
+        ;; `quit' is not an `error', so `should-error' cannot catch it.
+        (should (eq (condition-case nil
+                        (progn (agent-shell-vertico-sidebar-jump-by-key) nil)
+                      (quit 'quit))
+                    'quit))
+        (should-not agent-shell-test-displayed-buffer)
+        (should-not (get-buffer-window "*Agent Shell Sessions*"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-prefix-uses-other-window ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          other-window-buffer)
+      (agent-shell-vertico-tests--with-jump-by-key ?2
+        (cl-letf (((symbol-function 'switch-to-buffer-other-window)
+                   (lambda (buffer &rest _) (setq other-window-buffer buffer))))
+          (agent-shell-vertico-sidebar-jump-by-key t))
+        (should (eq other-window-buffer beta))
+        (should-not agent-shell-test-displayed-buffer)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-keeps-labels-through-a-refresh ()
+  "A refresh fired while the key is read leaves the labels in place."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          seen)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (agent-shell-vertico-sidebar--schedule-refresh)
+                 (agent-shell-vertico-sidebar-refresh)
+                 (setq seen (agent-shell-vertico-tests--jump-label-spans))
+                 ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        ;; `erase-buffer' would collapse each label overlay to an empty
+        ;; one at point-min, which draws nothing while the read is still
+        ;; waiting.  The overlay object survives that, so assert it still
+        ;; spans its row's mark character.
+        (should (equal seen (list (cons ?1 ?✓) (cons ?2 ?✓))))
+        (should (memq agent-shell-test-displayed-buffer (list alpha beta)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-prompt-counts-unkeyed-sessions ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-jump-keys '(?1))
+          seen)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown))
+                 ?1)
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (= (length seen) 1))
+        (should (equal agent-shell-vertico-tests--jump-prompt
+                       (concat "Jump to session (1 more, "
+                               "use agent-shell-vertico-switch): ")))))))
+
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"

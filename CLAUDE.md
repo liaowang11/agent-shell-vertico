@@ -283,6 +283,76 @@ resolve their session through `--attention-target`, which reads the sidebar
 row at point when called there and the current buffer's session, viewport
 included, anywhere else.
 
+**Jumping to a session by key.** `agent-shell-vertico-sidebar-jump-by-key` is
+the `ace-window` model: assign labels at trigger time, show them where the
+reader is already looking, read one key. The sidebar is the only rendering, so
+`--read-jump-target` first makes it list the sessions flat: a hidden sidebar
+is displayed for the read and its window deleted after, and
+`agent-shell-vertico-sidebar-group-by` is let-bound to nil around a render so
+a folded session has a row too. Every exit path renders again under the real
+grouping, including the aborts, which is also what repairs a sidebar shown on
+another frame: the buffer is shared, so the flat render reached that frame
+too. The folds themselves are never touched. Labels come from
+`--session-rows`, the rendered rows in display order, not from a separate
+sort, so what is drawn is what is keyed, and `--visible-rows` then drops the
+rows outside the window, because `read-key` blocks and a key nobody can scroll
+to is a key nobody can press. It counts lines rather than asking `window-end`,
+which is exact here because the sidebar truncates lines, and which
+`window-end` cannot answer before a redisplay this code cannot force. Each
+label is an overlay whose `display' replaces the row's mark character, so
+nothing reflows. The face goes on the overlay rather than inside the display
+string, as `aw-leading-char-face' does: an overlay face beats both the faces
+the text carries and the dimming overlay below, which a face inside the string
+could not be relied on to do. A nerd-icons mark carries the icon font's family
+and height in its face, so the label face inherits `default' last to specify
+both again and to hand back the ordinary background; without that the digit is
+drawn in the icon font, on a block of colour. The colour is red, from `error',
+because `--dim-overlays' leaves nothing else on the list red: the only other
+red is the unread mark, and a row that carries no key is dimmed. The action
+list keeps `font-lock-builtin-face', as `aw-key-face' does, both because the
+echo area has nothing to confuse a colour with and because that colour is the
+working status on a row. What dims is the inverse of ace-window: a window is
+chosen by where it is, so ace-window can dim every window and let position
+carry the choice, but a session is chosen by reading its title and project, so
+dimming the list would take away the answer. The frame's other windows dim
+instead, which is what makes the sidebar stand out, and within the sidebar
+only the rows no key was drawn on. Each dim is one overlay, because an overlay
+face takes precedence over the faces the text carries; a window's overlay
+carries a `window' property so a buffer shown twice dims only where the reader
+is not looking. Rows are compared against the labels rather than against the
+visible rows, or a row on screen but past the last key would stay bright and
+unpressable. Timers fire while `read-key` waits and a render erases the
+buffer, so `--render` returns early, marking the sidebar dirty, while
+`--jump-in-progress` is bound; that flag is bound only after the flat render
+the jump itself needs, and the cleanup render is what acts on the dirty mark.
+An erased buffer leaves each label overlay empty rather than gone, so the
+tests assert the span and the character under it, not the overlay's existence.
+Keys are positional on purpose: under `priority` sorting rows move, so a
+per-session sticky key would need a persistent label column to be readable,
+and that is a separate feature.
+
+**Dispatching an action from a jump.** `--read-jump-keys` is the loop
+`ace-window` runs for `aw-dispatch-alist`: a key is either a session, an
+action, or `?`. A session ends the read, an action records what the next
+session key will mean and asks again, and `?` puts the action list above the
+prompt and leaves it there for the rest of the read. That list is one action a
+line with its key faced and its description not, which is what makes a column
+of keys scannable; packing several to a line to save height read as a
+paragraph instead. `ace-window` draws `aw-dispatch-alist` the same way.
+Session keys are checked first, so a key that is both never makes a session
+unreachable; the reverse order would instead loop, which is why the collision
+test reads from a finite list rather than a constant. The reader returns
+`(BUFFER . ACTION)` and runs neither, because the actions are commands that
+prompt: `set model` needs a minibuffer and `kill` a confirmation, and both
+want the borrowed sidebar window gone and the real layout back first. The
+default action is `--jump-display`, and the prefix argument swaps it for the
+other-window one by identity, which is also why an explicitly dispatched
+action ignores the prefix. Most entries name the existing public
+`agent-shell-vertico-*-session` commands, which accept a buffer because
+`--session-buffer` goes through `get-buffer`; the two mark commands read their
+own target instead, so `--jump-mark-unread` and `--jump-mark-read` run them
+with the session current and let `--attention-target` answer.
+
 **Drawing a session.** A row's mark is a `(STATUS . UNREAD)` cons, built by
 `--mark-for` and cached in the render snapshot as `:mark`. The status picks
 the glyph from `--status-icons`, which lists a filled and an outline

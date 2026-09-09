@@ -186,6 +186,16 @@ whichever channel shows it."
   :type '(choice (const :tag "Do not notify" nil) function)
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-jump-keys
+  '(?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9 ?a ?s ?d ?f ?g ?h ?j ?k ?l)
+  "Keys `agent-shell-vertico-sidebar-jump-by-key' offers, top row first.
+
+Digits come first because they read as positions in a list; the home
+row takes the rows after the ninth.  A session past the last key gets
+no label and is reached through `agent-shell-vertico-switch' instead."
+  :type '(repeat character)
+  :group 'agent-shell-vertico-sidebar)
+
 (defvar agent-shell-vertico-sidebar--unread (make-hash-table :test #'eq)
   "Buffer to the time its unread output arrived.
 
@@ -230,6 +240,58 @@ quiet period, and `:time', when the burst's latest update arrived.")
 Values are plists with `:chunks', the message text in reverse arrival
 order, and `:open', whether the next chunk continues that message or
 starts a new one.")
+
+(defcustom agent-shell-vertico-sidebar-jump-dispatch-alist
+  '((?o agent-shell-vertico-sidebar--jump-display-other-window
+        "open in another window")
+    (?x agent-shell-vertico-kill-session "kill")
+    (?r agent-shell-vertico-restart-session "restart")
+    (?i agent-shell-vertico-interrupt-session "interrupt")
+    (?m agent-shell-vertico-set-session-mode "set mode")
+    (?M agent-shell-vertico-set-session-model "set model")
+    (?t agent-shell-vertico-open-transcript "open transcript")
+    (?T agent-shell-vertico-view-traffic "view traffic")
+    (?u agent-shell-vertico-sidebar--jump-mark-unread "mark unread")
+    (?! agent-shell-vertico-sidebar--jump-mark-read "mark read"))
+  "Actions a jump can take on a session instead of displaying it.
+
+`agent-shell-vertico-sidebar-jump-by-key' offers these the way
+`ace-window' offers `aw-dispatch-alist'.
+
+Each entry is (KEY FUNCTION DESCRIPTION).  Pressing KEY during a jump
+leaves the keys drawn and waits for a session key; FUNCTION is then
+called with that session's buffer, once the sidebar is back as it was.
+DESCRIPTION names the action in the prompt and in the list `?' shows,
+and reads after \"Session to\", so word it as a verb.
+
+A session key wins over an action key, so an action whose key is also
+in `agent-shell-vertico-sidebar-jump-keys' can never be reached.  `?'
+is reserved for the list itself."
+  :type '(repeat (list (character :tag "Key")
+                       (function :tag "Function")
+                       (string :tag "Description")))
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-jump-dim-others t
+  "Whether a jump dims what it is not asking the reader to read.
+
+That is the other windows of the frame, so the sidebar is what stands
+out while the question is open, and any session row that carries no
+key, because such a row is not one of the answers.
+
+The sidebar's own rows keep their contrast.  `ace-window' dims every
+window because a window is chosen by where it is; a session is chosen
+by reading its title and project, so dimming the list would take away
+what the reader is looking at."
+  :type 'boolean
+  :group 'agent-shell-vertico-sidebar)
+
+(defvar agent-shell-vertico-sidebar--jump-in-progress nil
+  "Non-nil while `agent-shell-vertico-sidebar-jump-by-key' reads a key.
+
+A render erases the buffer, which would take the key labels with it, so
+`agent-shell-vertico-sidebar--render' only marks the sidebar dirty while
+this is set.  The jump renders again once its key is read.")
 
 (defvar-local agent-shell-vertico-sidebar--rendered-current-sessions nil
   "Sessions whose rows the most recent render marked as current.
@@ -300,6 +362,41 @@ nobody has started again."
 (defface agent-shell-vertico-sidebar-current-session
   '((t :inherit outline-1 :height reset))
   "Face for the fringe marker on the session the reader is currently in."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-jump-help-key
+  '((t :inherit font-lock-builtin-face))
+  "Face for a key in the action list a jump shows on `?'.
+
+The label drawn on a row is a highlighted background, which suits one
+character standing in for a mark but would be heavy repeated down a
+list.  The list colours its keys instead, the way `aw-key-face' does
+for `ace-window'."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-jump-key
+  '((t :inherit (bold error default)))
+  "Face for the key drawn over a session's mark while a jump is read.
+
+A coloured character rather than a block of colour, which is how
+`ace-window' draws `aw-leading-char-face', and red for the same reason
+it is: nothing else on a list of sessions is red once the rows that
+carry no key are dimmed, so red means a key and only a key.  The
+action list keeps its own colour, as `aw-key-face' does, because in the
+echo area there is nothing to be confused with.
+
+The key replaces a mark that may be a nerd-icons glyph, whose face
+carries the icon font's family and height.  `default' is inherited
+last to specify both again, and to hand back the ordinary background:
+the key is drawn in the frame's own font, at its own size, and coloured
+rather than highlighted."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-jump-dimmed
+  '((t :inherit shadow))
+  "Face for what a jump dims while it reads a key.
+
+The other windows of the frame, and any session row without a key."
   :group 'agent-shell-vertico-sidebar)
 
 ;; A short bar, `gptel-highlight-fringe' style: `center' positions it on
@@ -1386,10 +1483,15 @@ a column of slack rather than pushing its count past the window edge."
          (agent-shell-vertico-sidebar--session-lines buffer root width t)
          'session buffer t)))))
 
-(defun agent-shell-vertico-sidebar--render ()
+(cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
   (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
     (user-error "The named sidebar buffer is not an agent-shell sidebar"))
+  (when agent-shell-vertico-sidebar--jump-in-progress
+    ;; The key labels a jump has drawn live on this text.  Leave it, and
+    ;; let the jump redraw once its key is read.
+    (setq agent-shell-vertico-sidebar--dirty t)
+    (cl-return-from agent-shell-vertico-sidebar--render))
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
@@ -2779,6 +2881,307 @@ every live session, not only the ones needing attention."
           (agent-shell-vertico-sidebar--mark-seen buffer)
           (agent-shell-vertico--display-session (buffer-name buffer)))
       (message "%s" (agent-shell-vertico-sidebar--no-attention-message)))))
+
+(defun agent-shell-vertico-sidebar--jump-display (buffer)
+  "Display session BUFFER, the default action of a jump."
+  (agent-shell-vertico-sidebar--mark-seen buffer)
+  (agent-shell-vertico--display-session (buffer-name buffer)))
+
+(defun agent-shell-vertico-sidebar--jump-display-other-window (buffer)
+  "Display session BUFFER in another window."
+  (agent-shell-vertico-sidebar--mark-seen buffer)
+  (agent-shell-vertico--display-session-other-window (buffer-name buffer)))
+
+(defun agent-shell-vertico-sidebar--jump-mark-unread (buffer)
+  "Mark session BUFFER unread.
+
+The command reads its own target, so it is run with BUFFER current:
+`--attention-target' answers with the session it is standing in, which
+for a session buffer is that buffer."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-mark-unread)))
+
+(defun agent-shell-vertico-sidebar--jump-mark-read (buffer)
+  "Mark session BUFFER read.
+Run the same way as `agent-shell-vertico-sidebar--jump-mark-unread'."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-mark-read)))
+
+(defun agent-shell-vertico-sidebar--dispatch-help ()
+  "Return the action list `?' shows during a jump, one action a line.
+
+Every line starts with its key, and the key is faced where the
+description is not, so the list is a column to scan down rather than a
+paragraph to read.  `ace-window' draws `aw-dispatch-alist' the same
+way.  The blank line at the end keeps the list from running into the
+prompt it is drawn above."
+  (concat
+   (mapconcat
+    (pcase-lambda (`(,key ,_ ,description))
+      (format "%s: %s"
+              (propertize
+               (char-to-string key)
+               'face 'agent-shell-vertico-sidebar-jump-help-key)
+              description))
+    agent-shell-vertico-sidebar-jump-dispatch-alist
+    "\n")
+   "\n\n"))
+
+(defun agent-shell-vertico-sidebar--session-rows ()
+  "Return (BUFFER . POSITION) for each session row, top to bottom."
+  (seq-keep (pcase-lambda (`((,kind . ,node) . ,position))
+              (and (eq kind 'session) (cons node position)))
+            (agent-shell-vertico-sidebar--node-positions)))
+
+(defun agent-shell-vertico-sidebar--visible-rows (rows window)
+  "Return the ROWS whose first line WINDOW shows.
+
+A key nobody can see is a key nobody can press: `read-key' blocks, so
+the reader cannot scroll the sidebar to look for one.  Rows below the
+window are therefore left unlabelled and counted in the prompt, the
+same way the rows past the last key are.  Nothing scrolls, so a reader
+who had scrolled the sidebar keeps their place and the labels appear
+where they were already looking."
+  (if (not (window-live-p window))
+      rows
+    (let* ((start (window-start window))
+           ;; Counting lines rather than asking `window-end': the sidebar
+           ;; sets `truncate-lines', so one buffer line is one screen
+           ;; line and the count is exact.  `window-end' would also
+           ;; report the whole buffer until a redisplay it cannot force
+           ;; from here has happened.
+           (end (save-excursion
+                  (goto-char start)
+                  (forward-line (window-body-height window))
+                  (point))))
+      (seq-filter (lambda (row) (and (>= (cdr row) start)
+                                     (< (cdr row) end)))
+                  rows))))
+
+(defun agent-shell-vertico-sidebar--jump-prompt
+    (labelled total &optional action)
+  "Return the prompt for a jump over TOTAL sessions, LABELLED of them keyed.
+
+ACTION is the description of a pending dispatch action, which the
+prompt names in place of asking where to jump."
+  (concat (if action
+              (format "Session to %s" action)
+            "Jump to session")
+          (when (> total labelled)
+            (format " (%d more, use agent-shell-vertico-switch)"
+                    (- total labelled)))
+          ": "))
+
+(defun agent-shell-vertico-sidebar--row-end (start rows)
+  "Return where the session row beginning at START ends.
+
+ROWS are in ascending order, so the next row's start is this row's
+end, and the last row ends where the list does."
+  (or (seq-some (lambda (row) (and (> (cdr row) start) (cdr row))) rows)
+      (point-max)))
+
+(defun agent-shell-vertico-sidebar--dim-overlays (window rows labels)
+  "Return the overlays a jump dims with, or nil when dimming is off.
+
+WINDOW shows the sidebar, ROWS are every session row and LABELS the
+keys drawn on them.  Two things go grey, and the list the reader is
+reading is not one of them: every other window of WINDOW's frame, so
+the sidebar is what stands out, and each row that LABELS gave no key,
+because such a row is not one of the answers.
+
+An overlay face takes precedence over the faces the text carries, so
+one overlay a window and one a row is the whole answer."
+  (when agent-shell-vertico-sidebar-jump-dim-others
+    (append
+     (mapcar
+      (lambda (other)
+        (let ((overlay (make-overlay (window-start other)
+                                     (window-end other t)
+                                     (window-buffer other))))
+          (overlay-put overlay 'face
+                       'agent-shell-vertico-sidebar-jump-dimmed)
+          ;; A buffer shown twice must dim only in the other window.
+          (overlay-put overlay 'window other)
+          overlay))
+      (seq-remove (lambda (other) (eq other window))
+                  (window-list (window-frame window) 'no-minibuffer)))
+     (mapcar
+      (lambda (row)
+        (let ((overlay (make-overlay
+                        (cdr row)
+                        (agent-shell-vertico-sidebar--row-end (cdr row) rows))))
+          (overlay-put overlay 'face
+                       'agent-shell-vertico-sidebar-jump-dimmed)
+          overlay))
+      (seq-remove (lambda (row) (rassq (car row) labels)) rows)))))
+
+(defun agent-shell-vertico-sidebar--show-jump-labels (labels rows)
+  "Draw each key in LABELS over its session's mark and return the overlays.
+
+LABELS is an alist of key to session buffer and ROWS gives each buffer's
+row start.  The key takes the mark's cell through a `display' property,
+so the row keeps its width and nothing reflows.
+
+The face goes on the overlay rather than into the string, as
+`ace-window' does with `aw-leading-char-face': an overlay face beats
+the icon font the mark carries, which a face inside the string could
+not be relied on to do."
+  (mapcar (pcase-lambda (`(,key . ,buffer))
+            (let* ((start (cdr (assq buffer rows)))
+                   (overlay (make-overlay start (1+ start))))
+              (overlay-put overlay
+                           'agent-shell-vertico-sidebar-jump-key key)
+              (overlay-put overlay 'display (char-to-string key))
+              (overlay-put overlay 'face
+                           'agent-shell-vertico-sidebar-jump-key)
+              ;; Above any dimming that reaches the same cell.
+              (overlay-put overlay 'priority 100)
+              overlay))
+          labels))
+
+(defun agent-shell-vertico-sidebar--read-jump-key (prompt)
+  "Read one key with PROMPT."
+  (read-key prompt))
+
+(defun agent-shell-vertico-sidebar--read-jump-keys (labels labelled total)
+  "Read which of LABELS to act on, and what to do with it.
+
+LABELLED and TOTAL are how many sessions carry a key and how many there
+are, which the prompt reports.  Reading loops: an action key from
+`agent-shell-vertico-sidebar-jump-dispatch-alist' sets what the next
+session key will do and asks again, `?' adds the list of actions above
+the prompt, and a session key ends the read.  Return (BUFFER . ACTION),
+where ACTION takes a session buffer.
+
+The labels stay drawn throughout, so choosing an action costs no
+redraw, and the action itself is left to the caller to run once the
+sidebar is back as it was."
+  (let ((action nil)
+        (help nil)
+        (result nil))
+    (while (not result)
+      (let* ((key (agent-shell-vertico-sidebar--read-jump-key
+                   (concat
+                    (when help (agent-shell-vertico-sidebar--dispatch-help))
+                    (agent-shell-vertico-sidebar--jump-prompt
+                     labelled total (nth 2 action)))))
+             (session (cdr (assq key labels))))
+        (cond
+         ;; A quit char never reaches here: `read-key' leaves it in
+         ;; `quit-flag', which signals `quit' inside the read and the
+         ;; caller's cleanup handles it.  This is for ESC, which does
+         ;; arrive as an event, and costs nothing for C-g.
+         ((memq key '(?\C-g ?\e)) (keyboard-quit))
+         ;; A session key first, so a key that is both never leaves a
+         ;; session unreachable.
+         (session
+          (setq result (cons session
+                             (or (nth 1 action)
+                                 #'agent-shell-vertico-sidebar--jump-display))))
+         ((eq key ??) (setq help t))
+         ((assq key agent-shell-vertico-sidebar-jump-dispatch-alist)
+          (setq action
+                (assq key agent-shell-vertico-sidebar-jump-dispatch-alist)))
+         (t (user-error "No session on %s" (single-key-description key))))))
+    result))
+
+(defun agent-shell-vertico-sidebar--read-jump-target ()
+  "Key the sessions listed flat in the sidebar and read which one.
+
+A hidden sidebar is shown for the read and closed again after it.  A
+grouped sidebar is drawn flat for the read, so a folded session has a
+row too.  Every exit path renders again under the real grouping, which
+is also what puts a sidebar shown on another frame back: the buffer is
+shared, so the flat render reached that frame too.  The folds
+themselves are never touched.
+
+Return (BUFFER . ACTION) from
+`agent-shell-vertico-sidebar--read-jump-keys'.  The action is returned
+rather than run, so it runs with the sidebar back as it was and a
+window free for a prompt of its own."
+  (let* ((existing (when-let* ((buffer (get-buffer "*Agent Shell Sessions*")))
+                     (get-buffer-window buffer)))
+         (window (or existing
+                     (save-selected-window
+                       (agent-shell-vertico-sidebar--display-buffer))))
+         ;; `display-buffer-in-side-window' can decline.  Ask before
+         ;; `window-buffer', whose answer for nil is the selected
+         ;; window's buffer, so the failure would otherwise surface as a
+         ;; render error about a buffer nobody named.
+         (_ (unless (window-live-p window)
+              (user-error "Cannot display the agent-shell sidebar")))
+         (sidebar (window-buffer window))
+         (overlays nil))
+    (unwind-protect
+        (with-current-buffer sidebar
+          (let ((agent-shell-vertico-sidebar-group-by nil))
+            (agent-shell-vertico-sidebar--render))
+          (let* ((agent-shell-vertico-sidebar--jump-in-progress t)
+                 (rows (agent-shell-vertico-sidebar--session-rows))
+                 (keyed (agent-shell-vertico-sidebar--visible-rows
+                         rows window))
+                 (labels (cl-mapcar (lambda (key row) (cons key (car row)))
+                                    agent-shell-vertico-sidebar-jump-keys
+                                    keyed)))
+            (setq overlays
+                  (append
+                   (agent-shell-vertico-sidebar--dim-overlays
+                    window rows labels)
+                   (agent-shell-vertico-sidebar--show-jump-labels
+                    labels keyed)))
+            (agent-shell-vertico-sidebar--read-jump-keys
+             labels (length labels) (length rows))))
+      (mapc #'delete-overlay overlays)
+      (unless existing
+        (when (window-live-p window)
+          (delete-window window)))
+      (when (buffer-live-p sidebar)
+        (with-current-buffer sidebar
+          (agent-shell-vertico-sidebar--render))))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-jump-by-key (&optional other-window)
+  "Jump to a session by the key drawn beside it, `ace-window' style.
+
+The sessions are listed flat in the sidebar, each row's mark replaced
+by one of `agent-shell-vertico-sidebar-jump-keys' in row order, and one
+key is read: press a session's key and that session is displayed.  A
+hidden sidebar is shown for the read and closed again after it; a
+grouped one is grouped again after, its folds as they were.  The keys
+follow the rows, so they are assigned afresh each time and read off the
+sidebar rather than remembered.
+
+Press `?' to list the actions in
+`agent-shell-vertico-sidebar-jump-dispatch-alist', or an action's key
+to do that to the next session chosen instead of displaying it, the way
+`ace-window' dispatches on `aw-dispatch-alist'.
+
+Only the rows the sidebar window shows are keyed, and only as many as
+there are keys.  Nothing scrolls, because the read cannot be
+interrupted to scroll; the prompt counts whatever is left over, and
+`agent-shell-vertico-switch' reaches those sessions.
+
+A single live session is acted on without asking, which is why the
+prefix argument has its own place here: with OTHER-WINDOW, display the
+session in another window."
+  (interactive "P")
+  (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         (default (if other-window
+                      #'agent-shell-vertico-sidebar--jump-display-other-window
+                    #'agent-shell-vertico-sidebar--jump-display))
+         (target
+          (pcase (length buffers)
+            (0 (user-error "No agent-shell sessions"))
+            (1 (cons (car buffers) default))
+            (_ (agent-shell-vertico-sidebar--read-jump-target)))))
+    ;; A dispatched action replaces displaying the session, so the
+    ;; prefix only decides where the default action puts it.
+    (funcall (if (eq (cdr target)
+                     #'agent-shell-vertico-sidebar--jump-display)
+                 default
+               (cdr target))
+             (car target))
+    (agent-shell-vertico-sidebar-refresh)))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-toggle ()
