@@ -556,10 +556,24 @@ a real turn owns the session and wins."
          ((not (agent-shell-vertico--session-field buffer :id)) 'starting)
          (t status)))))
 
+(defun agent-shell-vertico-sidebar--unread-for (status time)
+  "Return TIME when a session in STATUS owes the reader that output.
+
+A working session owes nothing yet: whatever it produced is superseded
+by what it is producing now, and the turn or the burst will report
+itself when it ends.  The record is only deferred, never dropped, so the
+mark comes back with its own age once the session goes quiet.  This is
+what `agent-shell-vertico-sidebar-mark-unread' says for the mark a
+reader sets by hand, said once for every way a mark is set."
+  (unless (eq status 'busy)
+    time))
+
 (defun agent-shell-vertico-sidebar--unread-time (buffer)
   "Return when BUFFER's unread output arrived, or nil when it has none."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :unread)
-      (gethash buffer agent-shell-vertico-sidebar--unread)))
+      (agent-shell-vertico-sidebar--unread-for
+       (agent-shell-vertico-sidebar--raw-status buffer)
+       (gethash buffer agent-shell-vertico-sidebar--unread))))
 
 (defun agent-shell-vertico-sidebar--unread-p (buffer)
   "Return non-nil when BUFFER holds output nobody has read."
@@ -576,7 +590,10 @@ Two things ask for the reader, and they are asked differently.  Unread
 output is recorded, because nothing about a session says whether anyone
 has looked at it.  A pending permission decision is not: the session
 reports itself blocked for as long as it waits, so reading the status is
-the whole answer and no record can go stale."
+the whole answer and no record can go stale.
+
+A working session asks for nobody, whatever it is holding: see
+`agent-shell-vertico-sidebar--unread-for'."
   (or (agent-shell-vertico-sidebar--unread-p buffer)
       (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)))
 
@@ -645,7 +662,9 @@ header statistics, and row rendering consume the resulting plist instead of
 repeating those queries during one redisplay."
   (let* ((status (agent-shell-vertico-sidebar--raw-status buffer))
          (activity-time (agent-shell-vertico-sidebar--activity-time buffer))
-         (unread (gethash buffer agent-shell-vertico-sidebar--unread))
+         (unread (agent-shell-vertico-sidebar--unread-for
+                  status (gethash buffer
+                                  agent-shell-vertico-sidebar--unread)))
          (attention (or (and unread t) (eq status 'blocked)))
          (busy-since-time
           (if (eq status 'busy)
@@ -959,10 +978,11 @@ a question mark is asking the reader something, and a cross failed.  The
 filled variant marks unread output, which the colour says too.  A
 terminal has no filled twin for a check or a question mark, so its plain
 character is the same read or unread and the colour carries it alone.
-Working and starting have nothing to have missed — a session still
-running or not yet begun has produced nothing a reader could be behind
-on — so their filled and outline names are the same glyph and the colour
-is the only thing that ever changes.")
+Working and starting have nothing a reader could be behind on: a session
+still running or not yet begun has produced nothing to miss, and
+`agent-shell-vertico-sidebar--unread-for' holds a working session's mark
+back until it stops.  Their filled names are never drawn, and are the
+same glyph as their outline ones.")
 
 (defconst agent-shell-vertico-sidebar--status-order
   '(failed blocked busy ready starting)
@@ -1074,7 +1094,11 @@ NESTED rows are indented below a project header."
   "Return the mark a session in STATUS gets, given UNREAD.
 
 A mark is the pair the sidebar draws from: the status picks the glyph
-and the colour family, unread fills the glyph and turns it red."
+and the colour family, unread fills the glyph and turns it red.
+
+STATUS and UNREAD are two axes, but not four marks: a `busy' session is
+never unread, because `agent-shell-vertico-sidebar--unread-for' holds
+the mark back until it stops working."
   (cons status (and unread t)))
 
 (defun agent-shell-vertico-sidebar--mark (buffer)
@@ -1881,7 +1905,14 @@ A burst carries no completion event, so it counts as finished once it has
 been quiet for `agent-shell-vertico-sidebar--out-of-turn-settle-seconds'.
 A pause longer than that mid-burst settles early; the next update starts
 a fresh burst and finds this mark already in place, so the reader still
-sees one mark rather than a flicker."
+sees one mark rather than a flicker.
+
+That is also why a burst stacked on a mark nobody has read announces
+nothing: quiet is the only signal there is, and it cannot tell one
+message paused from a second wave minutes later, so a wave that would
+have announced itself twice for one message stays silent instead.  A
+wave arriving after the last one was read finds no mark and announces
+itself as usual."
   (let ((burst (gethash buffer agent-shell-vertico-sidebar--out-of-turn)))
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
@@ -1890,7 +1921,11 @@ sees one mark rather than a flicker."
                (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                           '(busy blocked)))
                ;; An earlier unread mark keeps its own time, so the
-               ;; attention tier still orders oldest first.
+               ;; attention tier still orders oldest first.  The record
+               ;; is asked directly rather than through
+               ;; `agent-shell-vertico-sidebar--unread-time', because
+               ;; this writes the record: what a row would show is
+               ;; deferred while a session works and answers nothing.
                (not (gethash buffer agent-shell-vertico-sidebar--unread))
                (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
       (puthash buffer
@@ -2946,10 +2981,13 @@ keeps its place through its status, which no command can mark away, and
 a failed session stays failed until a new turn starts.
 
 New output marks the session again, which includes a turn that finishes
-after this and a background stream that goes quiet after this."
+after this and a background stream that goes quiet after this.
+
+A session working through a burst carries no mark to see, and the one it
+is holding back still goes: the record is what this command is about."
   (interactive)
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
-    (if (not (agent-shell-vertico-sidebar--unread-p buffer))
+    (if (not (gethash buffer agent-shell-vertico-sidebar--unread))
         (message "Session %s has nothing unread" (buffer-name buffer))
       (remhash buffer agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar-refresh)

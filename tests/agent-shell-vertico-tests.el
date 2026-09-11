@@ -9539,6 +9539,176 @@ is unread output on top of that."
                         (list quiet streaming) 'priority)
                        (list streaming quiet)))))))
 
+;;; Unread output while a session works
+
+(ert-deftest agent-shell-vertico-sidebar-burst-defers-an-unread-mark ()
+  "Output streaming after a finished turn is work, not unread output.
+
+The mark is deferred rather than dropped: the burst says what the
+session is doing now, and the session is working."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete))))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
+        (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+        (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (should (eq (agent-shell-vertico-sidebar--mark-face
+                     (agent-shell-vertico-sidebar--mark alpha))
+                    'agent-shell-vertico-sidebar-working))
+        ;; The row ages from this burst, not from the mark it holds.
+        (should (= (agent-shell-vertico-sidebar--priority-time alpha) 20.0))
+        ;; The record itself survives the burst.
+        (should (= (gethash alpha agent-shell-vertico-sidebar--unread)
+                   10.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-burst-returns-deferred-mark ()
+  "A burst going quiet hands the mark back, at the time it was made."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                       '(ready . t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-burst-defers-a-failed-mark ()
+  "A failed session that streams again is working until it stops."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . error)))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                       '(failed . t)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                       '(failed . t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-deferred-mark-notifies-once ()
+  "A burst arriving on top of unread output announces nothing new."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* ((agent-shell-test-buffers (list alpha))
+             (agent-shell-test-statuses (list (cons alpha 'ready)))
+             notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . turn-complete)))
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (= (length notifications) 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-reading-a-working-session-clears-it ()
+  "A deferred mark is hidden from the reader, not protected from them.
+
+What the burst itself leaves behind is new output, so it is marked at
+the burst's own time rather than the cleared mark's."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-session-leaves-attention-tier ()
+  "A session holding a deferred mark sorts with the working sessions."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (streaming "Codex Agent @ streaming" "/work/streaming/"
+                  '((:session . ((:id . "s") (:title . "Streaming"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons waiting 'ready)
+                                             (cons streaming 'ready))))
+        (agent-shell-vertico-sidebar--mark-unread-at waiting 50.0)
+        (agent-shell-vertico-sidebar--mark-unread-at streaming 10.0)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 100.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           streaming '((:event . agent-message-chunk))))
+        (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                        (list streaming waiting) 'priority)
+                       (list waiting streaming)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-second-burst-keeps-the-first-mark ()
+  "A second wave of output is work; what it stacks on keeps its own age."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 100.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (should (= (agent-shell-vertico-sidebar--priority-time alpha) 100.0))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-second-burst-notifies-once-read ()
+  "A wave arriving after the last one was read is news again."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* ((agent-shell-test-buffers (list alpha))
+             (agent-shell-test-statuses (list (cons alpha 'ready)))
+             notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 100.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . agent-message-chunk))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (= (length notifications) 2))
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 100.0))))))
+
 ;;; Viewport pages
 
 (defun agent-shell-vertico-tests--insert-page (prompt response)

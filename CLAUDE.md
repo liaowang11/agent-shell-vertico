@@ -264,6 +264,17 @@ blocked for as long as it waits, so reading the status is the whole
 answer and no record can go stale. Reading a blocked session therefore
 drops its unread mark and leaves it in the attention tier, which is
 right: it still owes a permission decision.
+The one place the axes are not independent is that a working session is
+never unread, and `--unread-for` is where that is said: it holds the
+record back while `--raw-status` says `busy`, and hands it over again
+once the session goes quiet. Nothing is lost, because
+`--out-of-turn-settled` leaves an existing mark at its own time, so the
+row returns to the attention tier with the age it had. Without it,
+out-of-turn output arriving after a turn nobody read drew a red row
+saying Working — a mark asking for the reader on a session with nothing
+to read yet. `mark-unread` refuses a `busy` session for the same reason
+and said it first; `mark-read` reads and drops the record rather than
+the deferred mark, so it still works on a session that is working.
 The `priority` sort puts the attention sessions first, oldest-first
 within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
 `--sort-buffers ... 'priority'` and nothing else has to rank them again.
@@ -374,7 +385,9 @@ with the session current and let `--attention-target` answer.
 `--mark-for` and cached in the render snapshot as `:mark`. The status picks
 the glyph from `--status-icons`, which lists a filled and an outline
 nerd-icons name plus one plain character per status, and unread picks
-between the two. `--mark-face` colours it: red (`-attention`) for unread,
+between the two. A `busy` mark is never unread and a `starting` one has
+nothing to have missed, so their filled names are never drawn.
+`--mark-face` colours it: red (`-attention`) for unread,
 yellow (`-unresolved`) for a `blocked` or `failed` session already read,
 then the status colours. Red therefore means exactly `--needs-attention-p`
 minus the sessions the reader has already seen. The plain characters have
