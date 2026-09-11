@@ -9709,6 +9709,29 @@ the burst's own time rather than the cleared mark's."
         (should (= (length notifications) 2))
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 100.0))))))
 
+(ert-deftest agent-shell-vertico-sidebar-settled-burst-ends-its-message ()
+  "A burst going quiet ends its message, as any other event would.
+
+Two waves of chunks carry no event between them, so without this the
+second wave's notification would repeat the first wave's text."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "First.")))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (equal (agent-shell-vertico-sidebar--last-message alpha)
+                       "First."))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Second.")))))
+        (should (equal (agent-shell-vertico-sidebar--last-message alpha)
+                       "Second."))))))
+
+
 ;;; Viewport pages
 
 (defun agent-shell-vertico-tests--insert-page (prompt response)

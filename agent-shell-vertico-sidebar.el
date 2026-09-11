@@ -1932,7 +1932,21 @@ itself as usual."
                (or (plist-get burst :time) (float-time))
                agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar--notify buffer))
+    ;; The burst stopping is a message boundary, the same way any other
+    ;; event is one.  Two waves of chunks carry no event between them,
+    ;; so without this the second wave's message would start with the
+    ;; first wave's text.
+    (agent-shell-vertico-sidebar--close-message buffer)
     (agent-shell-vertico-sidebar--schedule-refresh)))
+
+(defun agent-shell-vertico-sidebar--close-message (buffer)
+  "End the agent message BUFFER is streaming, keeping what it holds.
+
+The chunks stay, so a notification sent afterwards still reads the
+message; what streams next starts a new one."
+  (when-let* ((entry (gethash buffer agent-shell-vertico-sidebar--messages)))
+    (puthash buffer (plist-put entry :open nil)
+             agent-shell-vertico-sidebar--messages)))
 
 (defun agent-shell-vertico-sidebar--record-message-chunk (buffer event)
   "Accumulate the agent message BUFFER is streaming in EVENT.
@@ -1943,9 +1957,7 @@ carry.  Any other event ends the message, which is agent-shell's own
 message boundary."
   (let ((entry (gethash buffer agent-shell-vertico-sidebar--messages)))
     (if (not (eq (map-elt event :event) 'agent-message-chunk))
-        (when entry
-          (puthash buffer (plist-put entry :open nil)
-                   agent-shell-vertico-sidebar--messages))
+        (agent-shell-vertico-sidebar--close-message buffer)
       (unless (plist-get entry :open)
         (setq entry (list :chunks nil :open t)))
       (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))

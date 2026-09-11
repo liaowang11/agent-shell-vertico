@@ -443,7 +443,10 @@ the sidebar shows for the session, never a read state), `:unread` (whether
 the session holds output nobody has read) and `:last-message`.
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
-streamed chunk and keeps none of them; any other event ends the message.
+streamed chunk and keeps none of them; any other event ends the message,
+and so does a burst going quiet (`--close-message`), because two waves of
+chunks carry no event between them and the second would otherwise repeat
+the first.
 Text is passed on unshortened, so trimming and markup stripping belong to
 the caller's channel, not here.
 
