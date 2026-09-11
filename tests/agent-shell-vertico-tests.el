@@ -9732,6 +9732,42 @@ second wave's notification would repeat the first wave's text."
                        "Second."))))))
 
 
+(ert-deftest agent-shell-vertico-sidebar-out-of-turn-permission-is-blocked ()
+  "A request from a task that outlived its turn still blocks the session.
+
+`agent-shell-status' calls a session blocked only while a turn is in
+flight, so a background task asking for a decision reads as ready."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:tool-calls . (("call-1"
+                                 . ((:permission-request-id . 7))))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+      (should (agent-shell-vertico-sidebar--needs-attention-p alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-burst-does-not-hide-a-permission ()
+  "Output streaming beside a pending decision does not answer it.
+
+The burst would otherwise read as working, and a working session holds
+its unread mark back, so the one session needing a keypress would be the
+one the sidebar stopped pointing at."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:tool-calls . (("call-1"
+                                 . ((:permission-request-id . 7))))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-request)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                       '(blocked . t)))
+        (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))))
+
 ;;; Viewport pages
 
 (defun agent-shell-vertico-tests--insert-page (prompt response)

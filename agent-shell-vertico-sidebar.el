@@ -536,21 +536,40 @@ what the session is doing apart from any burst; use
           ("Starting" 'starting)
           (_ 'unknown)))))
 
+(defun agent-shell-vertico-sidebar--permission-pending-p (buffer)
+  "Return non-nil when BUFFER is waiting on a permission decision.
+
+`agent-shell-status' calls a session blocked only while a turn is also in
+flight, so a request from a background task that outlived its turn is
+reported as ready.  agent-shell's own question is asked rather than
+repeated here, so the sidebar and the shell cannot disagree about what is
+pending."
+  (and (fboundp 'agent-shell--permission-pending-p)
+       (condition-case nil
+           (agent-shell--permission-pending-p :shell-buffer buffer)
+         (error nil))
+       t))
+
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
-Three things agent-shell does not report are added to what it does.  The
-agent is working during an out-of-turn burst whether or not a turn asked
-for the work, so say so; a session whose last turn failed is failed
-until a new turn starts, though agent-shell calls it idle; and a session
-with no ACP session yet is starting, though agent-shell has nothing to
-call it but ready, since no turn is in flight either way.  All three
-only apply to an otherwise idle session: a live `busy' or `blocked' means
-a real turn owns the session and wins."
+Four things agent-shell does not report are added to what it does.  A
+session is blocked while it waits for a permission decision, whatever
+else it is doing, though agent-shell calls it blocked only while a turn
+is in flight; the agent is working during an out-of-turn burst whether
+or not a turn asked for the work, so say so; a session whose last turn
+failed is failed until a new turn starts, though agent-shell calls it
+idle; and a session with no ACP session yet is starting, though
+agent-shell has nothing to call it but ready, since no turn is in flight
+either way.  All four only apply to an otherwise idle session: a live
+`busy' or `blocked' means a real turn owns the session and wins.  The
+pending decision comes first among them, because a burst beside it is
+work the session does while it waits, not an answer to it."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
       (let ((status (agent-shell-vertico-sidebar--live-status buffer)))
         (cond
          ((not (eq status 'ready)) status)
+         ((agent-shell-vertico-sidebar--permission-pending-p buffer) 'blocked)
          ((gethash buffer agent-shell-vertico-sidebar--out-of-turn) 'busy)
          ((gethash buffer agent-shell-vertico-sidebar--failed) 'failed)
          ((not (agent-shell-vertico--session-field buffer :id)) 'starting)

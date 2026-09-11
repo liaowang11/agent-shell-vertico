@@ -179,6 +179,22 @@ creating path returns `agent-shell-test-start-buffer'."
                  agent-shell-test-statuses))
       'ready))
 
+(cl-defun agent-shell--permission-pending-p (&key shell-buffer tool-call-id)
+  "Return non-nil when SHELL-BUFFER waits on a permission decision.
+
+Kept in the shape agent-shell's own function has, reading the tool call
+that carries a `:permission-request-id' out of the session state, so a
+test states a pending permission the way a session records one.  With
+TOOL-CALL-ID, answer for that tool call alone."
+  (with-current-buffer (or shell-buffer (current-buffer))
+    (let ((state (and (boundp 'agent-shell--state) agent-shell--state)))
+      (if tool-call-id
+          (map-nested-elt (map-elt state :tool-calls)
+                          (list tool-call-id :permission-request-id))
+        (seq-some (lambda (entry)
+                    (map-elt (cdr entry) :permission-request-id))
+                  (map-elt state :tool-calls))))))
+
 (cl-defun agent-shell-subscribe-to (&key shell-buffer event on-event)
   "Record a subscription for SHELL-BUFFER, EVENT, and ON-EVENT."
   (let ((subscription (list shell-buffer event on-event)))

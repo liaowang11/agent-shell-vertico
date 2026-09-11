@@ -239,15 +239,21 @@ user's configuration.
 a finished turn used to report the status `Done`, so an idle session
 reported as busy-ish and a failure could never be read away. `--raw-status`
 answers the first question with `starting`, `ready`, `busy`, `blocked` or
-`failed`. `busy` and `blocked` come straight from `agent-shell-status`, which
-never reports the other two: `starting` and `failed` are the sidebar's own
-overlays on top of what `agent-shell-status` calls `ready`. `starting` is a
-session with no ACP session id yet, recorded nowhere because the id's
-absence is the whole answer; `failed` is recorded in `--failed` from the
-`error` event and dropped when a new turn starts, because agent-shell
-reports what a session is doing and not how its last turn ended. Both
-overlays only apply to an otherwise idle session, so a live `busy` or
-`blocked` always wins.
+`failed`, taking what `agent-shell-status` reports and overlaying what it
+does not. That function answers about the turn in flight, so whatever
+outlives a turn is the sidebar's own: `starting` is a session with no ACP
+session id yet, recorded nowhere because the id's absence is the whole
+answer; `failed` is recorded in `--failed` from the `error` event and
+dropped when a new turn starts, because agent-shell reports what a
+session is doing and not how its last turn ended; `busy` covers an
+out-of-turn burst; and `blocked` covers a permission request from a task
+that outlived its turn, which `agent-shell-status` calls ready because it
+asks for a turn in flight as well (`--permission-pending-p` puts
+agent-shell's own question rather than repeating it, so the two cannot
+disagree about what is pending). The overlays only apply to an otherwise
+idle session, so a live `busy` or `blocked` always wins, and the pending
+decision is asked first among them: a burst streaming beside it is work
+the session does while it waits, not an answer to it.
 
 **Which session needs attention.** `--unread` is the second axis: a buffer
 to the time its unread output arrived, where presence is the whole record.
