@@ -293,12 +293,29 @@ A render erases the buffer, which would take the key labels with it, so
 `agent-shell-vertico-sidebar--render' only marks the sidebar dirty while
 this is set.  The jump renders again once its key is read.")
 
+(defvar agent-shell-vertico-sidebar--focused-session nil
+  "The session whose window the reader selected most recently.
+
+Not read from the selected window, because the reader who steps off a
+session to a file, to magit or to the sidebar itself has not picked
+another session to work in, and the answer at that moment would be
+nothing.  Only selecting a window on a different session changes it.")
+
 (defvar-local agent-shell-vertico-sidebar--rendered-current-sessions nil
   "Sessions whose rows the most recent render marked as current.
 
 A cache of what is drawn, never the answer itself: that comes from
 `agent-shell-vertico-sidebar--current-sessions' each time.  The selection
 hooks compare the two to decide whether the markers need a redraw.")
+
+(defvar-local agent-shell-vertico-sidebar--rendered-focused-session nil
+  "Session whose row the most recent render marked as focused.
+
+The same kind of cache as
+`agent-shell-vertico-sidebar--rendered-current-sessions', for the second
+of the two marker tiers.  The set of sessions on screen can stay the
+same while the reader moves between two of them, so this is compared
+separately.")
 
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
@@ -360,8 +377,28 @@ nobody has started again."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-current-session
+  '((t :inherit shadow :height reset))
+  "Face for the fringe marker on a session the reader can see.
+
+The weaker of the two markers: this session is on the frame, beside
+whatever the reader is working in.  Grey rather than a colour, because
+every colour in this sidebar already names a status, red unread, yellow
+unresolved, magenta working, green ready, and a marker that borrowed one
+would say something untrue about the session.  `shadow' is
+already what this package uses for what is present and not the answer."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-focused-session
   '((t :inherit outline-1 :height reset))
-  "Face for the fringe marker on the session the reader is currently in."
+  "Face for the fringe marker on the session the reader is working in.
+
+The same question as `agent-shell-vertico-sidebar-current-session'
+answered with more force, so it is the same marker in the one accent
+that carries no status meaning, rather than a second hue: a different
+hue would read as a different kind of fact rather than as more of the
+same one.  A fringe bitmap is two pixels wide and cannot be relied on to
+carry a hue difference by itself, so the two tiers differ in shape as
+well: solid here, dashed there."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-jump-help-key
@@ -399,11 +436,19 @@ rather than highlighted."
 The other windows of the frame, and any session row without a key."
   :group 'agent-shell-vertico-sidebar)
 
-;; A short bar, `gptel-highlight-fringe' style: `center' positions it on
+;; Short bars, `gptel-highlight-fringe' style: `center' positions them on
 ;; the row without needing the row's exact pixel height, so one definition
-;; works across fonts and text scales.
-(define-fringe-bitmap 'agent-shell-vertico-sidebar-current-session-fringe
+;; works across fonts and text scales.  Solid marks the session being
+;; worked in and dashed one merely on screen, repeating in shape what the
+;; two faces say in colour, which a bar this narrow cannot carry alone.
+(define-fringe-bitmap 'agent-shell-vertico-sidebar-focused-session-fringe
   (make-vector 28 #b01100000)
+  nil nil 'center)
+
+(define-fringe-bitmap 'agent-shell-vertico-sidebar-current-session-fringe
+  (apply #'vector
+         (cl-loop repeat 7
+                  append (list #b01100000 #b01100000 #b00000000 #b00000000)))
   nil nil 'center)
 
 (defun agent-shell-vertico-sidebar--project-root (buffer)
@@ -1343,17 +1388,25 @@ the window stable without any screen-row arithmetic."
                                      'help-echo help-echo)))
         (setq position next)))))
 
-(defun agent-shell-vertico-sidebar--current-session-marker ()
+(defun agent-shell-vertico-sidebar--current-session-marker (&optional focused)
   "Return a zero-width fringe marker for a current session's row.
+
+FOCUSED asks for the marker of the session the reader is working in, a
+solid bar in the accent colour; every other session on the frame gets
+the dashed grey one.
 
 The marker is a `display' spec on one space, so it costs no columns in
 the text area: Emacs draws the fringe bitmap in its place instead of the
 space, the same idiom `gptel-highlight-mode' uses for its response
 markers."
   (propertize " " 'display
-              '(left-fringe
-                agent-shell-vertico-sidebar-current-session-fringe
-                agent-shell-vertico-sidebar-current-session)))
+              (if focused
+                  '(left-fringe
+                    agent-shell-vertico-sidebar-focused-session-fringe
+                    agent-shell-vertico-sidebar-focused-session)
+                '(left-fringe
+                  agent-shell-vertico-sidebar-current-session-fringe
+                  agent-shell-vertico-sidebar-current-session))))
 
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
   "Insert session LINES with KIND and NODE text properties.
@@ -1370,9 +1423,11 @@ row of a session the reader can see gets the same treatment for its
 fringe marker, prepended to whichever indentation prefix already
 applies, so it adds no columns of its own either."
   (let* ((current agent-shell-vertico-sidebar--rendered-current-sessions)
+         (focused agent-shell-vertico-sidebar--rendered-focused-session)
          (marker (and (eq kind 'session)
                       (memq node current)
-                      (agent-shell-vertico-sidebar--current-session-marker)))
+                      (agent-shell-vertico-sidebar--current-session-marker
+                       (eq node focused))))
          (start (point))
          (first-prefix (concat marker (and nested "  ")))
          (continuation-prefix (concat marker (if nested "    " "  ")))
@@ -1531,6 +1586,11 @@ a column of slack rather than pushing its count past the window edge."
                 agent-shell-vertico-sidebar--rendered-current-sessions
                 (and buffers
                      (agent-shell-vertico-sidebar--current-sessions buffers))
+                agent-shell-vertico-sidebar--rendered-focused-session
+                (and agent-shell-vertico-sidebar--rendered-current-sessions
+                     (agent-shell-vertico-sidebar--focused-session
+                      agent-shell-vertico-sidebar--rendered-current-sessions
+                      buffers))
                 header-line-format
                 (agent-shell-vertico-sidebar--header-line-from-snapshots
                  snapshots))
@@ -2097,18 +2157,54 @@ question run on every window change."
                       (window-buffer window) sessions))
                    (window-list nil 'no-minibuf))))))
 
-(defun agent-shell-vertico-sidebar--refresh-current-marker ()
-  "Schedule a redraw when the sessions on screen are not the ones marked.
+(defun agent-shell-vertico-sidebar--focused-session (current
+                                                    &optional sessions)
+  "Return which of CURRENT the reader is working in, or nil.
 
-Order is not part of the answer, so a window rearrangement that shows
-the same sessions redraws nothing."
+CURRENT is `agent-shell-vertico-sidebar--current-sessions', the sessions
+on the selected frame, which both callers have computed already.
+SESSIONS is passed on to `agent-shell-vertico-sidebar--session-for-buffer'.
+
+Reads the selected window and remembers what it finds in
+`agent-shell-vertico-sidebar--focused-session', so that stepping off to
+a file, to magit or to the sidebar holds the marker where it was: the
+sidebar is the likeliest place to step to, and reading the list must not
+be what takes the marker off the row being read.  The memory is
+deliberately looser than `agent-shell-vertico-sidebar--session-focused-p',
+which decides what has been read and has to keep to the selected window.
+It reaches only as far as the frame, though: a remembered session the
+reader can no longer see is not marked at all, so the stronger marker
+never outlives the weaker one it strengthens."
+  (when-let ((selected (agent-shell-vertico-sidebar--session-for-buffer
+                        (window-buffer (selected-window)) sessions)))
+    (setq agent-shell-vertico-sidebar--focused-session selected))
+  (car (memq agent-shell-vertico-sidebar--focused-session current)))
+
+(defun agent-shell-vertico-sidebar--refresh-current-marker ()
+  "Schedule a redraw when the markers drawn no longer match the frame.
+
+Two answers are drawn and either can go out of date.  Which sessions are
+on screen is a set, so a window rearrangement showing the same ones
+redraws nothing; which of them the reader is working in changes as soon
+as another session's window is selected, with the set untouched."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
-    (unless (seq-set-equal-p
-             (agent-shell-vertico-sidebar--current-sessions)
-             (buffer-local-value
-              'agent-shell-vertico-sidebar--rendered-current-sessions
-              sidebar))
-      (agent-shell-vertico-sidebar--schedule-refresh))))
+    ;; Resolved once and passed on, because this runs on every window
+    ;; change and both questions would otherwise ask agent-shell for the
+    ;; same list of sessions.
+    (let* ((sessions (seq-filter #'buffer-live-p (agent-shell-buffers)))
+           (current (agent-shell-vertico-sidebar--current-sessions sessions)))
+      (unless (and (seq-set-equal-p
+                    current
+                    (buffer-local-value
+                     'agent-shell-vertico-sidebar--rendered-current-sessions
+                     sidebar))
+                   (eq (and current
+                            (agent-shell-vertico-sidebar--focused-session
+                             current sessions))
+                       (buffer-local-value
+                        'agent-shell-vertico-sidebar--rendered-focused-session
+                        sidebar)))
+        (agent-shell-vertico-sidebar--schedule-refresh)))))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
   "Mark unread output in BUFFER as seen.

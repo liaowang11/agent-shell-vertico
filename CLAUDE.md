@@ -398,6 +398,31 @@ set, so a window rearrangement showing the same sessions redraws nothing and
 the cache can never disagree with the windows for longer than one idle
 refresh.
 
+**Which of them you are in.** A frame showing several sessions leaves the
+marker unable to say which one the reader is typing into, so the marker has
+two tiers: `--focused-session` picks one out of `--current-sessions` and
+`--current-session-marker` draws it differently. They are one question
+answered with two degrees, not two questions, so they share a hue family and
+differ in strength: `-focused-session` is `outline-1`, the one accent with no
+status meaning, on a solid bar, and `-current-session` is `shadow` on a
+dashed one. Every other colour here already names a status, and a marker
+that borrowed red, yellow, magenta or green would say something untrue about
+the session; `shadow` is what the package already uses for what is present
+and not the answer. The shape repeats what the colour says because a fringe
+bitmap is two pixels wide and cannot be trusted to carry a hue difference on
+its own. The focused session is *remembered* rather than read from the
+selected window, in `--focused-session` (the variable): the selected window
+answers nothing the moment the reader steps to a file or to the sidebar, and
+the sidebar is the likeliest place to step to, so reading the list would be
+what took the marker off the row being read. Only selecting a window on
+another session changes it, and only while it is still in `--current-sessions`
+does it mark a row, so the stronger marker never outlives the weaker one it
+strengthens. That memory is deliberately looser than `--session-focused-p`,
+which decides what has been *read* and must stay on the selected window. The
+render caches it in `--rendered-focused-session` and the hooks compare it
+separately from the set, because moving between two sessions already on the
+frame changes the drawing without changing the set.
+
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
 `:buffer`, `:agent` (the agent's display name), `:status` (the same word

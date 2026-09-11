@@ -2729,30 +2729,38 @@ that leaves the answer alone schedules nothing."
 (ert-deftest agent-shell-vertico-sidebar-marker-ignores-window-order ()
   "Rearranging windows that show the same sessions schedules no redraw.
 
-The marker answers which sessions are on screen, a set, so which window
-holds which is not part of it."
+The weaker marker answers which sessions are on screen, a set, so which
+window holds which is not part of it.  The selected window is left alone
+here, because moving it is the one rearrangement that does change an
+answer: which session the reader is working in."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--focused-session nil))
       (agent-shell-vertico-tests--with-sidebar
-        (save-window-excursion
-          (delete-other-windows)
-          (set-window-buffer (selected-window) alpha)
-          (let ((other (split-window)))
-            (set-window-buffer other beta)
-            (with-current-buffer sidebar
-              (agent-shell-vertico-sidebar--render)
-              (should-not agent-shell-vertico-sidebar--dirty))
-            (set-window-buffer (selected-window) beta)
-            (set-window-buffer other alpha)
-            (agent-shell-vertico-sidebar--window-selection-change
-             (selected-frame))
-            (should-not (buffer-local-value
-                         'agent-shell-vertico-sidebar--dirty sidebar))))))))
+        (with-temp-buffer
+          (let ((other (current-buffer)))
+            (save-window-excursion
+              (delete-other-windows)
+              (set-window-buffer (selected-window) alpha)
+              (let* ((second (split-window))
+                     (third (split-window second)))
+                (set-window-buffer second beta)
+                (set-window-buffer third other)
+                (with-current-buffer sidebar
+                  (agent-shell-vertico-sidebar--render)
+                  (should-not agent-shell-vertico-sidebar--dirty))
+                (set-window-buffer second other)
+                (set-window-buffer third beta)
+                (agent-shell-vertico-sidebar--window-selection-change
+                 (selected-frame))
+                (should-not (buffer-local-value
+                             'agent-shell-vertico-sidebar--dirty
+                             sidebar))))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-watches-selected-window-buffer ()
   "Switching buffers in place runs the same handler as switching windows.
@@ -2771,7 +2779,8 @@ session would otherwise leave the marker and the unread mark untouched."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--focused-session nil))
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (selected-window) alpha)
@@ -2785,8 +2794,8 @@ session would otherwise leave the marker and the unread mark untouched."
                           (get-text-property (line-beginning-position)
                                              'line-prefix))
                          '(left-fringe
-                           agent-shell-vertico-sidebar-current-session-fringe
-                           agent-shell-vertico-sidebar-current-session)))
+                           agent-shell-vertico-sidebar-focused-session-fringe
+                           agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
           (should-not (get-text-property (line-beginning-position)
@@ -2815,6 +2824,160 @@ session would otherwise leave the marker and the unread mark untouched."
                    0 'display
                    (get-text-property (line-beginning-position)
                                       'line-prefix))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focused-session-is-selected-window ()
+  "The session the selected window shows is the one being worked in."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (save-window-excursion
+        (delete-other-windows)
+        (set-window-buffer (selected-window) alpha)
+        (set-window-buffer (split-window) beta)
+        (should (eq (agent-shell-vertico-sidebar--focused-session
+                     (agent-shell-vertico-sidebar--current-sessions))
+                    alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focused-session-follows-selection ()
+  "Selecting another session's window moves the focused marker to it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (save-window-excursion
+        (delete-other-windows)
+        (set-window-buffer (selected-window) alpha)
+        (let ((other (split-window)))
+          (set-window-buffer other beta)
+          (should (eq (agent-shell-vertico-sidebar--focused-session
+                       (agent-shell-vertico-sidebar--current-sessions))
+                      alpha))
+          (select-window other)
+          (should (eq (agent-shell-vertico-sidebar--focused-session
+                       (agent-shell-vertico-sidebar--current-sessions))
+                      beta)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focused-session-survives-a-step-away ()
+  "Stepping off a session to a file or the sidebar does not unfocus it.
+
+The reader who moves beside a session is still working in it, and the
+sidebar is the likeliest place to move to: reading the list must not be
+what takes the marker off the row being read."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (with-temp-buffer
+        (let ((other (current-buffer)))
+          (save-window-excursion
+            (delete-other-windows)
+            (set-window-buffer (selected-window) alpha)
+            (should (eq (agent-shell-vertico-sidebar--focused-session
+                         (agent-shell-vertico-sidebar--current-sessions))
+                        alpha))
+            (let ((beside (split-window)))
+              (set-window-buffer beside other)
+              (select-window beside))
+            (should (eq (agent-shell-vertico-sidebar--focused-session
+                         (agent-shell-vertico-sidebar--current-sessions))
+                        alpha))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focused-session-leaves-the-frame ()
+  "A remembered session that is no longer on the frame focuses nothing.
+
+It is not marked as visible either, so the stronger marker must not
+outlive the weaker one it strengthens."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (with-temp-buffer
+        (let ((other (current-buffer)))
+          (save-window-excursion
+            (delete-other-windows)
+            (set-window-buffer (selected-window) alpha)
+            (should (agent-shell-vertico-sidebar--focused-session
+                     (agent-shell-vertico-sidebar--current-sessions)))
+            (set-window-buffer (selected-window) other)
+            (should-not (agent-shell-vertico-sidebar--focused-session
+                         (agent-shell-vertico-sidebar--current-sessions)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-marks-the-focused-row ()
+  "The session being worked in gets the solid marker, the rest the dashed.
+
+Both rows carry a marker, so the two tiers have to differ in the spec
+itself: a row that is merely on the frame must not be drawn as the row
+the reader is in."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (save-window-excursion
+        (delete-other-windows)
+        (set-window-buffer (selected-window) alpha)
+        (set-window-buffer (split-window) beta)
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (goto-char (point-min))
+          (search-forward "Review alpha")
+          (should (equal (get-text-property
+                          0 'display
+                          (get-text-property (line-beginning-position)
+                                             'line-prefix))
+                         '(left-fringe
+                           agent-shell-vertico-sidebar-focused-session-fringe
+                           agent-shell-vertico-sidebar-focused-session)))
+          (goto-char (point-min))
+          (search-forward "Review beta")
+          (should (equal (get-text-property
+                          0 'display
+                          (get-text-property (line-beginning-position)
+                                             'line-prefix))
+                         '(left-fringe
+                           agent-shell-vertico-sidebar-current-session-fringe
+                           agent-shell-vertico-sidebar-current-session))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focusing-another-session-redraws ()
+  "Moving between two sessions already on the frame schedules a redraw.
+
+The set of sessions on screen has not changed, so only the focused one
+can tell the sidebar that what it drew is out of date."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--focused-session nil))
+      (agent-shell-vertico-tests--with-sidebar
+        (save-window-excursion
+          (delete-other-windows)
+          (set-window-buffer (selected-window) alpha)
+          (let ((other (split-window)))
+            (set-window-buffer other beta)
+            (with-current-buffer sidebar
+              (agent-shell-vertico-sidebar--render)
+              (should-not agent-shell-vertico-sidebar--dirty))
+            (select-window other)
+            (agent-shell-vertico-sidebar--window-selection-change
+             (selected-frame))
+            (should (buffer-local-value
+                     'agent-shell-vertico-sidebar--dirty sidebar))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focus-change-ignores-terminal-frame ()
   "A GUI focus callback must not read a session selected in a terminal frame.
