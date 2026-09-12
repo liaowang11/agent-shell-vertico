@@ -365,6 +365,25 @@ jumping reads the session and moves it out of the attention tier, so the same
 key answers differently next time. That was the user's call, a quick jump
 rather than an address, and it is why the reading jump exists beside it.
 
+**Undoing a jump.** `--jump-previous` holds one buffer: the session on
+screen before the last jump moved to another one. It is recorded in
+`--jump-display` and `--jump-display-other-window`, the only two actions a
+jump can take that change what is displayed, so every jump command funnels
+through the same two functions and needs no recording of its own —
+`agent-shell-vertico-sidebar-jump`'s own branches were rewritten to call
+`--jump-display` rather than duplicate its body, for exactly this reason.
+What counts as "the session on screen" is read through
+`--session-for-buffer` on the selected window's buffer, the same resolution
+`--focused-session` uses, so a viewport counts as its session; recording is
+skipped when that resolves to the buffer being jumped to, so jumping to the
+session already on screen (jumping to index 2 twice while sitting on it,
+say) does not overwrite a real previous session with itself.
+`agent-shell-vertico-sidebar-jump-back` displays `--jump-previous` and
+signals a `user-error` when it is nil or dead. Because it displays through
+`--jump-display` like any other jump, it records what it is leaving in its
+own turn, which is what makes running it twice in a row a toggle rather
+than a dead end.
+
 **Dispatching an action from a jump.** `--read-jump-keys` is the loop
 `ace-window` runs for `aw-dispatch-alist`: a key is either a session, an
 action, or `?`. A session ends the read, an action records what the next

@@ -220,6 +220,15 @@ bindable without a lambda and reachable through `M-x`.  A position is not
 a name for a session: under `priority` sorting a finished turn moves its
 session up, and jumping to a session reads it, which moves it too.
 
+`agent-shell-vertico-sidebar-jump-back` undoes whichever jump last changed
+what is displayed, whether that was `agent-shell-vertico-sidebar-jump`,
+`-jump-by-key`, `-jump-to-index`, one of the `-jump-to-N` commands, or the
+`o` "open in another window" action during a key jump. Displaying the
+previous session is itself recorded the same way, so pressing it twice in a
+row toggles between the two sessions. A prefix argument displays it in
+another window; with no jump yet, or a previous session that has since been
+killed, it signals a `user-error`.
+
 `?` during the read lists the actions in
 `agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its
 key coloured, and pressing an
@@ -339,7 +348,8 @@ built-in `help-at-pt` support:
   :load-path "/path/to/agent-shell-vertico"
   :after agent-shell-vertico
   :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)
-         ("C-c a j" . agent-shell-vertico-sidebar-jump-by-key))
+         ("C-c a j" . agent-shell-vertico-sidebar-jump-by-key)
+         ("C-c a J" . agent-shell-vertico-sidebar-jump-back))
   :custom
   (agent-shell-vertico-sidebar-side 'left)
   (agent-shell-vertico-sidebar-width 40)
