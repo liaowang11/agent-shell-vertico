@@ -29,6 +29,37 @@ viewport interaction is preferred, but does not create one. The other-window
 command previews in that window. Selecting a session still uses the normal
 switch path, including attention handling.
 
+## Jump history
+
+Moving between sessions leaves a trail, the way vim's jump list does for
+positions, and three commands walk it:
+
+- `M-x agent-shell-vertico-jump-back`
+  Display the session before this one, vim's `C-o`.
+- `M-x agent-shell-vertico-jump-forward`
+  Undo a step back, vim's `C-i`. Only meaningful while retracing: with no
+  step to undo it signals a `user-error`.
+- `M-x agent-shell-vertico-jump-history`
+  Read the trail with completion, vim's `:jumps`, most recently left
+  first. The first candidate is what `jump-back` would display, and
+  selecting one steps the history to it, so back and forward carry on from
+  there. Annotations, narrowing and Embark actions are the switch
+  commands' own, and Consult previews it like any other session list.
+
+Every command here that displays a session records the one it was
+displayed from, so the trail follows what you did rather than which
+command did it: the switch commands, the sidebar's jumps, the Embark
+actions and the session picker all feed one list. Jumps taken from beside
+a session — from a file, from magit, from the sidebar — record the session
+you last read, which is usually the one you meant. A prefix argument
+displays in another window, as elsewhere.
+
+A session is held once, at the point you last left it, so reading two
+sessions back and forth does not bury everything older under them; that
+also means the list is bounded by how many sessions are live, and
+`agent-shell-vertico-jump-history-size` (30) only caps a reader who keeps
+more than that. Killed sessions drop out on their own.
+
 ## Prompt queue
 
 `agent-shell` queues a prompt whenever the shell is busy and sends the
@@ -220,14 +251,8 @@ bindable without a lambda and reachable through `M-x`.  A position is not
 a name for a session: under `priority` sorting a finished turn moves its
 session up, and jumping to a session reads it, which moves it too.
 
-`agent-shell-vertico-sidebar-jump-back` undoes whichever jump last changed
-what is displayed, whether that was `agent-shell-vertico-sidebar-jump`,
-`-jump-by-key`, `-jump-to-index`, one of the `-jump-to-N` commands, or the
-`o` "open in another window" action during a key jump. Displaying the
-previous session is itself recorded the same way, so pressing it twice in a
-row toggles between the two sessions. A prefix argument displays it in
-another window; with no jump yet, or a previous session that has since been
-killed, it signals a `user-error`.
+Each of these jumps is recorded in the jump history above, so
+`agent-shell-vertico-jump-back` undoes whichever one you took.
 
 `?` during the read lists the actions in
 `agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its
@@ -348,8 +373,7 @@ built-in `help-at-pt` support:
   :load-path "/path/to/agent-shell-vertico"
   :after agent-shell-vertico
   :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)
-         ("C-c a j" . agent-shell-vertico-sidebar-jump-by-key)
-         ("C-c a J" . agent-shell-vertico-sidebar-jump-back))
+         ("C-c a j" . agent-shell-vertico-sidebar-jump-by-key))
   :custom
   (agent-shell-vertico-sidebar-side 'left)
   (agent-shell-vertico-sidebar-width 40)
@@ -736,6 +760,9 @@ without Consult.
   :after agent-shell
   :bind (("C-c a b" . agent-shell-vertico-switch)
          ("C-c a p" . agent-shell-vertico-switch-project)
+         ("C-c a [" . agent-shell-vertico-jump-back)
+         ("C-c a ]" . agent-shell-vertico-jump-forward)
+         ("C-c a J" . agent-shell-vertico-jump-history)
          ("C-c a q" . agent-shell-vertico-prompt-queue)
          ("C-c a r" . agent-shell-vertico-transcript-browse-project)
          ("C-c a R" . agent-shell-vertico-transcript-resume-project)

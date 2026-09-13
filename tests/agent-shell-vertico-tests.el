@@ -11226,10 +11226,54 @@ there is no record for the command to hide it by dropping."
   (should (string-match-p "u / !.*Mark"
                           (agent-shell-vertico-sidebar--help-text))))
 
-;;; Jump back
+;;; Jump history
 
-(ert-deftest agent-shell-vertico-sidebar-jump-back-returns-to-the-previous-session ()
-  "Jumping away from a session records it, so jumping back returns to it."
+(defmacro agent-shell-vertico-tests--with-jump-history (&rest body)
+  "Evaluate BODY with a jump history of its own, in a single window."
+  (declare (indent 0))
+  `(let ((agent-shell-vertico--jump-history nil)
+         (agent-shell-vertico--jump-position nil)
+         (agent-shell-vertico--jump-navigating nil)
+         (agent-shell-vertico-jump-history-size 30))
+     (save-window-excursion
+       (delete-other-windows)
+       ,@body)))
+
+(defun agent-shell-vertico-tests--look-at (buffer)
+  "Show BUFFER in the selected window, as displaying it would."
+  (set-window-buffer (selected-window) buffer))
+
+(defun agent-shell-vertico-tests--jump (command &rest arguments)
+  "Call COMMAND with ARGUMENTS, then look at whatever it displayed.
+
+The agent-shell stub records the buffer a display would show without
+moving any window, so the window is moved here instead: every command
+under test reads the session the reader is standing in, and a retrace
+that left the window behind would answer about the step before it."
+  (apply command arguments)
+  (when (buffer-live-p agent-shell-test-displayed-buffer)
+    (agent-shell-vertico-tests--look-at agent-shell-test-displayed-buffer))
+  agent-shell-test-displayed-buffer)
+
+(ert-deftest agent-shell-vertico-jump-history-records-the-session-left ()
+  "Displaying a session records the one it was displayed from."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico--display-session (buffer-name beta))
+        (should (equal agent-shell-vertico--jump-history (list alpha)))
+        (should-not agent-shell-vertico--jump-position)))))
+
+(ert-deftest agent-shell-vertico-jump-history-records-every-display ()
+  "Every command displaying a session feeds one history.
+
+The switch commands and the sidebar's jumps go through the same two
+display functions, which is why neither records anything of its own."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -11238,114 +11282,307 @@ there is no record for the command to hide it by dropping."
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil)
-          (agent-shell-vertico-sidebar-sort-by 'name))
-      (save-window-excursion
-        (delete-other-windows)
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
-        (should (eq agent-shell-test-displayed-buffer beta))
-        (agent-shell-vertico-sidebar-jump-back)
-        (should (eq agent-shell-test-displayed-buffer alpha))))))
-
-(ert-deftest agent-shell-vertico-sidebar-jump-back-toggles-between-two-sessions ()
-  "Jumping back is itself a jump, so a second call undoes the first."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha")))))
-       (beta "Codex Agent @ beta" "/work/beta/"
-             '((:session . ((:id . "b") (:title . "Beta"))))))
-    (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil)
-          (agent-shell-vertico-sidebar-sort-by 'name))
-      (save-window-excursion
-        (delete-other-windows)
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
-        (should (eq agent-shell-test-displayed-buffer beta))
-        ;; The stub records what would be displayed but does not move
-        ;; the window, unlike the real `agent-shell--display-buffer'; move
-        ;; it by hand so the next jump reads where the reader really is.
-        (set-window-buffer (selected-window) beta)
-        (agent-shell-vertico-sidebar-jump-back)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (agent-shell-vertico-read-session-function
+           (lambda (&rest _) (buffer-name beta))))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-switch)
+        (should (equal agent-shell-vertico--jump-history (list alpha)))
+        (agent-shell-vertico-tests--look-at beta)
+        (agent-shell-vertico-sidebar-jump-to-index 1)
         (should (eq agent-shell-test-displayed-buffer alpha))
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-back)
-        (should (eq agent-shell-test-displayed-buffer beta))))))
+        (should (equal agent-shell-vertico--jump-history (list beta alpha)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-back-reports-nothing-to-return-to ()
+(ert-deftest agent-shell-vertico-jump-history-ignores-the-session-displayed ()
+  "Displaying the session already being read records nothing."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha"))))))
-    (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-test-statuses (list (cons alpha 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil))
-      (should (equal (should-error (agent-shell-vertico-sidebar-jump-back)
-                                   :type 'user-error)
-                     '(user-error "No previous session to jump back to"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico--display-session (buffer-name alpha))
+        (should-not agent-shell-vertico--jump-history)))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-back-forgets-a-killed-session ()
+(ert-deftest agent-shell-vertico-jump-history-records-through-a-viewport ()
+  "A reader sitting in a viewport records that viewport's session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((viewport (generate-new-buffer " *viewport*")))
+      (unwind-protect
+          (let ((agent-shell-test-buffers (list alpha))
+                (agent-shell-test-viewport-buffer viewport))
+            (agent-shell-vertico-tests--with-jump-history
+              (agent-shell-vertico-tests--look-at viewport)
+              (agent-shell-vertico--display-session (buffer-name beta))
+              (should (equal agent-shell-vertico--jump-history (list alpha)))))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-vertico-jump-history-records-the-last-session-read ()
+  "A jump taken from beside a session records that session.
+
+Most jumps are taken with point in a file, in magit or in the sidebar,
+and the session left behind is the one the reader last selected."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil))
-      (save-window-excursion
-        (delete-other-windows)
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
-        (kill-buffer alpha)
-        (should (equal (should-error (agent-shell-vertico-sidebar-jump-back)
+          (elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (switch-to-buffer alpha)
+            (switch-to-buffer elsewhere)
+            (agent-shell-vertico--display-session (buffer-name beta))
+            (should (equal agent-shell-vertico--jump-history (list alpha))))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-jump-back-returns-to-the-session-left ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-back)
+                    alpha))))))
+
+(ert-deftest agent-shell-vertico-jump-back-and-forward-retrace-one-list ()
+  "Back walks the history and forward walks it again the other way."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name gamma))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-back)
+                    beta))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-back)
+                    alpha))
+        ;; Retracing rewrites nothing: the same three entries answer both
+        ;; directions, and the session the retrace started from leads them.
+        (should (equal agent-shell-vertico--jump-history
+                       (list gamma beta alpha)))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-forward)
+                    beta))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-forward)
+                    gamma))
+        (should (equal (should-error (agent-shell-vertico-jump-forward)
                                      :type 'user-error)
-                       '(user-error "No previous session to jump back to")))))))
+                       '(user-error "No later session in the jump history")))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-to-index-same-session-keeps-previous ()
-  "Jumping to the session already on screen does not clobber `back'."
+(ert-deftest agent-shell-vertico-jump-back-then-elsewhere-keeps-the-entries ()
+  "A jump taken mid-retrace keeps the entries it did not visit.
+
+They are no longer ahead of the reader, since the list is the sessions
+they have left in the order they left them, but nothing is dropped."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name gamma))
+        (agent-shell-vertico-tests--jump #'agent-shell-vertico-jump-back)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name alpha))
+        (should (equal agent-shell-vertico--jump-history
+                       (list beta gamma alpha)))
+        (should-not agent-shell-vertico--jump-position)
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-back)
+                    beta))))))
+
+(ert-deftest agent-shell-vertico-jump-history-keeps-one-entry-per-session ()
+  "A session read back and forth holds one entry, moved to the head."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (dotimes (_ 3)
+          (agent-shell-vertico-tests--jump
+           #'agent-shell-vertico--display-session (buffer-name beta))
+          (agent-shell-vertico-tests--jump
+           #'agent-shell-vertico--display-session (buffer-name alpha)))
+        (should (equal agent-shell-vertico--jump-history
+                       (list beta alpha)))))))
+
+(ert-deftest agent-shell-vertico-jump-history-honours-its-size ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma)))
+      (agent-shell-vertico-tests--with-jump-history
+        (setq agent-shell-vertico-jump-history-size 2)
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name gamma))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name alpha))
+        (should (equal agent-shell-vertico--jump-history
+                       (list gamma beta)))))))
+
+(ert-deftest agent-shell-vertico-jump-back-skips-a-killed-session ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name gamma))
+        (kill-buffer beta)
+        (setq agent-shell-test-buffers (list alpha gamma))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-back)
+                    alpha))))))
+
+(ert-deftest agent-shell-vertico-jump-back-without-history-errors ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (should (equal (should-error (agent-shell-vertico-jump-back)
+                                     :type 'user-error)
+                       '(user-error "No earlier session in the jump history")))
+        (should-not agent-shell-test-displayed-buffer)))))
+
+(ert-deftest agent-shell-vertico-jump-forward-without-a-retrace-errors ()
+  "Forward means nothing until a step back has been taken."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (should (equal (should-error (agent-shell-vertico-jump-forward)
+                                     :type 'user-error)
+                       '(user-error "No later session in the jump history")))))))
+
+(ert-deftest agent-shell-vertico-jump-back-other-window ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil)
-          (agent-shell-vertico-sidebar-sort-by 'name))
-      (save-window-excursion
-        (delete-other-windows)
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
-        (should (eq agent-shell-vertico-sidebar--jump-previous alpha))
-        (set-window-buffer (selected-window) beta)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
-        (should (eq agent-shell-vertico-sidebar--jump-previous alpha))))))
-
-(ert-deftest agent-shell-vertico-sidebar-jump-back-other-window ()
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha")))))
-       (beta "Codex Agent @ beta" "/work/beta/"
-             '((:session . ((:id . "b") (:title . "Beta"))))))
-    (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
-          (agent-shell-vertico-sidebar--jump-previous nil)
-          (agent-shell-vertico-sidebar-sort-by 'name)
           other-window-buffer)
-      (save-window-excursion
-        (delete-other-windows)
-        (set-window-buffer (selected-window) alpha)
-        (agent-shell-vertico-sidebar-jump-to-index 2)
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
         (cl-letf (((symbol-function 'switch-to-buffer-other-window)
                    (lambda (buffer &rest _) (setq other-window-buffer buffer))))
-          (agent-shell-vertico-sidebar-jump-back t))
-        (should (eq other-window-buffer alpha))))))
+          (agent-shell-vertico-jump-back t))
+        (should (eq other-window-buffer alpha))
+        (should (eq agent-shell-vertico--jump-position alpha))))))
+
+(ert-deftest agent-shell-vertico-jump-history-reads-newest-first ()
+  "The reader offers the history in its own order, without the current one.
+
+The first candidate is therefore what `agent-shell-vertico-jump-back'
+would display, and selecting one steps the history to it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "c") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list alpha beta gamma))
+          ;; Sorted and grouped by the history's order, not by the
+          ;; preferences a session list is read with everywhere else.
+          (agent-shell-vertico-sort-by 'creation)
+          (agent-shell-vertico-group-by 'project)
+          shown)
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name gamma))
+        (let ((agent-shell-vertico-read-session-function
+               (lambda (_prompt table &optional _other-window)
+                 (let ((metadata (funcall table "" nil 'metadata)))
+                   (should-not (assq 'group-function (cdr metadata)))
+                   (setq shown
+                         (funcall (cdr (assq 'display-sort-function
+                                             (cdr metadata)))
+                                  (all-completions "" table))))
+                 (buffer-name alpha))))
+          (should (eq (agent-shell-vertico-tests--jump
+                       #'agent-shell-vertico-jump-history)
+                      alpha)))
+        (should (equal shown (list (buffer-name beta) (buffer-name alpha))))
+        (should (eq agent-shell-vertico--jump-position alpha))
+        ;; The history was stepped to the session read, so forward returns
+        ;; to the one it was read from.
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-jump-forward)
+                    beta))))))
+
+(ert-deftest agent-shell-vertico-jump-history-without-another-session-errors ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (should (equal (should-error (agent-shell-vertico-jump-history)
+                                     :type 'user-error)
+                       '(user-error
+                         "No other session in the jump history")))))))
 
 ;;; Narrowing and grouping
 

@@ -365,24 +365,48 @@ jumping reads the session and moves it out of the attention tier, so the same
 key answers differently next time. That was the user's call, a quick jump
 rather than an address, and it is why the reading jump exists beside it.
 
-**Undoing a jump.** `--jump-previous` holds one buffer: the session on
-screen before the last jump moved to another one. It is recorded in
-`--jump-display` and `--jump-display-other-window`, the only two actions a
-jump can take that change what is displayed, so every jump command funnels
-through the same two functions and needs no recording of its own —
-`agent-shell-vertico-sidebar-jump`'s own branches were rewritten to call
-`--jump-display` rather than duplicate its body, for exactly this reason.
-What counts as "the session on screen" is read through
-`--session-for-buffer` on the selected window's buffer, the same resolution
-`--focused-session` uses, so a viewport counts as its session; recording is
-skipped when that resolves to the buffer being jumped to, so jumping to the
-session already on screen (jumping to index 2 twice while sitting on it,
-say) does not overwrite a real previous session with itself.
-`agent-shell-vertico-sidebar-jump-back` displays `--jump-previous` and
-signals a `user-error` when it is nil or dead. Because it displays through
-`--jump-display` like any other jump, it records what it is leaving in its
-own turn, which is what makes running it twice in a row a toggle rather
-than a dead end.
+**Retracing the jumps.** The jump history lives in the core module, not
+the sidebar, because it is not the sidebar's question: `--jump-history`
+is the sessions the reader has been taken away from, newest first, and
+`agent-shell-vertico-jump-back`, `-jump-forward` and `-jump-history` walk
+it as vim's `C-o`, `C-i` and `:jumps` walk theirs. Entries are recorded
+in `--display-session` and `--display-session-other-window`, which every
+command here displays a session through, so the switch commands, the
+sidebar's jumps, the Embark actions and the picker all feed one list and
+none of them records anything of its own; the record is taken *before*
+`--before-display`, because that hook is free to switch workspaces and
+take the session being left off the screen it would be read from.
+`--departing-session` is what is recorded: the selected window's session,
+a viewport counting as its own, and otherwise the first session in
+`buffer-list`, which is the one last selected — most jumps are taken from
+a file, from magit or from the sidebar beside a session rather than from
+inside one, and without that fallback those would record nothing to come
+back to. `--viewport-buffer` moved here from the sidebar for it, and the
+sidebar now calls the core's.
+
+A session is held once, `--jump-push` dropping its older entry, as vim
+keeps one entry per position: two sessions read back and forth would
+otherwise bury everything older under themselves.
+`agent-shell-vertico-jump-history-size` is therefore close to
+decorative — the list is bounded by how many sessions are live — and is
+kept for the reader who has more than they care to retrace.
+`--jump-position` names where the reader stands in the list, as a buffer
+rather than an index, because entries drop out whenever a session is
+killed and an index into a list that shrinks under it would point at
+someone else. Nil means no retrace is in progress. Retracing binds
+`--jump-navigating`, so the display it causes records nothing and back
+and forward retrace one list instead of each other's steps.
+`--jump-pin-current` is what lets forward return: the session a retrace
+starts from is pushed to the head and the position stood on it, exactly
+as `C-o` pushes the position it starts from. It declines when the
+position already names the session the reader is in, since re-pinning
+would move that entry to the head and turn the next step back into a step
+forward; a position naming another session is stale — they got there some
+way the history cannot see — and pinning corrects it. The reader offered
+by `-jump-history` leaves out the session being read, so its first
+candidate is what back would display, and it passes `identity` to
+`--table` (and binds `--group-by` to nil) because its own order is the
+answer rather than `agent-shell-vertico-sort-by`.
 
 **Dispatching an action from a jump.** `--read-jump-keys` is the loop
 `ace-window` runs for `aw-dispatch-alist`: a key is either a session, an

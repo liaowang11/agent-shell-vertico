@@ -301,16 +301,6 @@ session to a file, to magit or to the sidebar itself has not picked
 another session to work in, and the answer at that moment would be
 nothing.  Only selecting a window on a different session changes it.")
 
-(defvar agent-shell-vertico-sidebar--jump-previous nil
-  "The session displayed before the last jump moved on to another one.
-
-Recorded by `agent-shell-vertico-sidebar--jump-display' and
-`agent-shell-vertico-sidebar--jump-display-other-window', the only two
-actions a jump can take that change what is displayed, which is what
-lets `agent-shell-vertico-sidebar-jump-back' undo any of
-`agent-shell-vertico-sidebar-jump', `-jump-by-key', `-jump-to-index' or
-the `-jump-to-N' commands alike.")
-
 (defvar-local agent-shell-vertico-sidebar--rendered-current-sessions nil
   "Sessions whose rows the most recent render marked as current.
 
@@ -2158,19 +2148,6 @@ non-nil, newly subscribed buffers mark the sidebar dirty."
   (dolist (buffer (if buffers-supplied buffers (agent-shell-buffers)))
     (agent-shell-vertico-sidebar--watch-buffer buffer schedule)))
 
-(defun agent-shell-vertico-sidebar--viewport-buffer (buffer)
-  "Return the existing viewport buffer showing session BUFFER, or nil.
-
-Never creates one: a session the reader has not viewed this way should
-not gain a viewport because the sidebar asked about it."
-  (when (fboundp 'agent-shell-viewport--buffer)
-    (when-let ((viewport (ignore-errors
-                           (agent-shell-viewport--buffer
-                            :shell-buffer buffer :existing-only t))))
-      (and (buffer-live-p viewport)
-           (not (eq viewport buffer))
-           viewport))))
-
 (defun agent-shell-vertico-sidebar--frame-focused-p (frame)
   "Return non-nil unless FRAME is known to have lost input focus.
 
@@ -2193,8 +2170,7 @@ otherwise be unread."
          (shown (window-buffer window)))
     (and (agent-shell-vertico-sidebar--frame-focused-p (window-frame window))
          (or (eq shown buffer)
-             (eq shown (agent-shell-vertico-sidebar--viewport-buffer
-                        buffer))))))
+             (eq shown (agent-shell-vertico--viewport-buffer buffer))))))
 
 (defun agent-shell-vertico-sidebar--session-for-buffer (buffer
                                                         &optional sessions)
@@ -2208,7 +2184,7 @@ a viewport, saving a render its own query."
         buffer
       (seq-find (lambda (session)
                   (eq buffer
-                      (agent-shell-vertico-sidebar--viewport-buffer session)))
+                      (agent-shell-vertico--viewport-buffer session)))
                 (or sessions
                     (seq-filter #'buffer-live-p (agent-shell-buffers)))))))
 
@@ -3055,28 +3031,13 @@ every live session, not only the ones needing attention."
         (agent-shell-vertico-sidebar--jump-display buffer)
       (message "%s" (agent-shell-vertico-sidebar--no-attention-message)))))
 
-(defun agent-shell-vertico-sidebar--record-jump-previous (buffer)
-  "Remember the session the reader is leaving to display BUFFER.
-
-Reads the session the selected window shows, resolving a viewport to
-its session the same way `agent-shell-vertico-sidebar--focused-session'
-does, so stepping off from either counts.  Does nothing when that
-session is BUFFER itself, so a jump to the session already on screen
-leaves a real previous session in place."
-  (when-let* ((current (agent-shell-vertico-sidebar--session-for-buffer
-                        (window-buffer (selected-window)))))
-    (unless (eq current buffer)
-      (setq agent-shell-vertico-sidebar--jump-previous current))))
-
 (defun agent-shell-vertico-sidebar--jump-display (buffer)
   "Display session BUFFER, the default action of a jump."
-  (agent-shell-vertico-sidebar--record-jump-previous buffer)
   (agent-shell-vertico-sidebar--mark-seen buffer)
   (agent-shell-vertico--display-session (buffer-name buffer)))
 
 (defun agent-shell-vertico-sidebar--jump-display-other-window (buffer)
   "Display session BUFFER in another window."
-  (agent-shell-vertico-sidebar--record-jump-previous buffer)
   (agent-shell-vertico-sidebar--mark-seen buffer)
   (agent-shell-vertico--display-session-other-window (buffer-name buffer)))
 
@@ -3419,30 +3380,6 @@ session in another window."
                  default
                (cdr target))
              (car target))
-    (agent-shell-vertico-sidebar-refresh)))
-
-;;;###autoload
-(defun agent-shell-vertico-sidebar-jump-back (&optional other-window)
-  "Display the session shown before the last jump moved elsewhere.
-
-Undoes whichever jump last changed what is displayed:
-`agent-shell-vertico-sidebar-jump', `-jump-by-key' (its default action
-or the `o' \"open in another window\" dispatch), `-jump-to-index' or one
-of the `-jump-to-N' commands.  Displaying the previous session is
-itself recorded the same way, so running this command twice in a row
-toggles between the two sessions.
-
-With OTHER-WINDOW, display it in another window.
-
-Signals a `user-error' when no jump has run yet, or the session it
-would return to is no longer live."
-  (interactive "P")
-  (let ((buffer agent-shell-vertico-sidebar--jump-previous))
-    (unless (buffer-live-p buffer)
-      (user-error "No previous session to jump back to"))
-    (if other-window
-        (agent-shell-vertico-sidebar--jump-display-other-window buffer)
-      (agent-shell-vertico-sidebar--jump-display buffer))
     (agent-shell-vertico-sidebar-refresh)))
 
 ;;;###autoload
