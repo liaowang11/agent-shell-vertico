@@ -2912,7 +2912,7 @@ outlive the weaker one it strengthens."
                          (agent-shell-vertico-sidebar--current-sessions)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-render-marks-the-focused-row ()
-  "The session being worked in gets the solid marker, the rest the dashed.
+  "The session being worked in gets the thick marker, the rest the thin.
 
 Both rows carry a marker, so the two tiers have to differ in the spec
 itself: a row that is merely on the frame must not be drawn as the row

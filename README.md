@@ -165,9 +165,9 @@ activity, recency, status, and name sorting.
 
 A fringe marker runs down the rows of the sessions the selected frame is
 showing, so the list says where you already are.  The session you are
-working in gets a solid bar in the accent colour
+working in gets a thick bar in the accent colour
 (`agent-shell-vertico-sidebar-focused-session`); the others on the frame get
-a dashed grey one (`agent-shell-vertico-sidebar-current-session`).  Neither
+a thin grey one (`agent-shell-vertico-sidebar-current-session`).  Neither
 borrows a status colour, since red, yellow, magenta and green already mean
 unread, unresolved, working and ready on these rows.  The focused marker
 holds while you step to a file, to magit or into the sidebar itself, and

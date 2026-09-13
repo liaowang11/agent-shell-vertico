@@ -396,9 +396,9 @@ The same question as `agent-shell-vertico-sidebar-current-session'
 answered with more force, so it is the same marker in the one accent
 that carries no status meaning, rather than a second hue: a different
 hue would read as a different kind of fact rather than as more of the
-same one.  A fringe bitmap is two pixels wide and cannot be relied on to
-carry a hue difference by itself, so the two tiers differ in shape as
-well: solid here, dashed there."
+same one.  A bar a pixel or two wide cannot be relied on to carry a hue
+difference by itself, so the two tiers differ in weight as well: thick
+here, thin there, the way bold stands to regular."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-jump-help-key
@@ -436,19 +436,22 @@ rather than highlighted."
 The other windows of the frame, and any session row without a key."
   :group 'agent-shell-vertico-sidebar)
 
-;; Short bars, `gptel-highlight-fringe' style: `center' positions them on
+;; Solid bars, `gptel-highlight-fringe' style: `center' positions them on
 ;; the row without needing the row's exact pixel height, so one definition
-;; works across fonts and text scales.  Solid marks the session being
-;; worked in and dashed one merely on screen, repeating in shape what the
-;; two faces say in colour, which a bar this narrow cannot carry alone.
+;; works across fonts and text scales.  A thick bar marks the session
+;; being worked in and a thin one a session merely on screen, repeating
+;; in weight what the two faces say in colour, which a bar this narrow
+;; cannot carry alone.  Both are solid: a dashed bar at this width is a
+;; column of dots, and `center' clips the bitmap to the line, so the dots'
+;; phase differed from one marked row to the next and jittered.  Both
+;; start at the same pixel, so the thin bar reads as the thick one's
+;; left edge rather than as a bar somewhere else.
 (define-fringe-bitmap 'agent-shell-vertico-sidebar-focused-session-fringe
-  (make-vector 28 #b01100000)
+  (make-vector 28 #b01111000)
   nil nil 'center)
 
 (define-fringe-bitmap 'agent-shell-vertico-sidebar-current-session-fringe
-  (apply #'vector
-         (cl-loop repeat 7
-                  append (list #b01100000 #b01100000 #b00000000 #b00000000)))
+  (make-vector 28 #b01000000)
   nil nil 'center)
 
 (defun agent-shell-vertico-sidebar--project-root (buffer)
@@ -1435,8 +1438,8 @@ the window stable without any screen-row arithmetic."
   "Return a zero-width fringe marker for a current session's row.
 
 FOCUSED asks for the marker of the session the reader is working in, a
-solid bar in the accent colour; every other session on the frame gets
-the dashed grey one.
+thick bar in the accent colour; every other session on the frame gets
+the thin grey one.
 
 The marker is a `display' spec on one space, so it costs no columns in
 the text area: Emacs draws the fringe bitmap in its place instead of the

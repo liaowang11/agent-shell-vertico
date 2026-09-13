@@ -466,13 +466,15 @@ two tiers: `--focused-session` picks one out of `--current-sessions` and
 `--current-session-marker` draws it differently. They are one question
 answered with two degrees, not two questions, so they share a hue family and
 differ in strength: `-focused-session` is `outline-1`, the one accent with no
-status meaning, on a solid bar, and `-current-session` is `shadow` on a
-dashed one. Every other colour here already names a status, and a marker
+status meaning, on a thick bar, and `-current-session` is `shadow` on a
+thin one. Every other colour here already names a status, and a marker
 that borrowed red, yellow, magenta or green would say something untrue about
 the session; `shadow` is what the package already uses for what is present
-and not the answer. The shape repeats what the colour says because a fringe
-bitmap is two pixels wide and cannot be trusted to carry a hue difference on
-its own. The focused session is *remembered* rather than read from the
+and not the answer. The weight repeats what the colour says because a bar a
+pixel or two wide cannot be trusted to carry a hue difference on its own.
+Both bars are solid: the thin one used to be dashed, which at that width is
+a column of dots whose phase, under `center` alignment, differed from one
+marked row to the next. The focused session is *remembered* rather than read from the
 selected window, in `--focused-session` (the variable): the selected window
 answers nothing the moment the reader steps to a file or to the sidebar, and
 the sidebar is the likeliest place to step to, so reading the list would be
