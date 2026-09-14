@@ -12247,7 +12247,9 @@ this is also what a terminal sees."
         (agent-shell-vertico-sidebar--busy-images
          (make-hash-table :test #'equal)))
     (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-              ((symbol-function 'image-type-available-p) (lambda (_) t)))
+              ((symbol-function 'image-type-available-p) (lambda (_) t))
+              ((symbol-function 'create-image)
+               (lambda (data type &rest _props) (list 'image :type type :data data))))
       (let ((value (agent-shell-vertico-sidebar--busy-frame 0)))
         (should (eq (car-safe value) 'image))
         (should (eq (plist-get (cdr value) :type) 'svg))
@@ -12339,7 +12341,9 @@ every other row has them."
           (agent-shell-vertico-sidebar--busy-images
            (make-hash-table :test #'equal)))
       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-                ((symbol-function 'image-type-available-p) (lambda (_) t)))
+                ((symbol-function 'image-type-available-p) (lambda (_) t))
+                ((symbol-function 'create-image)
+                 (lambda (data type &rest _props) (list 'image :type type :data data))))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
           (agent-shell-vertico-sidebar--render)
