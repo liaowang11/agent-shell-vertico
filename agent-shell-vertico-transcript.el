@@ -244,18 +244,25 @@ a field has to stop here rather than pick a quoted line up."
         (agent-shell-vertico-transcript--normalize-directory left)
         (agent-shell-vertico-transcript--normalize-directory right))))
 
+(defun agent-shell-vertico-transcript--comparison-directory (directory)
+  "Return DIRECTORY's path without any remote prefix.
+
+Remote prefixes identify the host through which Emacs reached a path.  They
+do not identify the project, so project-membership comparisons ignore them."
+  (or (file-remote-p directory 'localname) directory))
+
 (defun agent-shell-vertico-transcript--working-directory-in-project-p
     (working-directory project-root)
   "Return non-nil when WORKING-DIRECTORY names PROJECT-ROOT or sits under it.
 
-A session run over TRAMP records the working directory Emacs saw, so it
-carries a remote prefix that no local project root matches verbatim.
-The prefix names the host that ran the session, not the project, and the
-project is checked out at the same path on whichever host ran it, so the
-comparison drops it."
+A session or the invoking project can be reached over TRAMP, making either
+path carry a remote prefix.  The prefix names the host that opened the
+project, not the project itself, so the comparison drops it from both paths."
   (let ((working-directory
-         (or (file-remote-p working-directory 'localname)
-             working-directory)))
+         (agent-shell-vertico-transcript--comparison-directory
+          working-directory))
+        (project-root
+         (agent-shell-vertico-transcript--comparison-directory project-root)))
     (or
      (agent-shell-vertico-transcript--same-directory-p
       working-directory project-root)
@@ -267,7 +274,12 @@ comparison drops it."
 TRANSCRIPT-DIRECTORY identifies project-local stores.  Shared stores use
 the record's working directory to distinguish projects."
   (let ((working-directory
-         (agent-shell-vertico-transcript-record-working-directory record)))
+         (agent-shell-vertico-transcript-record-working-directory record))
+        (project-root
+         (agent-shell-vertico-transcript--comparison-directory project-root))
+        (transcript-directory
+         (agent-shell-vertico-transcript--comparison-directory
+          transcript-directory)))
     (or
      ;; A project-local store is authoritative even when a transcript was
      ;; written from a subdirectory or carries a path from another machine.

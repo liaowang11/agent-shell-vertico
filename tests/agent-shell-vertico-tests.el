@@ -5815,6 +5815,37 @@ carries a TRAMP prefix that no local project root can match verbatim."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-records-match-remote-project-root ()
+  "A remote project root matches a transcript from that remote project.
+Both paths carry a TRAMP prefix, which identifies where the project was
+opened rather than which project the transcript belongs to."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (other-root (make-temp-file "agent-shell-vertico-other-" t))
+         (remote-root (format "/ssh:remote-host:%s" root))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "remote.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n" remote-root)
+                    "**Session ID:** remote\n\n---\n\n"
+                    "## User\n\nRemote transcript\n"))
+          (with-temp-file (expand-file-name "elsewhere.md" transcript-dir)
+            (insert (format "**Working Directory:** /ssh:remote-host:%s\n"
+                            (directory-file-name other-root))
+                    "**Session ID:** elsewhere\n\n---\n\n"
+                    "## User\n\nAnother project\n"))
+          (let ((records
+                 (agent-shell-vertico-transcript--records-for-project
+                  remote-root)))
+            (should (= (length records) 1))
+            (should (equal (agent-shell-vertico-transcript-record-session-id
+                            (car records))
+                           "remote"))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory transcript-dir t))))
+
 (ert-deftest agent-shell-vertico-transcript-records-match-remote-subdirectory ()
   "A remote session started below the root still belongs to the project."
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
