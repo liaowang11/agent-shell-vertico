@@ -12254,6 +12254,28 @@ this is also what a terminal sees."
         (should (= 8 (agent-shell-vertico-tests--count-matches
                       "<circle" (plist-get (cdr value) :data))))))))
 
+(ert-deftest agent-shell-vertico-sidebar-busy-colour-asks-the-sidebar-frame ()
+  "The colour is read from the frame showing the sidebar, not the selected one.
+
+`--busy-size' already measures that frame, and a beat falling while a
+terminal frame is selected would otherwise size the image for one frame
+and colour it from another.  Batch has no second frame to compare
+against, so what is pinned is which frame the two questions are put to."
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--icon-frame)
+               (lambda () 'sidebar-frame))
+              ((symbol-function 'face-attribute)
+               (lambda (_face _attribute &optional frame &rest _)
+                 (push (cons :face frame) asked)
+                 "#fc4cb4"))
+              ((symbol-function 'color-values)
+               (lambda (_color &optional frame)
+                 (push (cons :values frame) asked)
+                 (list (ash #xfc 8) (ash #x4c 8) (ash #xb4 8)))))
+      (should (equal (agent-shell-vertico-sidebar--busy-color) "#fc4cb4"))
+      (should (equal (alist-get :face asked) 'sidebar-frame))
+      (should (equal (alist-get :values asked) 'sidebar-frame)))))
+
 (ert-deftest agent-shell-vertico-sidebar-busy-svg-rotates-by-frame ()
   "Each frame turns the ring one eighth further."
   (should (string-match-p

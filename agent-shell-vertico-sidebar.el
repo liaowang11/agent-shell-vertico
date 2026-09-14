@@ -1174,12 +1174,21 @@ key is the whole answer and nothing has to be invalidated.")
   "Return the working face's foreground as a colour SVG understands.
 
 Face colours are Emacs names as often as they are hex, and librsvg
-knows only CSS, so the name is resolved here rather than passed on."
-  (let* ((color (face-attribute 'agent-shell-vertico-sidebar-working
-                                :foreground nil 'default))
+knows only CSS, so the name is resolved here rather than passed on.
+
+Both questions are put to the frame showing the sidebar, as
+`--busy-size' puts its own: a theme can answer differently per frame,
+and `color-values' answers in the frame's own palette, so a beat that
+fell while a terminal frame was selected would otherwise colour the
+image a graphical sidebar draws.  Nil is the selected frame, which is
+the same fallback `--busy-size' spells out."
+  (let* ((frame (agent-shell-vertico-sidebar--icon-frame))
+         (color (face-attribute 'agent-shell-vertico-sidebar-working
+                                :foreground frame 'default))
          ;; `color-values' signals rather than returning nil where no
          ;; frame can answer about colours, which is every batch session.
-         (values (and (stringp color) (ignore-errors (color-values color)))))
+         (values (and (stringp color)
+                      (ignore-errors (color-values color frame)))))
     (cond
      (values (apply #'format "#%02x%02x%02x"
                     (mapcar (lambda (value) (ash value -8)) values)))
