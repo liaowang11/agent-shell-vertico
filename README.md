@@ -169,10 +169,11 @@ working in gets a thick bar in the accent colour
 (`agent-shell-vertico-sidebar-focused-session`); the others on the frame get
 a thin grey one (`agent-shell-vertico-sidebar-current-session`).  Neither
 borrows a status colour, since red, yellow, magenta and green already mean
-unread, unresolved, working and ready on these rows.  The focused marker
-holds while you step to a file, to magit or into the sidebar itself, and
-only moves when you select a window on another session; a session off the
-frame, or on another frame, is not marked at all.  This is only the marker,
+unread, unresolved, working and ready on these rows.  The thick bar follows
+the selected window: step to a file, to magit or into the sidebar itself
+and every session on the frame is thin, so a frame or workspace is marked
+by what it shows and not by where you last were; a session off the frame,
+or on another frame, is not marked at all.  This is only the marker,
 not what counts as reading a session: unread still clears only when a
 session's own window is selected.
 

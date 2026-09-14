@@ -474,18 +474,22 @@ and not the answer. The weight repeats what the colour says because a bar a
 pixel or two wide cannot be trusted to carry a hue difference on its own.
 Both bars are solid: the thin one used to be dashed, which at that width is
 a column of dots whose phase, under `center` alignment, differed from one
-marked row to the next. The focused session is *remembered* rather than read from the
-selected window, in `--focused-session` (the variable): the selected window
-answers nothing the moment the reader steps to a file or to the sidebar, and
-the sidebar is the likeliest place to step to, so reading the list would be
-what took the marker off the row being read. Only selecting a window on
-another session changes it, and only while it is still in `--current-sessions`
-does it mark a row, so the stronger marker never outlives the weaker one it
-strengthens. That memory is deliberately looser than `--session-focused-p`,
-which decides what has been *read* and must stay on the selected window. The
+marked row to the next. The focused session is read from the selected window
+and nothing else: the session whose buffer or viewport it shows, and none
+beside a file, magit or the sidebar, where every visible session is thin.
+An earlier version remembered the last session window selected so that
+stepping into the sidebar kept the thick bar, but the memory was one global
+across frames and workspaces, so a workspace whose session had never been
+clicked into showed thin while another with the same layout showed thick;
+the thick bar meant history, not state. Deriving it from the selected window
+makes the same layout always draw the same way, and a session off the frame
+is not marked at all, so the stronger marker never outlives the weaker one
+it strengthens. It is the same question as `--session-focused-p` asks about
+what has been *read*, without that one's insistence on a focused frame. The
 render caches it in `--rendered-focused-session` and the hooks compare it
 separately from the set, because moving between two sessions already on the
-frame changes the drawing without changing the set.
+frame, or from a session to a file beside it, changes the drawing without
+changing the set.
 
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives

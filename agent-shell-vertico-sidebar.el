@@ -293,14 +293,6 @@ A render erases the buffer, which would take the key labels with it, so
 `agent-shell-vertico-sidebar--render' only marks the sidebar dirty while
 this is set.  The jump renders again once its key is read.")
 
-(defvar agent-shell-vertico-sidebar--focused-session nil
-  "The session whose window the reader selected most recently.
-
-Not read from the selected window, because the reader who steps off a
-session to a file, to magit or to the sidebar itself has not picked
-another session to work in, and the answer at that moment would be
-nothing.  Only selecting a window on a different session changes it.")
-
 (defvar-local agent-shell-vertico-sidebar--rendered-current-sessions nil
   "Sessions whose rows the most recent render marked as current.
 
@@ -2214,34 +2206,32 @@ question run on every window change."
 
 (defun agent-shell-vertico-sidebar--focused-session (current
                                                     &optional sessions)
-  "Return which of CURRENT the reader is working in, or nil.
+  "Return which of CURRENT the selected window shows, or nil.
 
 CURRENT is `agent-shell-vertico-sidebar--current-sessions', the sessions
 on the selected frame, which both callers have computed already.
 SESSIONS is passed on to `agent-shell-vertico-sidebar--session-for-buffer'.
 
-Reads the selected window and remembers what it finds in
-`agent-shell-vertico-sidebar--focused-session', so that stepping off to
-a file, to magit or to the sidebar holds the marker where it was: the
-sidebar is the likeliest place to step to, and reading the list must not
-be what takes the marker off the row being read.  The memory is
-deliberately looser than `agent-shell-vertico-sidebar--session-focused-p',
-which decides what has been read and has to keep to the selected window.
-It reaches only as far as the frame, though: a remembered session the
-reader can no longer see is not marked at all, so the stronger marker
-never outlives the weaker one it strengthens."
-  (when-let ((selected (agent-shell-vertico-sidebar--session-for-buffer
-                        (window-buffer (selected-window)) sessions)))
-    (setq agent-shell-vertico-sidebar--focused-session selected))
-  (car (memq agent-shell-vertico-sidebar--focused-session current)))
+The answer is the selected window and nothing else: the session whose
+buffer or viewport it shows, and nil beside a file, magit or the
+sidebar, where the reader is typing into none of them.  Nothing is
+remembered, so a frame or workspace is marked by what it shows and not
+by where the reader last was on some other one, and the same layout is
+always marked the same way.  This is the same question as
+`agent-shell-vertico-sidebar--session-focused-p' asks about what has been
+read, without that one's insistence on a focused frame: the sidebar
+draws for the selected frame whether or not it has input focus."
+  (car (memq (agent-shell-vertico-sidebar--session-for-buffer
+              (window-buffer (selected-window)) sessions)
+             current)))
 
 (defun agent-shell-vertico-sidebar--refresh-current-marker ()
   "Schedule a redraw when the markers drawn no longer match the frame.
 
 Two answers are drawn and either can go out of date.  Which sessions are
 on screen is a set, so a window rearrangement showing the same ones
-redraws nothing; which of them the reader is working in changes as soon
-as another session's window is selected, with the set untouched."
+redraws nothing; which of them the reader is working in changes whenever
+the selected window moves onto or off a session, with the set untouched."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
     ;; Resolved once and passed on, because this runs on every window
     ;; change and both questions would otherwise ask agent-shell for the
