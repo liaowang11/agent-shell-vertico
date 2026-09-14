@@ -154,6 +154,34 @@ either way."
                  (const :tag "Never" nil))
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-animate-busy t
+  "Whether a working session's mark spins while it works.
+
+The mark is the only place it spins.  Header counts are a census of what
+the sidebar holds rather than a report on any one session, so they keep
+the still glyph."
+  :type 'boolean
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-busy-frames 'dots
+  "The frames a working session's mark cycles through.
+
+`dots' is a ring of eight dots, drawn as an SVG image where one can be
+drawn and as the braille characters it is modelled on everywhere else.
+A list of one-column strings is used as those characters are, on every
+frame, which is also how to keep the spin and drop the image."
+  :type '(choice (const :tag "Ring of dots" dots)
+                 (repeat :tag "Characters" string))
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-busy-frame-interval 0.1
+  "Seconds between frames of a working session's mark.
+
+The default matches `agent-shell''s own busy indicator, so a session
+spins at the same rate here as in its shell."
+  :type 'number
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-follow-workspaces t
   "Whether the sidebar reopens itself after a workspace switch.
 
@@ -317,6 +345,19 @@ separately.")
 
 (defvar-local agent-shell-vertico-sidebar--resize-timer nil
   "Pending idle sidebar resize timer.")
+
+(defvar-local agent-shell-vertico-sidebar--busy-timer nil
+  "Repeating timer drawing the next frame of every working mark.")
+
+(defvar-local agent-shell-vertico-sidebar--busy-tick 0
+  "Which frame the working marks are showing.
+
+One counter for the whole sidebar, so every working mark spins in step.
+A session's own phase would have to come from `agent-shell''s heartbeat,
+which is its business and not something to read a frame number out of.")
+
+(defvar-local agent-shell-vertico-sidebar--busy-overlays nil
+  "Overlays the animation redraws, one per working session's mark.")
 
 (defvar-local agent-shell-vertico-sidebar--dirty nil
   "Non-nil when an event changed the sidebar's rendered state.")
@@ -869,8 +910,8 @@ stays total and deterministic."
                  (agent-shell-vertico-sidebar--field-text
                   'last-user-message
                   (when last-message
-                    (concat (agent-shell-vertico-sidebar--slot-icon 'message)
-                            (agent-shell-vertico-sidebar--icon-gap)
+                    (concat (agent-shell-vertico-sidebar--mark-field
+                             (agent-shell-vertico-sidebar--slot-icon 'message))
                             last-message))))))
          fields)
     (dolist (field agent-shell-vertico-sidebar-extra-info)
@@ -896,8 +937,8 @@ stays total and deterministic."
     (cons (agent-shell-vertico-sidebar--field-text
            'project
            (agent-shell-vertico-sidebar--fit
-            (concat (agent-shell-vertico-sidebar--slot-icon 'project)
-                    (agent-shell-vertico-sidebar--icon-gap)
+            (concat (agent-shell-vertico-sidebar--mark-field
+                     (agent-shell-vertico-sidebar--slot-icon 'project))
                     (agent-shell-vertico-sidebar--project-name root buffer))
             width)
            root)
@@ -1080,6 +1121,126 @@ graphical frame takes a fraction of one instead."
    ((display-graphic-p (agent-shell-vertico-sidebar--icon-frame))
     (concat " " (propertize " " 'display '(space :width 0.5))))
    (t "  ")))
+
+(defconst agent-shell-vertico-sidebar--busy-characters
+  '("⣷" "⣯" "⣟" "⡿" "⢿" "⣻" "⣽" "⣾")
+  "Characters a working mark cycles through when no image is drawn.
+
+The braille ring the drawn one is modelled on: dots orbiting a circle,
+one column wide, and the same picture a terminal can show.")
+
+(defconst agent-shell-vertico-sidebar--busy-frame-count 8
+  "How many frames a full turn of the drawn ring takes.
+
+One per dot, so a frame turns the ring exactly onto the next dot and the
+cycle has no seam.")
+
+(defvar agent-shell-vertico-sidebar--busy-images
+  (make-hash-table :test #'equal)
+  "Cache of drawn working marks, keyed by colour, size and frame.
+
+A theme change asks for a colour that is not in the table yet, so the
+key is the whole answer and nothing has to be invalidated.")
+
+(defun agent-shell-vertico-sidebar--busy-color ()
+  "Return the working face's foreground as a colour SVG understands.
+
+Face colours are Emacs names as often as they are hex, and librsvg
+knows only CSS, so the name is resolved here rather than passed on."
+  (let* ((color (face-attribute 'agent-shell-vertico-sidebar-working
+                                :foreground nil 'default))
+         ;; `color-values' signals rather than returning nil where no
+         ;; frame can answer about colours, which is every batch session.
+         (values (and (stringp color) (ignore-errors (color-values color)))))
+    (cond
+     (values (apply #'format "#%02x%02x%02x"
+                    (mapcar (lambda (value) (ash value -8)) values)))
+     ((and (stringp color) (string-prefix-p "#" color)) color)
+     (t "#888888"))))
+
+(defun agent-shell-vertico-sidebar--busy-size ()
+  "Return the pixel side of the drawn working mark.
+
+Two columns wide, so the ring carries the weight the icons beside it
+have, and never taller than a line, so no row grows to fit it."
+  (let ((frame (or (agent-shell-vertico-sidebar--icon-frame)
+                   (selected-frame))))
+    (min (* 2 (frame-char-width frame)) (frame-char-height frame))))
+
+(defun agent-shell-vertico-sidebar--busy-svg (angle color size)
+  "Return a ring of eight dots turned ANGLE degrees, in COLOR, SIZE px square.
+
+Drawn rather than taken from a font: the loading circles nerd-icons
+offers are one glyph each, meant to be spun by whoever draws them, and
+Emacs spins images and not text.  Drawing it also means the ring takes
+the face's colour and needs no font to be installed.
+
+The dots reach the edge of the box, because the nerd glyphs beside them
+draw at nearly the full two columns and a ring inside a margin reads as
+the smaller mark.  They stay small, and grow and brighten around the
+ring: that gradient is what says which way it turns, which a ring of
+even dots could not."
+  (format (concat "<svg xmlns='http://www.w3.org/2000/svg'"
+                  " width='%d' height='%d' viewBox='0 0 24 24'>"
+                  "<g transform='rotate(%d 12 12)'>%s</g></svg>")
+          size size angle
+          (mapconcat
+           (lambda (index)
+             (format (concat "<circle cx='%.2f' cy='%.2f' r='%.2f'"
+                             " fill='%s' fill-opacity='%.2f'/>")
+                     (+ 12 (* 8.6 (cos (* index (/ float-pi 4)))))
+                     (+ 12 (* 8.6 (sin (* index (/ float-pi 4)))))
+                     (+ 1.8 (* 1.2 (/ index 7.0)))
+                     color
+                     (+ 0.35 (* 0.65 (/ index 7.0)))))
+           (number-sequence 0 7) "")))
+
+(defun agent-shell-vertico-sidebar--busy-image (frame)
+  "Return the image for FRAME of the ring, or nil when it cannot be drawn.
+
+Nothing is drawn without SVG support or on a terminal.  Which frame is
+asked is the sidebar's, matching the gap: a buffer shown on a graphical
+and a text frame at once is drawn one way for both."
+  (when (and (image-type-available-p 'svg)
+             (display-graphic-p (agent-shell-vertico-sidebar--icon-frame)))
+    (let* ((color (agent-shell-vertico-sidebar--busy-color))
+           (size (agent-shell-vertico-sidebar--busy-size))
+           (key (list color size frame)))
+      (or (gethash key agent-shell-vertico-sidebar--busy-images)
+          (puthash key
+                   (create-image
+                    (agent-shell-vertico-sidebar--busy-svg
+                     (/ (* 360 frame)
+                        agent-shell-vertico-sidebar--busy-frame-count)
+                     color size)
+                    'svg t :ascent 'center)
+                   agent-shell-vertico-sidebar--busy-images)))))
+
+(defun agent-shell-vertico-sidebar--busy-frame (tick &optional face)
+  "Return what a working mark shows on TICK, drawn in FACE.
+
+An image where one can be drawn, and a character otherwise, which is
+also what `agent-shell-vertico-sidebar-busy-frames' returns when it
+names its own characters.  An image carries its own colours, so FACE
+reaches only the characters."
+  (let* ((frames agent-shell-vertico-sidebar-busy-frames)
+         (characters (if (and (consp frames) (seq-every-p #'stringp frames))
+                         frames
+                       agent-shell-vertico-sidebar--busy-characters)))
+    (or (and (eq frames 'dots)
+             (agent-shell-vertico-sidebar--busy-image
+              (mod tick agent-shell-vertico-sidebar--busy-frame-count)))
+        (let ((text (nth (mod tick (length characters)) characters)))
+          (if face (propertize text 'face face) text)))))
+
+(defun agent-shell-vertico-sidebar--busy-columns (value)
+  "Return how many of a row's characters VALUE is drawn over.
+
+A character takes the mark's own column.  An image is two columns wide,
+and the gap after a mark is a column and a half, so an image takes the
+mark and the space after it: the half-width space and the title are
+then where every other row has them."
+  (if (stringp value) 1 2))
 
 (defun agent-shell-vertico-sidebar--count-text (mark count &optional face)
   "Return COUNT preceded by MARK, both drawn in FACE.
@@ -1289,7 +1450,7 @@ key report that there is no session at point."
                    (forward-line 1)))
                found))))
       (when position
-        (goto-char position))
+        (goto-char (agent-shell-vertico-sidebar--row-point position)))
       position)))
 
 (defun agent-shell-vertico-sidebar--node-positions ()
@@ -1381,7 +1542,69 @@ the window stable without any screen-row arithmetic."
          window
          (agent-shell-vertico-sidebar--filled-window-start window start)
          t)
-        (set-window-point window position)))))
+        (set-window-point window
+                          (agent-shell-vertico-sidebar--row-point
+                           position))))))
+
+(defun agent-shell-vertico-sidebar--mark-field-p (position)
+  "Return non-nil when POSITION is inside the icon a line begins with."
+  (and (< position (point-max))
+       (get-text-property position
+                          'agent-shell-vertico-sidebar-mark-field)))
+
+(defun agent-shell-vertico-sidebar--row-point (position)
+  "Return where point rests on the line that POSITION is on.
+
+Past the icon the line begins with, if it has one, and POSITION itself
+otherwise.  Always forward, never back to the line above: a reader
+moving up a list would otherwise be carried past the row they moved
+to."
+  (if (agent-shell-vertico-sidebar--mark-field-p position)
+      (or (next-single-property-change
+           position 'agent-shell-vertico-sidebar-mark-field nil
+           (save-excursion (goto-char position) (line-end-position)))
+          position)
+    position))
+
+(defun agent-shell-vertico-sidebar--keep-point-off-marks (window)
+  "Move WINDOW's point past the icon its line begins with.
+
+Run from `pre-redisplay-functions', so it answers for every way point
+arrives on an icon, including the ones no command of this package took:
+a click, an arrow key, or a window layout restored by a workspace
+package.
+
+`cursor-intangible-mode' is what this would otherwise be, and was:
+`cursor-sensor-tangible-pos' compares point against a window parameter
+that `cursor-sensor-move-to-tangible' sets only after a run that did not
+signal, and `window-state-put' does not carry that parameter, so a
+window restored with point on an icon signalled on every redisplay and
+never set it.  Errors are demoted here for the same reason: a mistake in
+this function must not be able to fill the echo area on every
+redisplay."
+  (with-demoted-errors "agent-shell-vertico-sidebar: %S"
+    (when (window-live-p window)
+      (let* ((position (window-point window))
+             (moved (agent-shell-vertico-sidebar--row-point position)))
+        (unless (eq moved position)
+          (set-window-point window moved)
+          (when (eq window (selected-window))
+            (goto-char moved)))))))
+
+(defun agent-shell-vertico-sidebar--mark-field (icon)
+  "Return ICON and the gap after it as one field point is kept out of.
+
+Standing on an icon says nothing, and the sidebar has no visible cursor
+to say where point is, so point is moved on to the text.  Every leading
+icon is one of these - a status mark, a fold triangle, the home of a
+project line, the arrow of a message line - and the gap belongs to the
+field because it is as empty an answer as the icon.  `propertize' leaves
+the half-width display the gap carries alone.
+
+`agent-shell-vertico-sidebar--keep-point-off-marks' is what acts on the
+property; nothing else reads it."
+  (propertize (concat icon (agent-shell-vertico-sidebar--icon-gap))
+              'agent-shell-vertico-sidebar-mark-field t))
 
 (defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
   "Return rendered session lines for BUFFER at WIDTH under ROOT."
@@ -1404,7 +1627,7 @@ the window stable without any screen-row arithmetic."
             (agent-shell-vertico-sidebar--extra-info-lines
              buffer root content-width (not nested)))))
     (setq title-lines
-          (cons (concat icon (agent-shell-vertico-sidebar--icon-gap)
+          (cons (concat (agent-shell-vertico-sidebar--mark-field icon)
                         (car title-lines))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
@@ -1563,6 +1786,10 @@ a column of slack rather than pushing its count past the window edge."
     ;; Merged, so the summary icons keep the font family in their own face.
     (add-face-text-property start (1- (point))
                             'agent-shell-vertico-sidebar-project)
+    ;; A fold triangle is an icon like any other: point belongs on the
+    ;; project name rather than on it.
+    (put-text-property start (min (+ start 2) (1- (point)))
+                       'agent-shell-vertico-sidebar-mark-field t)
     (add-text-properties
      start (1- (point))
      (list 'agent-shell-vertico-sidebar-node root
@@ -1619,6 +1846,7 @@ a column of slack rather than pushing its count past the window edge."
         (progn
           (agent-shell-vertico-sidebar--cancel-refresh)
           (agent-shell-vertico-sidebar--cancel-resize)
+          (agent-shell-vertico-sidebar--cancel-busy-refresh)
           (setq agent-shell-vertico-sidebar--dirty nil
                 agent-shell-vertico-sidebar--last-rendered-width width
                 agent-shell-vertico-sidebar--rendered-current-sessions
@@ -1662,11 +1890,14 @@ a column of slack rather than pushing its count past the window edge."
           (let ((node-positions
                  (agent-shell-vertico-sidebar--node-positions)))
             (goto-char
-             (agent-shell-vertico-sidebar--anchor-position
-              point-anchor node-positions))
+             (agent-shell-vertico-sidebar--row-point
+              (agent-shell-vertico-sidebar--anchor-position
+               point-anchor node-positions)))
             (dolist (anchor window-anchors)
               (agent-shell-vertico-sidebar--restore-window-anchor
                anchor node-positions)))
+          (agent-shell-vertico-sidebar--place-busy-overlays snapshots)
+          (agent-shell-vertico-sidebar--ensure-busy-refresh)
           (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
       (setq agent-shell-vertico-sidebar--render-snapshots nil))))
 
@@ -1782,6 +2013,114 @@ from."
     (cancel-timer agent-shell-vertico-sidebar--resize-timer)
     (setq agent-shell-vertico-sidebar--resize-timer nil)))
 
+(defun agent-shell-vertico-sidebar--cancel-busy-refresh ()
+  "Cancel the repeating busy-animation timer."
+  (when (timerp agent-shell-vertico-sidebar--busy-timer)
+    (cancel-timer agent-shell-vertico-sidebar--busy-timer)
+    (setq agent-shell-vertico-sidebar--busy-timer nil)))
+
+(defun agent-shell-vertico-sidebar--clear-busy-overlays ()
+  "Drop the overlays the busy animation draws on."
+  (mapc #'delete-overlay agent-shell-vertico-sidebar--busy-overlays)
+  (setq agent-shell-vertico-sidebar--busy-overlays nil))
+
+(defun agent-shell-vertico-sidebar--place-busy-overlays (snapshots)
+  "Give each working session in SNAPSHOTS an overlay over its mark.
+
+The row keeps the still glyph underneath, so a sidebar that is never
+animated - the setting off, no timer yet, a beat suppressed - reads
+exactly as it did before.  The overlay only replaces what is drawn,
+which is why nothing reflows and no row has to be built differently."
+  (agent-shell-vertico-sidebar--clear-busy-overlays)
+  (when agent-shell-vertico-sidebar-animate-busy
+    (let ((working (seq-keep (lambda (snapshot)
+                               (when (eq (plist-get snapshot :status) 'busy)
+                                 (plist-get snapshot :buffer)))
+                             snapshots))
+          (face (agent-shell-vertico-sidebar--mark-face '(busy . nil))))
+      (when working
+        (pcase-dolist (`(,buffer . ,start)
+                       (agent-shell-vertico-sidebar--session-rows))
+          (when (memq buffer working)
+            (let* ((value (agent-shell-vertico-sidebar--busy-frame
+                           agent-shell-vertico-sidebar--busy-tick face))
+                   (limit (save-excursion
+                            (goto-char start)
+                            (line-end-position)))
+                   (overlay (make-overlay
+                             start
+                             (min limit
+                                  (+ start
+                                     (agent-shell-vertico-sidebar--busy-columns
+                                      value))))))
+              (overlay-put overlay 'display value)
+              (push overlay agent-shell-vertico-sidebar--busy-overlays))))))))
+
+(defun agent-shell-vertico-sidebar--animate-busy ()
+  "Draw the next frame on every working mark.
+
+Returns early while a jump is in progress, as the render does: a jump
+draws its keys over the same cells, and repainting under them would
+take a key off the screen the reader is choosing from.  A frame that
+would need a different number of columns than the overlay was given -
+the sidebar moved between a graphical and a text frame - is left to the
+render that re-places them."
+  (unless agent-shell-vertico-sidebar--jump-in-progress
+    (setq agent-shell-vertico-sidebar--busy-tick
+          (1+ agent-shell-vertico-sidebar--busy-tick))
+    (let ((face (agent-shell-vertico-sidebar--mark-face '(busy . nil)))
+          (rescale nil))
+      (dolist (overlay agent-shell-vertico-sidebar--busy-overlays)
+        (when (overlay-buffer overlay)
+          (let ((value (agent-shell-vertico-sidebar--busy-frame
+                        agent-shell-vertico-sidebar--busy-tick face)))
+            (if (= (agent-shell-vertico-sidebar--busy-columns value)
+                   (- (overlay-end overlay) (overlay-start overlay)))
+                (overlay-put overlay 'display value)
+              (setq rescale t)))))
+      (when rescale
+        (agent-shell-vertico-sidebar--schedule-refresh)))))
+
+(defun agent-shell-vertico-sidebar--busy-animation-wanted-p (sidebar)
+  "Return non-nil when SIDEBAR has a working mark on screen to redraw.
+
+There is nothing to animate without an overlay and nothing to see
+without a window, so the one question both arms the timer and stops
+it."
+  (and (buffer-live-p sidebar)
+       (with-current-buffer sidebar
+         (and agent-shell-vertico-sidebar--busy-overlays
+              (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)))))
+
+(defun agent-shell-vertico-sidebar--busy-beat (sidebar)
+  "Draw the next frame in SIDEBAR, or stop when there is nothing to draw.
+
+The timer outlives the answer that armed it: a sidebar can be hidden or
+killed, and its sessions can settle, between one beat and the next."
+  (if (agent-shell-vertico-sidebar--busy-animation-wanted-p sidebar)
+      (with-current-buffer sidebar
+        (agent-shell-vertico-sidebar--animate-busy))
+    (when (buffer-live-p sidebar)
+      (with-current-buffer sidebar
+        (agent-shell-vertico-sidebar--cancel-busy-refresh)))))
+
+(defun agent-shell-vertico-sidebar--ensure-busy-refresh ()
+  "Run the busy animation while a working mark is drawn and on screen."
+  (let ((sidebar (or (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                          (current-buffer))
+                     (get-buffer "*Agent Shell Sessions*"))))
+    (when sidebar
+      (with-current-buffer sidebar
+        (if (agent-shell-vertico-sidebar--busy-animation-wanted-p sidebar)
+            (unless (timerp agent-shell-vertico-sidebar--busy-timer)
+              (setq agent-shell-vertico-sidebar--busy-timer
+                    (run-with-timer
+                     agent-shell-vertico-sidebar-busy-frame-interval
+                     agent-shell-vertico-sidebar-busy-frame-interval
+                     (lambda ()
+                       (agent-shell-vertico-sidebar--busy-beat sidebar)))))
+          (agent-shell-vertico-sidebar--cancel-busy-refresh))))))
+
 (defun agent-shell-vertico-sidebar--ensure-age-refresh
     (&optional snapshots snapshots-supplied)
   "Keep visible activity ages current while details are displayed.
@@ -1846,7 +2185,8 @@ sessions just to decide whether an age timer is needed."
                            (agent-shell-vertico-sidebar--render))))))))
         (agent-shell-vertico-sidebar--cancel-refresh)
         (agent-shell-vertico-sidebar--cancel-resize)
-        (agent-shell-vertico-sidebar--cancel-age-refresh)))))
+        (agent-shell-vertico-sidebar--cancel-age-refresh)
+        (agent-shell-vertico-sidebar--cancel-busy-refresh)))))
 
 (defconst agent-shell-vertico-sidebar--out-of-turn-events
   '(agent-message-chunk tool-call-update)
@@ -2345,14 +2685,14 @@ that there is no row would say the opposite of what the sidebar shows."
   (let* ((node-positions (agent-shell-vertico-sidebar--node-positions))
          (start (agent-shell-vertico-sidebar--row-start node-positions)))
     (if (and backward (> (line-beginning-position) start))
-        (goto-char start)
+        (goto-char (agent-shell-vertico-sidebar--row-point start))
       (let* ((rows (mapcar #'cdr node-positions))
              (position (seq-find (if backward
                                      (lambda (position) (< position start))
                                    (lambda (position) (> position start)))
                                  (if backward (reverse rows) rows))))
         (when position
-          (goto-char position))))))
+          (goto-char (agent-shell-vertico-sidebar--row-point position)))))))
 
 (defun agent-shell-vertico-sidebar-next-row ()
   "Move point to the first line of the next session or project row."
@@ -2864,18 +3204,25 @@ while normal and motion states get the same direct mnemonic commands."
               agent-shell-vertico-sidebar--refresh-timer nil
               agent-shell-vertico-sidebar--age-refresh-timer nil
               agent-shell-vertico-sidebar--resize-timer nil
+              agent-shell-vertico-sidebar--busy-timer nil
+              agent-shell-vertico-sidebar--busy-tick 0
+              agent-shell-vertico-sidebar--busy-overlays nil
               agent-shell-vertico-sidebar--dirty nil
               agent-shell-vertico-sidebar--last-rendered-width nil)
   (setq-local agent-shell-vertico-sidebar--expanded-projects
               (make-hash-table :test #'equal))
   (setq-local agent-shell-vertico-sidebar--expanded-sessions
               (make-hash-table :test #'eq))
+  (add-hook 'pre-redisplay-functions
+            #'agent-shell-vertico-sidebar--keep-point-off-marks nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-refresh nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-age-refresh nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-resize nil t)
+  (add-hook 'kill-buffer-hook
+            #'agent-shell-vertico-sidebar--cancel-busy-refresh nil t)
   (local-set-key (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "S-TAB")
@@ -3308,6 +3655,10 @@ window free for a prompt of its own."
         (with-current-buffer sidebar
           (let ((agent-shell-vertico-sidebar-group-by nil))
             (agent-shell-vertico-sidebar--render))
+          ;; The keys are drawn over the marks, so the animation gives
+          ;; the cells up for the read; the render below restores them.
+          (agent-shell-vertico-sidebar--cancel-busy-refresh)
+          (agent-shell-vertico-sidebar--clear-busy-overlays)
           (let* ((agent-shell-vertico-sidebar--jump-in-progress t)
                  (rows (agent-shell-vertico-sidebar--session-rows))
                  (keyed (agent-shell-vertico-sidebar--visible-rows
@@ -3407,10 +3758,13 @@ Show it without selecting its window, or close it when it is visible."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (with-current-buffer sidebar
       (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
-          (agent-shell-vertico-sidebar--ensure-age-refresh)
+          (progn
+            (agent-shell-vertico-sidebar--ensure-age-refresh)
+            (agent-shell-vertico-sidebar--ensure-busy-refresh))
         (agent-shell-vertico-sidebar--cancel-refresh)
         (agent-shell-vertico-sidebar--cancel-resize)
-        (agent-shell-vertico-sidebar--cancel-age-refresh)))))
+        (agent-shell-vertico-sidebar--cancel-age-refresh)
+        (agent-shell-vertico-sidebar--cancel-busy-refresh)))))
 
 (defvar agent-shell-vertico-sidebar--visible-before-workspace-switch nil
   "Whether the sidebar was visible in the workspace being left.")

@@ -491,6 +491,70 @@ separately from the set, because moving between two sessions already on the
 frame, or from a session to a file beside it, changes the drawing without
 changing the set.
 
+**Spinning a working mark.** A working session's mark is animated by an
+overlay over the still glyph, one per working row, placed at the end of
+`--render` from the snapshots it already has and redrawn by
+`--animate-busy` on a repeating timer. Overlaying rather than
+re-rendering is what makes it affordable: a full render erases the
+buffer, re-sorts, and re-anchors every window, while a beat only swaps
+each overlay's `display'. The still glyph stays underneath, so a sidebar
+that never animates — the setting off, no timer yet, a beat suppressed —
+reads exactly as it did before, and nothing about how a row is built had
+to change. `--busy-frame` answers what a mark shows on a given beat: an
+SVG ring of eight dots where one can be drawn, and the braille ring
+`⣷⣯⣟⡿⢿⣻⣽⣾` it is modelled on otherwise. The ring is drawn rather than
+taken from a font because the loading circles nerd-icons offers are one
+glyph each, meant to be spun by whoever draws them, and Emacs spins
+images and not text; drawing it also takes the face's colour and needs
+no font installed. `--busy-columns` is why the two kinds can share a
+row: an image is two columns and the gap after a mark is a column and a
+half, so an image takes the mark *and* the space after it, leaving the
+half-width space and the title where every other row has them. A beat
+that would need a different span than its overlay was given — the
+sidebar moved between a graphical and a text frame — schedules a render
+instead of drawing at the wrong width. The tick counter is one per
+sidebar, so every working mark spins in step; a per-session phase would
+have to come from `agent-shell''s heartbeat, which is its business
+rather than something to read a frame number out of. The dots reach the
+edge of their box and stay small: the nerd glyphs beside them draw at
+nearly the full two columns, so a ring inside a margin reads as the
+smaller mark, while dots heavy enough to match a glyph's ink read as a
+different shape altogether. Their size and opacity grow around the ring,
+which is what says which way it turns. A jump gives the cells up:
+`--read-jump-target` clears the overlays and cancels the timer before
+binding `--jump-in-progress`, because its keys are drawn over the same
+cells, and `--animate-busy` returns early under that flag the way
+`--render` does. The timer is armed by `--ensure-busy-refresh` from the
+same two questions that stop it — an overlay to animate and a window to
+see it in — following `--ensure-age-refresh`. Only rows spin: a header
+count is a census of what the sidebar holds rather than a report on one
+session, and a project summary reports only what asks for a reply, so
+both keep the still glyph.
+
+**Where point rests.** A row's leading icon and the gap after it are one
+field (`--mark-field`, the `agent-shell-vertico-sidebar-mark-field` text
+property): the status mark, a project's fold triangle, the home on a
+flat row's project line, the arrow on a message line. Standing on one
+says nothing, and the sidebar draws no cursor to say where point is, so
+`--keep-point-off-marks` moves point past it from
+`pre-redisplay-functions`, which answers for every way point arrives
+there — a click, an arrow key, a workspace package restoring a layout.
+It moves forward only; `cursor-intangible-mode`, which this was at
+first, moves point in whichever direction it was already travelling, so
+moving up a list carried point past the row it had moved to and the row
+above answered for it. It also took the sidebar down: with `<` it
+compares point against a window parameter that
+`cursor-sensor-move-to-tangible` sets only after a run that did not
+signal, and `window-state-put` does not carry that parameter, so a
+window a workspace switch restored with point on an icon signalled on
+every redisplay and never set it. Errors are demoted in the replacement
+for that reason. `--row-point` is the same answer for code rather than
+for redisplay: `--goto-node`, `--move-to-row` and the render's point and
+window-point restores all land on the row's first character of text, so
+a command never leaves point somewhere redisplay has to correct. What is
+*not* a field is a project header's count, which sits at the right edge
+with nothing after it to move point on to.
+
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
 `:buffer`, `:agent` (the agent's display name), `:status` (the same word

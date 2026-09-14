@@ -1527,7 +1527,12 @@ up still lands on its first line."
           (should (> (point) row))
           (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
           (agent-shell-vertico-sidebar-previous-row)
-          (should (= (point) row)))))))
+          ;; Back on the row's first line, past its mark: point is put
+          ;; where it can rest rather than where the row begins.
+          (should (= (point)
+                     (agent-shell-vertico-sidebar--row-point row)))
+          (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                      alpha)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-row-motion-stops-on-project-headers ()
   "Row motion stops on each project header as well as each session.
@@ -1819,6 +1824,9 @@ fill clamp must leave alone."
                 (should
                  (agent-shell-vertico-sidebar--goto-node
                   (cons 'session gamma)))
+                ;; Both ends are measured the same way here, from a
+                ;; position inside a line, because what this test pins
+                ;; is a mid-line window point keeping its row.
                 (let ((screen-row
                        (count-screen-lines
                         (window-start sidebar-window) (point)
@@ -1952,9 +1960,14 @@ top sessions stay hidden."
                 (should (eq (agent-shell-vertico-sidebar--field-at-point)
                             'project))
                 (set-window-start sidebar-window (point-min) t)
+                ;; Measured from the beginning of the line, because
+                ;; `count-screen-lines' counts the partial line a
+                ;; mid-line point ends on, and point rests past a row's
+                ;; mark rather than at column zero.
                 (let ((screen-row
                        (count-screen-lines
-                        (window-start sidebar-window) (point)
+                        (window-start sidebar-window)
+                        (line-beginning-position)
                         nil sidebar-window)))
                   (agent-shell-vertico-sidebar-toggle-at-point)
                   (should (eq (agent-shell-vertico-sidebar--node-at-point)
@@ -1963,7 +1976,8 @@ top sessions stay hidden."
                               'project))
                   (should
                    (= (count-screen-lines
-                       (window-start sidebar-window) (point)
+                       (window-start sidebar-window)
+                       (line-beginning-position)
                        nil sidebar-window)
                       screen-row))
                   (agent-shell-vertico-sidebar-toggle-at-point)
@@ -1973,7 +1987,8 @@ top sessions stay hidden."
                               'project))
                   (should
                    (= (count-screen-lines
-                       (window-start sidebar-window) (point)
+                       (window-start sidebar-window)
+                       (line-beginning-position)
                        nil sidebar-window)
                       screen-row))))))
         (kill-buffer other)))))
@@ -12088,6 +12103,408 @@ the minibuffer is not the project the reader was asked about."
       (should (equal (alist-get ?u (plist-get narrow :keys)) "User"))
       (let ((consult--narrow ?r))
         (should (funcall (plist-get narrow :predicate) candidate))))))
+
+;;; Busy spinner -------------------------------------------------------
+
+(defun agent-shell-vertico-tests--count-matches (regexp string)
+  "Return how many times REGEXP matches in STRING."
+  (let ((count 0) (start 0))
+    (while (string-match regexp string start)
+      (setq count (1+ count)
+            start (match-end 0)))
+    count))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-characters-are-one-column ()
+  "Every fallback frame takes exactly the column the mark reserves."
+  (dolist (character agent-shell-vertico-sidebar--busy-characters)
+    (should (= (string-width character) 1))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-frame-cycles-characters ()
+  "Without a graphical frame the mark spins as characters.
+
+The suite runs in batch, where there is nothing to draw an image on, so
+this is also what a terminal sees."
+  (let ((agent-shell-vertico-sidebar-busy-frames 'dots))
+    (should (equal (agent-shell-vertico-sidebar--busy-frame 0)
+                   (nth 0 agent-shell-vertico-sidebar--busy-characters)))
+    (should (equal (agent-shell-vertico-sidebar--busy-frame 1)
+                   (nth 1 agent-shell-vertico-sidebar--busy-characters)))
+    (should (equal (agent-shell-vertico-sidebar--busy-frame
+                    (length agent-shell-vertico-sidebar--busy-characters))
+                   (nth 0 agent-shell-vertico-sidebar--busy-characters)))
+    (should (eq (get-text-property
+                 0 'face (agent-shell-vertico-sidebar--busy-frame
+                          0 'agent-shell-vertico-sidebar-working))
+                'agent-shell-vertico-sidebar-working))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-frames-accept-characters ()
+  "A list of characters replaces the drawn ring, image or no image."
+  (let ((agent-shell-vertico-sidebar-busy-frames '("|" "/" "-" "\\")))
+    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) t)))
+      (should (equal (agent-shell-vertico-sidebar--busy-frame 0) "|"))
+      (should (equal (agent-shell-vertico-sidebar--busy-frame 5) "/")))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-frame-draws-an-svg-ring ()
+  "A graphical frame with SVG support gets the drawn ring of dots."
+  (let ((agent-shell-vertico-sidebar-busy-frames 'dots)
+        (agent-shell-vertico-sidebar--busy-images
+         (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) t)))
+      (let ((value (agent-shell-vertico-sidebar--busy-frame 0)))
+        (should (eq (car-safe value) 'image))
+        (should (eq (plist-get (cdr value) :type) 'svg))
+        (should (= 8 (agent-shell-vertico-tests--count-matches
+                      "<circle" (plist-get (cdr value) :data))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-svg-rotates-by-frame ()
+  "Each frame turns the ring one eighth further."
+  (should (string-match-p
+           "rotate(0 12 12)"
+           (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))
+  (should (string-match-p
+           "rotate(45 12 12)"
+           (agent-shell-vertico-sidebar--busy-svg 45 "#ffffff" 16)))
+  (should (= 8 (agent-shell-vertico-tests--count-matches
+                "<circle"
+                (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-frame-falls-back-without-svg ()
+  "A graphical frame with no SVG support keeps the characters."
+  (let ((agent-shell-vertico-sidebar-busy-frames 'dots))
+    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) nil)))
+      (should (stringp (agent-shell-vertico-sidebar--busy-frame 0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-marks-working-rows-with-an-overlay ()
+  "Only a working session's mark is animated, and the glyph stays under it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working")))))
+       (idle "Claude Agent @ idle" "/work/idle/"
+             '((:session . ((:id . "i") (:title . "Idle"))))))
+    (let ((agent-shell-test-buffers (list working idle))
+          (agent-shell-test-statuses (list (cons working 'busy)
+                                           (cons idle 'ready)))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (= 1 (length agent-shell-vertico-sidebar--busy-overlays)))
+        (let* ((overlay (car agent-shell-vertico-sidebar--busy-overlays))
+               (start (overlay-start overlay)))
+          (should (equal (cdr (assq
+                               working
+                               (agent-shell-vertico-sidebar--session-rows)))
+                         start))
+          ;; One column, because batch draws characters rather than an image.
+          (should (= (overlay-end overlay) (1+ start)))
+          (should (equal (buffer-substring-no-properties start (1+ start)) "◆"))
+          (should (equal (overlay-get overlay 'display)
+                         (agent-shell-vertico-sidebar--busy-frame
+                          agent-shell-vertico-sidebar--busy-tick
+                          'agent-shell-vertico-sidebar-working))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-image-covers-two-columns ()
+  "An image mark takes the mark and the space after it.
+
+The image is two columns wide and the gap a column and a half, so
+covering both leaves the half-width space and the title exactly where
+every other row has them."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar--busy-images
+           (make-hash-table :test #'equal)))
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (_) t)))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (let ((overlay (car agent-shell-vertico-sidebar--busy-overlays)))
+            (should (= (overlay-end overlay)
+                       (+ 2 (overlay-start overlay))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animating-advances-the-frame ()
+  "A beat draws the next frame on every working mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let* ((overlay (car agent-shell-vertico-sidebar--busy-overlays))
+               (before (overlay-get overlay 'display)))
+          (agent-shell-vertico-sidebar--animate-busy)
+          (should-not (equal before (overlay-get overlay 'display)))
+          (should (= agent-shell-vertico-sidebar--busy-tick 1)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animation-waits-for-a-jump ()
+  "A jump draws its keys on the same cells, so a beat leaves them alone."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let* ((overlay (car agent-shell-vertico-sidebar--busy-overlays))
+               (before (overlay-get overlay 'display))
+               (agent-shell-vertico-sidebar--jump-in-progress t))
+          (agent-shell-vertico-sidebar--animate-busy)
+          (should (equal before (overlay-get overlay 'display)))
+          (should (= agent-shell-vertico-sidebar--busy-tick 0)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-drops-settled-overlays ()
+  "A session that stops working loses its overlay on the next render."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should agent-shell-vertico-sidebar--busy-overlays)
+        (setq agent-shell-test-statuses (list (cons working 'ready)))
+        (agent-shell-vertico-sidebar--render)
+        (should-not agent-shell-vertico-sidebar--busy-overlays)
+        (should-not (timerp agent-shell-vertico-sidebar--busy-timer))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animation-can-be-turned-off ()
+  "With the animation off a working mark is drawn once and left alone."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-animate-busy nil)
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should-not agent-shell-vertico-sidebar--busy-overlays)
+        (should (string-match-p "◆" (buffer-string)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animation-needs-a-visible-sidebar ()
+  "The beat only runs while the sidebar is on screen with work to draw."
+  (agent-shell-vertico-tests--with-sidebar
+    (agent-shell-vertico-sidebar--ensure-busy-refresh)
+    (should-not (timerp agent-shell-vertico-sidebar--busy-timer))
+    (unwind-protect
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--sidebar-visible-p)
+                   (lambda (&rest _) t)))
+          (setq agent-shell-vertico-sidebar--busy-overlays
+                (list (make-overlay (point-min) (point-min))))
+          (agent-shell-vertico-sidebar--ensure-busy-refresh)
+          (should (timerp agent-shell-vertico-sidebar--busy-timer)))
+      (agent-shell-vertico-sidebar--cancel-busy-refresh))
+    (setq agent-shell-vertico-sidebar--busy-overlays nil)
+    (agent-shell-vertico-sidebar--ensure-busy-refresh)
+    (should-not (timerp agent-shell-vertico-sidebar--busy-timer))))
+
+(defun agent-shell-vertico-tests--busy-circles (svg)
+  "Return (CX CY R) for every circle in SVG."
+  (let ((start 0) circles)
+    (while (string-match
+            "cx='\\([0-9.]+\\)' cy='\\([0-9.]+\\)' r='\\([0-9.]+\\)'"
+            svg start)
+      (push (list (string-to-number (match-string 1 svg))
+                  (string-to-number (match-string 2 svg))
+                  (string-to-number (match-string 3 svg)))
+            circles)
+      (setq start (match-end 0)))
+    (nreverse circles)))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-ring-fills-its-box ()
+  "The ring reaches the edge of the box without spilling over it.
+
+The nerd glyphs beside it draw at nearly the full two columns, so a ring
+inside a margin reads as the smaller mark; a ring outside the box would
+be clipped instead."
+  (let ((circles (agent-shell-vertico-tests--busy-circles
+                  (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))
+        (reach 0))
+    (should (= (length circles) 8))
+    (pcase-dolist (`(,cx ,cy ,r) circles)
+      (should (>= (- cx r) 0))
+      (should (<= (+ cx r) 24))
+      (should (>= (- cy r) 0))
+      (should (<= (+ cy r) 24))
+      (setq reach (max reach
+                       (+ r (sqrt (+ (* (- cx 12) (- cx 12))
+                                     (* (- cy 12) (- cy 12))))))))
+    (should (> reach 11.5))))
+
+(ert-deftest agent-shell-vertico-sidebar-point-skips-a-session-mark ()
+  "A mark and the gap after it are one field point is moved out of.
+
+Standing on a mark says nothing about the session, and the sidebar shows
+no cursor to say where point is."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ session" "/work/session/"
+                '((:session . ((:id . "s") (:title . "Session"))))))
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let* ((start (cdr (assq session
+                                 (agent-shell-vertico-sidebar--session-rows))))
+               ;; The gap is a column and a half where icons are drawn
+               ;; and one column where they are not, so the field is as
+               ;; long as what was actually inserted.
+               (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+          (dotimes (offset field)
+            (should (agent-shell-vertico-sidebar--mark-field-p
+                     (+ start offset))))
+          (should-not (agent-shell-vertico-sidebar--mark-field-p
+                       (+ start field)))
+          ;; And point put anywhere in the field comes to rest after it.
+          (should (= (agent-shell-vertico-sidebar--row-point start)
+                     (+ start field))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-point-skips-a-fold-triangle ()
+  "A project's fold triangle is a mark like any other."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ session" "/work/session/"
+                '((:session . ((:id . "s") (:title . "Session"))))))
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (should (agent-shell-vertico-sidebar--mark-field-p (point)))
+        (should (agent-shell-vertico-sidebar--mark-field-p (1+ (point))))
+        (should-not (agent-shell-vertico-sidebar--mark-field-p
+                     (+ 2 (point))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-moves-point-off-a-mark ()
+  "The sidebar installs what moves point off the icons it draws."
+  (agent-shell-vertico-tests--with-sidebar
+    (should (memq #'agent-shell-vertico-sidebar--keep-point-off-marks
+                  pre-redisplay-functions))))
+
+(ert-deftest agent-shell-vertico-sidebar-row-keys-land-past-the-mark ()
+  "Moving between rows lands point on the title, not on the mark.
+
+Point is moved out of a mark in the direction it was already
+travelling, so a command that left point on the mark would have the row
+above answer for the row it moved to."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((first "Codex Agent @ first" "/work/first/"
+              '((:session . ((:id . "1") (:title . "First")))))
+       (second "Claude Agent @ second" "/work/second/"
+               '((:session . ((:id . "2") (:title . "Second"))))))
+    (let ((agent-shell-test-buffers (list first second))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-sort-by 'creation))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((rows (agent-shell-vertico-sidebar--session-rows))
+              (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+          (goto-char (point-min))
+          (agent-shell-vertico-sidebar-next-row)
+          (should-not (agent-shell-vertico-sidebar--mark-field-p (point)))
+          (should (= (point) (+ field (cdr (nth 1 rows)))))
+          (agent-shell-vertico-sidebar-previous-row)
+          (should-not (agent-shell-vertico-sidebar--mark-field-p (point)))
+          (should (= (point) (+ field (cdr (nth 0 rows)))))
+          ;; The row point is in is still the row it was sent to.
+          (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                      (car (nth 0 rows)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-point-skips-a-project-line-icon ()
+  "The home on a flat row's project line is a mark like any other."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ session" "/work/session/"
+                '((:session . ((:id . "s") (:title . "Session"))))))
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-extra-info '(project)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (should (search-forward "⌂" nil t))
+        (let ((start (match-beginning 0))
+              (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+          (dotimes (offset field)
+            (should (agent-shell-vertico-sidebar--mark-field-p
+                     (+ start offset))))
+          (should-not (agent-shell-vertico-sidebar--mark-field-p
+                       (+ start field))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-point-skips-a-message-icon ()
+  "The arrow on a last-message line is a mark like any other."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ session" "/work/session/"
+                '((:session . ((:id . "s") (:title . "Session"))))))
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-show-details t)
+          (agent-shell-vertico-sidebar-extra-info '(last-user-message)))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--last-user-message)
+                 (lambda (&rest _) "the last thing said")))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (goto-char (point-min))
+          (should (search-forward "↳" nil t))
+          (let ((start (match-beginning 0))
+                (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+            (dotimes (offset field)
+              (should (agent-shell-vertico-sidebar--mark-field-p
+                       (+ start offset))))
+            (should-not (agent-shell-vertico-sidebar--mark-field-p
+                         (+ start field)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-moves-a-window-point-off-a-mark ()
+  "A window whose point is on an icon has it moved on to the text.
+
+The window is not the one the sidebar rendered into, the way a window
+restored by a workspace package is not: nothing seeded it, and nothing
+about it is remembered, so the only thing that can answer is the text
+under its point."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ session" "/work/session/"
+                '((:session . ((:id . "s") (:title . "Session"))))))
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (other (generate-new-buffer " *agent-shell-vertico-other*")))
+      (unwind-protect
+          (save-window-excursion
+            (delete-other-windows)
+            (switch-to-buffer other)
+            (let ((sidebar-window (split-window-below -5)))
+              (agent-shell-vertico-tests--with-sidebar
+                (agent-shell-vertico-sidebar--render)
+                (set-window-buffer sidebar-window (current-buffer))
+                (set-window-point sidebar-window (point-min))
+                (should (agent-shell-vertico-sidebar--mark-field-p
+                         (window-point sidebar-window)))
+                (agent-shell-vertico-sidebar--keep-point-off-marks
+                 sidebar-window)
+                (should-not (agent-shell-vertico-sidebar--mark-field-p
+                             (window-point sidebar-window)))
+                (should (= (window-point sidebar-window)
+                           (agent-shell-vertico-sidebar--row-point
+                            (point-min)))))))
+        (kill-buffer other)))))
 
 (provide 'agent-shell-vertico-tests)
 

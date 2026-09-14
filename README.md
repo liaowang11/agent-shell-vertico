@@ -292,6 +292,14 @@ property rather than by inserted spaces, so the indentation is visual only:
 copying a row yields no leading whitespace, and the two reserved columns
 line a session icon up under the project name.
 
+Point never rests on an icon.  A status mark, a fold triangle, the home on
+a project line, the arrow on a message line, and the gap after each are one
+field, and point landing in it is moved forward on to the text: standing on
+an icon says nothing, and the sidebar draws no cursor to say where point
+is.  Row motion lands on the text directly, and anything else — a click, an
+arrow key, a workspace package restoring a layout — is corrected before the
+next redisplay.
+
 A row's mark answers two questions at once.  The glyph says what the session
 is, and whether it is filled says whether it holds output nobody has read.
 Working and starting have nothing to have missed, so they draw one icon
@@ -317,6 +325,23 @@ does, and more: unread is red, a waiting or failed session you have already
 seen is yellow, working is blue, ready is green, starting is grey.  A
 terminal has no filled twin for a check or a question mark, so its plain
 characters are the same read or unread and the colour carries it alone.
+
+A working session's mark spins.  On a graphical frame with SVG support it
+is a ring of eight dots drawn in the working colour, reaching the edges of
+a box two columns wide and
+taking the mark's column plus the space after it, so nothing else on the
+row moves; everywhere else it is the braille ring `⣷⣯⣟⡿⢿⣻⣽⣾` the drawing
+is modelled on, one column like every other mark.  The spin is an overlay
+over the still glyph, so a sidebar that is not animating reads exactly as
+it did before.  `agent-shell-vertico-sidebar-animate-busy` turns it off,
+`agent-shell-vertico-sidebar-busy-frames` takes a list of one-column
+strings to spin instead of the drawn ring, and
+`agent-shell-vertico-sidebar-busy-frame-interval` sets the rate, which
+defaults to `agent-shell`'s own 0.1s so a session spins at the same rate
+here as in its shell.  The animation runs only while the sidebar is
+visible and something is working, and only rows spin: the header counts
+are a census of what the sidebar holds rather than a report on any one
+session, so they keep the still glyph.
 
 The status is what the session is, never whether you have read it.  A turn
 that completes while its buffer is off screen leaves an ordinary ready
@@ -389,6 +414,9 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-extra-info
    '(agent project model mode activity))
   (agent-shell-vertico-sidebar-sort-by 'priority)
+  (agent-shell-vertico-sidebar-animate-busy t)
+  (agent-shell-vertico-sidebar-busy-frames 'dots)
+  (agent-shell-vertico-sidebar-busy-frame-interval 0.1)
   (agent-shell-vertico-sidebar-follow-workspaces t))
 ```
 
