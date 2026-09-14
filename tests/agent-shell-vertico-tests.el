@@ -2788,6 +2788,100 @@ session would otherwise leave the marker and the unread mark untouched."
   (should (memq #'agent-shell-vertico-sidebar--window-selection-change
                 window-buffer-change-functions)))
 
+(ert-deftest agent-shell-vertico-sidebar-marker-tiers-differ-only-in-colour ()
+  "Both marker tiers draw one bitmap and separate themselves by face.
+
+The distinction used to be carried by a second, wider bitmap as well.
+Colour alone is what `gptel-highlight-mode' separates a response from a
+tool call with, and a wider bar read here as a block rather than as the
+same mark drawn harder."
+  (let ((agent-shell-vertico-sidebar-marker-method 'fringe))
+    (let ((focused (get-text-property
+                    0 'display
+                    (agent-shell-vertico-sidebar--current-session-marker t)))
+          (current (get-text-property
+                    0 'display
+                    (agent-shell-vertico-sidebar--current-session-marker))))
+      (should (equal (car focused) 'left-fringe))
+      (should (equal (nth 1 focused) (nth 1 current)))
+      (should (equal (nth 2 focused)
+                     'agent-shell-vertico-sidebar-focused-session))
+      (should (equal (nth 2 current)
+                     'agent-shell-vertico-sidebar-current-session)))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-draws-in-the-margin ()
+  "The margin method draws the same two tiers as a bar in the left margin.
+
+A terminal frame has no fringes, so this is the only method that marks a
+session there at all."
+  (let* ((agent-shell-vertico-sidebar-marker-method 'margin)
+         (marker (agent-shell-vertico-sidebar--current-session-marker t))
+         (spec (get-text-property 0 'display marker))
+         (bar (nth 1 spec)))
+    (should (equal (car spec) '(margin left-margin)))
+    (should (equal (substring-no-properties bar)
+                   agent-shell-vertico-sidebar--margin-bar))
+    (should (equal (get-text-property 0 'face bar)
+                   'agent-shell-vertico-sidebar-focused-session))
+    (let* ((other (agent-shell-vertico-sidebar--current-session-marker))
+           (other-bar (nth 1 (get-text-property 0 'display other))))
+      (should (equal (get-text-property 0 'face other-bar)
+                     'agent-shell-vertico-sidebar-current-session)))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-method-nil-draws-nothing ()
+  "Setting the method to nil leaves a row with no marker at all."
+  (let ((agent-shell-vertico-sidebar-marker-method nil))
+    (should-not (agent-shell-vertico-sidebar--current-session-marker t))
+    (should-not (agent-shell-vertico-sidebar--current-session-marker))))
+
+(ert-deftest agent-shell-vertico-sidebar-margin-method-reserves-a-column ()
+  "The margin method takes the column its bar is drawn in, and only it.
+
+A window reads `left-margin-width' from the buffer, so the render has to
+have set it before it measures the body width the rows are laid out to."
+  (with-temp-buffer
+    (agent-shell-vertico-sidebar-mode)
+    (let ((agent-shell-vertico-sidebar-marker-method 'margin))
+      (should (agent-shell-vertico-sidebar--apply-marker-margin))
+      (should (eql left-margin-width 1))
+      ;; Already applied: nothing to re-show, which is what keeps
+      ;; `set-window-buffer' out of the ordinary render.
+      (should-not (agent-shell-vertico-sidebar--apply-marker-margin)))
+    (let ((agent-shell-vertico-sidebar-marker-method 'fringe))
+      (should (agent-shell-vertico-sidebar--apply-marker-margin))
+      (should (eql left-margin-width 0)))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-marks-row-in-the-margin ()
+  "A rendered row carries the margin marker when that method is set."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-marker-method 'margin)
+          (agent-shell-vertico-sidebar-group-by nil))
+      (save-window-excursion
+        (delete-other-windows)
+        (set-window-buffer (selected-window) alpha)
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (should (eql left-margin-width 1))
+          (goto-char (point-min))
+          (search-forward "Review alpha")
+          (let ((spec (get-text-property
+                       0 'display
+                       (get-text-property (line-beginning-position)
+                                          'line-prefix))))
+            (should (equal (car spec) '(margin left-margin)))
+            (should (equal (get-text-property 0 'face (nth 1 spec))
+                           'agent-shell-vertico-sidebar-focused-session)))
+          (goto-char (point-min))
+          (search-forward "Review beta")
+          (should-not (get-text-property (line-beginning-position)
+                                         'line-prefix)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-render-marks-current-session-row ()
   "A session on screen carries the fringe marker; an unseen one does not."
   (agent-shell-vertico-tests--with-session-buffers
@@ -2796,6 +2890,7 @@ session would otherwise leave the marker and the unread mark untouched."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-marker-method 'fringe)
           (agent-shell-vertico-sidebar-group-by nil))
       (save-window-excursion
         (delete-other-windows)
@@ -2810,7 +2905,7 @@ session would otherwise leave the marker and the unread mark untouched."
                           (get-text-property (line-beginning-position)
                                              'line-prefix))
                          '(left-fringe
-                           agent-shell-vertico-sidebar-focused-session-fringe
+                           agent-shell-vertico-sidebar-session-fringe
                            agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
@@ -2965,6 +3060,7 @@ the reader is in."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-marker-method 'fringe)
           (agent-shell-vertico-sidebar-group-by nil))
       (save-window-excursion
         (delete-other-windows)
@@ -2980,7 +3076,7 @@ the reader is in."
                           (get-text-property (line-beginning-position)
                                              'line-prefix))
                          '(left-fringe
-                           agent-shell-vertico-sidebar-focused-session-fringe
+                           agent-shell-vertico-sidebar-session-fringe
                            agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
@@ -2989,7 +3085,7 @@ the reader is in."
                           (get-text-property (line-beginning-position)
                                              'line-prefix))
                          '(left-fringe
-                           agent-shell-vertico-sidebar-current-session-fringe
+                           agent-shell-vertico-sidebar-session-fringe
                            agent-shell-vertico-sidebar-current-session))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focusing-another-session-redraws ()

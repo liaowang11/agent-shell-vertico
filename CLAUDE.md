@@ -465,26 +465,46 @@ marker unable to say which one the reader is typing into, so the marker has
 two tiers: `--focused-session` picks one out of `--current-sessions` and
 `--current-session-marker` draws it differently. They are one question
 answered with two degrees, not two questions, so they share a hue family and
-differ in strength: `-focused-session` is `outline-1`, the one accent with no
-status meaning, on a thick bar, and `-current-session` is `shadow` on a
-thin one. Every other colour here already names a status, and a marker
-that borrowed red, yellow, magenta or green would say something untrue about
-the session; `shadow` is what the package already uses for what is present
-and not the answer. The weight repeats what the colour says because a bar a
-pixel or two wide cannot be trusted to carry a hue difference on its own.
-Both bars are solid: the thin one used to be dashed, which at that width is
-a column of dots whose phase, under `center` alignment, differed from one
-marked row to the next. The focused session is read from the selected window
-and nothing else: the session whose buffer or viewport it shows, and none
-beside a file, magit or the sidebar, where every visible session is thin.
-An earlier version remembered the last session window selected so that
-stepping into the sidebar kept the thick bar, but the memory was one global
-across frames and workspaces, so a workspace whose session had never been
-clicked into showed thin while another with the same layout showed thick;
-the thick bar meant history, not state. Deriving it from the selected window
-makes the same layout always draw the same way, and a session off the frame
-is not marked at all, so the stronger marker never outlives the weaker one
-it strengthens. It is the same question as `--session-focused-p` asks about
+differ in colour alone: `-focused-session` is `outline-1`, the one accent
+with no status meaning, and `-current-session` is `shadow`. Every other
+colour here already names a status, and a marker that borrowed red, yellow,
+magenta or green would say something untrue about the session; `shadow` is
+what the package already uses for what is present and not the answer. This
+is `gptel-highlight-mode`'s own pair, which separates a response from a tool
+call the same way, and one bitmap serves both: an earlier version drew the
+focused tier on a four-pixel bar too, on the argument that a bar a pixel or
+two wide cannot be trusted to carry a hue difference, but the wide bar read
+as a block beside its neighbours rather than as the same mark drawn harder,
+which is the fault a second hue was avoided for. The bar is solid: the thin
+one used to be dashed, which at that width is a column of dots whose phase,
+under `center` alignment, differed from one marked row to the next. The
+focused session is read from the selected window and nothing else: the
+session whose buffer or viewport it shows, and none beside a file, magit or
+the sidebar, where every visible session is grey. An earlier version
+remembered the last session window selected so that stepping into the
+sidebar kept the accent, but the memory was one global across frames and
+workspaces, so a workspace whose session had never been clicked into showed
+grey while another with the same layout showed the accent; the accent meant
+history, not state. Deriving it from the selected window makes the same
+layout always draw the same way, and a session off the frame is not marked
+at all, so the stronger marker never outlives the weaker one it
+strengthens.
+
+`agent-shell-vertico-sidebar-marker-method` says *where* the bar is drawn,
+mirroring `gptel-highlight-methods` for the same reason gptel offers the
+choice: a terminal frame has no fringes, so under `-nw` the default
+`fringe` marks nothing. `margin` draws the same two-tier bar as a
+`▎` in the left display margin instead, at the cost of the column the
+window reserves for it. Both are a `display` spec on one space used as a
+`line-prefix`, so neither costs a column of the text area itself.
+`--apply-marker-margin` is what reserves the column, and it runs before the
+render measures `window-body-width`, which excludes margins: a method that
+just changed has to have taken its column before the rows are laid out to a
+width. It re-shows the buffer in its windows, because that is when a window
+reads `left-margin-width`, and it does nothing when the width already
+agrees, which is what keeps `set-window-buffer` out of the ordinary render —
+re-showing a buffer resets the point and window-start the render is careful
+to restore. It is the same question as `--session-focused-p` asks about
 what has been *read*, without that one's insistence on a focused frame. The
 render caches it in `--rendered-focused-session` and the hooks compare it
 separately from the set, because moving between two sessions already on the

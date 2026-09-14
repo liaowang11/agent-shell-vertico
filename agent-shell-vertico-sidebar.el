@@ -154,6 +154,26 @@ either way."
                  (const :tag "Never" nil))
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-marker-method 'fringe
+  "Where the sidebar draws the marker on a session that is on screen.
+
+`fringe' draws a bar in the window's left fringe, `margin' draws one in
+its left display margin, and nil draws nothing.  The two markers differ
+only in colour whichever is used: the accent face
+`agent-shell-vertico-sidebar-focused-session' for the session being
+worked in, `agent-shell-vertico-sidebar-current-session' for the rest.
+
+`fringe' is the default because it costs the sidebar no width, but a
+terminal frame has no fringes, so a terminal needs `margin', which
+spends one column of the sidebar on the bar.  The choice mirrors
+`gptel-highlight-methods', which marks its responses the same way and
+for the same reason; unlike that one this is a single method rather than
+a set, because there is no face tier here to combine with."
+  :type '(choice (const :tag "Left fringe" fringe)
+                 (const :tag "Left margin" margin)
+                 (const :tag "No marker" nil))
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-animate-busy t
   "Whether a working session's mark spins while it works.
 
@@ -411,7 +431,7 @@ nobody has started again."
 
 (defface agent-shell-vertico-sidebar-current-session
   '((t :inherit shadow :height reset))
-  "Face for the fringe marker on a session the reader can see.
+  "Face for the marker on a session the reader can see.
 
 The weaker of the two markers: this session is on the frame, beside
 whatever the reader is working in.  Grey rather than a colour, because
@@ -423,15 +443,19 @@ already what this package uses for what is present and not the answer."
 
 (defface agent-shell-vertico-sidebar-focused-session
   '((t :inherit outline-1 :height reset))
-  "Face for the fringe marker on the session the reader is working in.
+  "Face for the marker on the session the reader is working in.
 
 The same question as `agent-shell-vertico-sidebar-current-session'
 answered with more force, so it is the same marker in the one accent
 that carries no status meaning, rather than a second hue: a different
 hue would read as a different kind of fact rather than as more of the
-same one.  A bar a pixel or two wide cannot be relied on to carry a hue
-difference by itself, so the two tiers differ in weight as well: thick
-here, thin there, the way bold stands to regular."
+same one.  Colour carries the whole distinction, as it does between
+`gptel-response-fringe-highlight' and the `shadow' gptel marks a tool
+call with: one bar, two colours.  An earlier version drew this tier on
+a thicker bar as well, on the grounds that a bar a pixel or two wide
+cannot be relied on to carry a hue difference; a four-pixel bar turned
+out to read as a block beside its neighbours rather than as more of the
+same mark, which is the fault the second hue was avoided for."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-jump-help-key
@@ -469,23 +493,27 @@ rather than highlighted."
 The other windows of the frame, and any session row without a key."
   :group 'agent-shell-vertico-sidebar)
 
-;; Solid bars, `gptel-highlight-fringe' style: `center' positions them on
-;; the row without needing the row's exact pixel height, so one definition
-;; works across fonts and text scales.  A thick bar marks the session
-;; being worked in and a thin one a session merely on screen, repeating
-;; in weight what the two faces say in colour, which a bar this narrow
-;; cannot carry alone.  Both are solid: a dashed bar at this width is a
-;; column of dots, and `center' clips the bitmap to the line, so the dots'
-;; phase differed from one marked row to the next and jittered.  Both
-;; start at the same pixel, so the thin bar reads as the thick one's
-;; left edge rather than as a bar somewhere else.
-(define-fringe-bitmap 'agent-shell-vertico-sidebar-focused-session-fringe
-  (make-vector 28 #b01111000)
+;; `gptel-highlight-fringe' itself: a solid two-pixel bar, `center'
+;; positioned so it sits on the row without needing the row's exact pixel
+;; height and one definition works across fonts and text scales.  One
+;; bitmap for both tiers, which differ in colour alone; a wider bar for
+;; the focused tier read as a block rather than as the same mark drawn
+;; harder.  It is solid because a dashed bar at this width is a column of
+;; dots, and `center' clips the bitmap to the line, so the dots' phase
+;; differed from one marked row to the next and jittered.
+(define-fringe-bitmap 'agent-shell-vertico-sidebar-session-fringe
+  (make-vector 28 #b01100000)
   nil nil 'center)
 
-(define-fringe-bitmap 'agent-shell-vertico-sidebar-current-session-fringe
-  (make-vector 28 #b01000000)
-  nil nil 'center)
+(defconst agent-shell-vertico-sidebar--margin-bar "▎"
+  "The bar a margin marker draws, LEFT ONE QUARTER BLOCK (U+258E).
+
+The character `gptel-highlight--margin-prefix' draws by default, picked
+from the several bars its own comment lists.  It fills a quarter of the
+cell, so a margin marker reads as the fringe bar drawn in a column of
+text rather than as a block of colour; a font without it falls back to
+whatever Emacs finds, which is why the character is a constant to
+rebind rather than something spelled inline.")
 
 (defun agent-shell-vertico-sidebar--project-root (buffer)
   "Return the normalized project root for BUFFER."
@@ -1650,24 +1678,52 @@ property; nothing else reads it."
         (setq position next)))))
 
 (defun agent-shell-vertico-sidebar--current-session-marker (&optional focused)
-  "Return a zero-width fringe marker for a current session's row.
+  "Return a marker for a current session's row, or nil when none is drawn.
 
-FOCUSED asks for the marker of the session the reader is working in, a
-thick bar in the accent colour; every other session on the frame gets
-the thin grey one.
+FOCUSED asks for the marker of the session the reader is working in, the
+bar in the accent colour; every other session on the frame gets the grey
+one.  The bar is the same either way, because colour is what separates
+the two tiers.
 
-The marker is a `display' spec on one space, so it costs no columns in
-the text area: Emacs draws the fringe bitmap in its place instead of the
-space, the same idiom `gptel-highlight-mode' uses for its response
-markers."
-  (propertize " " 'display
-              (if focused
-                  '(left-fringe
-                    agent-shell-vertico-sidebar-focused-session-fringe
-                    agent-shell-vertico-sidebar-focused-session)
-                '(left-fringe
-                  agent-shell-vertico-sidebar-current-session-fringe
-                  agent-shell-vertico-sidebar-current-session))))
+`agent-shell-vertico-sidebar-marker-method' says where it is drawn.  The
+marker is a `display' spec on one space in both cases, so it costs no
+columns of the text area: Emacs draws the fringe bitmap, or the margin
+bar, in place of the space.  That is the idiom `gptel-highlight-mode'
+uses for both of its own methods."
+  (let ((face (if focused
+                  'agent-shell-vertico-sidebar-focused-session
+                'agent-shell-vertico-sidebar-current-session)))
+    (pcase agent-shell-vertico-sidebar-marker-method
+      ('fringe
+       (propertize " " 'display
+                   `(left-fringe agent-shell-vertico-sidebar-session-fringe
+                                 ,face)))
+      ('margin
+       (propertize " " 'display
+                   `((margin left-margin)
+                     ,(propertize agent-shell-vertico-sidebar--margin-bar
+                                  'face face))))
+      (_ nil))))
+
+(defun agent-shell-vertico-sidebar--apply-marker-margin ()
+  "Give the sidebar buffer the left margin its marker method needs.
+
+A margin marker is drawn in a column the window has to have reserved for
+it, and a window reads `left-margin-width' from the buffer when the
+buffer is put there, so a change only reaches a window already showing
+the sidebar by putting it there again.  `gptel-highlight-mode' calls
+`set-window-buffer' for the same reason.  Doing nothing when the width
+already agrees is what keeps that out of the ordinary render, which runs
+on every event: re-showing a buffer resets what the render is careful to
+restore."
+  (let ((width (if (eq agent-shell-vertico-sidebar-marker-method 'margin)
+                   1
+                 0)))
+    (unless (eql left-margin-width width)
+      (setq-local left-margin-width width)
+      (dolist (window (get-buffer-window-list nil nil t))
+        (set-window-buffer window (current-buffer)))
+      t)))
 
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
   "Insert session LINES with KIND and NODE text properties.
@@ -1681,8 +1737,8 @@ spaces, as `agent-shell' does for its own fragments: the columns are
 visual only, so copied rows carry no leading whitespace and point at the
 beginning of a line is already on the row's first real character.  The
 row of a session the reader can see gets the same treatment for its
-fringe marker, prepended to whichever indentation prefix already
-applies, so it adds no columns of its own either."
+fringe or margin marker, prepended to whichever indentation prefix
+already applies, so it adds no columns of its own either."
   (let* ((current agent-shell-vertico-sidebar--rendered-current-sessions)
          (focused agent-shell-vertico-sidebar--rendered-focused-session)
          (marker (and (eq kind 'session)
@@ -1812,6 +1868,10 @@ a column of slack rather than pushing its count past the window edge."
     ;; let the jump redraw once its key is read.
     (setq agent-shell-vertico-sidebar--dirty t)
     (cl-return-from agent-shell-vertico-sidebar--render))
+  ;; Before the width is measured below: `window-body-width' excludes the
+  ;; margins, so a marker method that just changed has to have taken its
+  ;; column first or the rows are laid out one column too wide.
+  (agent-shell-vertico-sidebar--apply-marker-margin)
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
