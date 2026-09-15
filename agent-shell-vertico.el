@@ -600,9 +600,6 @@ Uses `agent-shell--display-buffer', resolving viewport when
   (let* ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer-name)))
          (target (agent-shell-vertico--maybe-resolve-viewport shell-buffer)))
-    ;; Before the preparation, which is free to switch workspaces and take
-    ;; the session being left off the screen it is read from.
-    (agent-shell-vertico--jump-record shell-buffer)
     (agent-shell-vertico--before-display target)
     (agent-shell--display-buffer target)))
 
@@ -612,23 +609,27 @@ Respects `agent-shell-prefer-viewport-interaction'."
   (let* ((shell-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer-name)))
          (target (agent-shell-vertico--maybe-resolve-viewport shell-buffer)))
-    (agent-shell-vertico--jump-record shell-buffer)
     (agent-shell-vertico--before-display target)
     (switch-to-buffer-other-window target)))
 
 ;;; Jump history
 ;;
-;; Which sessions the reader has moved between, in vim's jump-list model:
-;; displaying a session records the one being left, and back and forward
-;; retrace that single list rather than each other's steps.
+;; Which sessions the reader has moved between, in the jump-list model vim
+;; and evil share: leaving a session records it, however the reader left,
+;; and back and forward retrace that single list rather than each other's
+;; steps.  Evil records a departure when a window's buffer changes under
+;; the reader, whichever command changed it; this does the same for
+;; sessions from the window hooks, and adds a window change, because one
+;; list over every window is the point of a history of sessions.
 
 (defvar agent-shell-vertico--jump-history nil
-  "Sessions the reader has been taken away from, most recent first.
+  "Sessions the reader has left, most recently left first.
 
 A session appears at most once, the way vim's jump list keeps one entry
 per position: a pair of sessions read back and forth would otherwise fill
-the list with itself and leave nothing older reachable.  Revisiting a
-session therefore moves its entry to the head instead of adding one.")
+the list with itself and leave nothing older reachable.  Leaving a
+session again therefore moves its entry to the head instead of adding
+one.")
 
 (defvar agent-shell-vertico--jump-position nil
   "The entry of `agent-shell-vertico--jump-history' the reader stands on.
@@ -639,39 +640,45 @@ a buffer rather than an index because entries drop out whenever a session
 is killed, and an index into a list that shrinks under it would point at
 a different session each time.")
 
-(defvar agent-shell-vertico--jump-navigating nil
-  "Non-nil while a jump-history command displays a session.
+(defvar agent-shell-vertico--jump-current nil
+  "The session the reader was last seen in, or nil for none.
 
-Retracing the history must not rewrite it: the display would otherwise
-record the session being left, which is the entry the reader is moving
-away from, and back would never reach past the previous one.")
+This is what `agent-shell-vertico--jump-track' compares the selected
+window against: the moment the window shows another session, or no
+session, the reader has left this one and it is recorded.  It is set by
+the tracker and by a retrace, which names the session it displayed so
+that the redisplay following it sees no departure.")
 
-(defun agent-shell-vertico--session-lookup (sessions)
-  "Return an alist resolving SESSIONS and their viewports to their session.
+(defun agent-shell-vertico--current-session ()
+  "Return the session shown in the selected window, or nil.
 
-One viewport query per session answers the question for every buffer the
-reader might be standing in, which matters because the answer is wanted
-for each buffer in `buffer-list' in turn."
-  (mapcan (lambda (session)
-            (if-let* ((viewport (agent-shell-vertico--viewport-buffer session)))
-                (list (cons session session) (cons viewport session))
-              (list (cons session session))))
-          sessions))
+A viewport counts as its session.  A file, magit, the sidebar or the
+minibuffer is no session, and answers nil."
+  (let ((buffer (window-buffer (selected-window))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (agent-shell--current-shell)))))
 
-(defun agent-shell-vertico--departing-session ()
-  "Return the session the reader is leaving, or nil.
+(defun agent-shell-vertico--jump-track (&optional _frame)
+  "Record the session the reader has left, if the selected window shows so.
 
-The selected window answers first, a viewport counting as its session.
-When it shows a file, magit or the sidebar instead, the most recently
-selected session answers: `buffer-list' orders buffers by when they were
-last selected, so its first session is the one that was last read.  Most
-jumps are taken from beside a session rather than from inside one, and
-without the fallback those would record nothing to come back to."
-  (let* ((sessions (seq-filter #'buffer-live-p (agent-shell-buffers)))
-         (lookup (agent-shell-vertico--session-lookup sessions)))
-    (or (cdr (assq (window-buffer (selected-window)) lookup))
-        (seq-some (lambda (buffer) (cdr (assq buffer lookup)))
-                  (buffer-list)))))
+Runs from `window-selection-change-functions' and
+`window-buffer-change-functions', which between them see every way of
+leaving a session: another window selected, another buffer switched into
+the same window, a workspace restored.  The frame Emacs passes is
+ignored, because the reader is in the selected frame's selected window
+whichever frame changed.
+
+The minibuffer is not a departure.  Evil records a crossing only when a
+window's buffer changes, and the minibuffer is a window of its own;
+counting it would move the session to the head, and end a retrace,
+every time the reader typed \\[execute-extended-command] and cancelled."
+  (unless (window-minibuffer-p)
+    (let ((session (agent-shell-vertico--current-session)))
+      (unless (eq session agent-shell-vertico--jump-current)
+        (when (buffer-live-p agent-shell-vertico--jump-current)
+          (agent-shell-vertico--jump-push agent-shell-vertico--jump-current))
+        (setq agent-shell-vertico--jump-current session)))))
 
 (defun agent-shell-vertico--jump-entries ()
   "Return the jump history, dropping the sessions that have been killed.
@@ -696,19 +703,6 @@ answers about where they are now."
                   (max 1 agent-shell-vertico-jump-history-size))
         agent-shell-vertico--jump-position nil))
 
-(defun agent-shell-vertico--jump-record (target)
-  "Record the session the reader is leaving to display TARGET.
-
-Called from `agent-shell-vertico--display-session' and its other-window
-twin, the two functions every session here is displayed through, so the
-history follows what the reader did rather than which command did it.
-Displaying the session already being read records nothing, and neither
-does retracing the history, which moves the position instead."
-  (unless agent-shell-vertico--jump-navigating
-    (when-let* ((departing (agent-shell-vertico--departing-session)))
-      (unless (eq departing target)
-        (agent-shell-vertico--jump-push departing)))))
-
 (defun agent-shell-vertico--jump-pin-current ()
   "Stand the position on the session the reader is in, recording it first.
 
@@ -719,11 +713,16 @@ the session the reader is in is left alone, since re-pinning it would
 move its entry to the head and turn the next step back into a step
 forward.  A position naming another session is stale — the reader reached
 the current one some way this history does not see — and pinning is what
-corrects it."
-  (let ((current (agent-shell-vertico--departing-session)))
+corrects it.
+
+Returns the session pinned, or nil when the selected window shows none:
+a file is not an entry, so there is nothing to pin and the retrace
+starts from the head instead."
+  (let ((current (agent-shell-vertico--current-session)))
     (when (and current (not (eq current agent-shell-vertico--jump-position)))
       (agent-shell-vertico--jump-push current)
-      (setq agent-shell-vertico--jump-position current))))
+      (setq agent-shell-vertico--jump-position current))
+    current))
 
 (defun agent-shell-vertico--jump-neighbour (offset)
   "Return the entry OFFSET steps from the position, or nil.
@@ -740,12 +739,18 @@ negative one forward."
   "Display session BUFFER as a retrace, standing the position on it.
 
 OTHER-WINDOW displays it beside what the reader is in rather than in
-place, as it does for every other command here."
-  (let ((agent-shell-vertico--jump-navigating t))
-    (if other-window
-        (agent-shell-vertico--display-session-other-window (buffer-name buffer))
-      (agent-shell-vertico--display-session (buffer-name buffer))))
-  (setq agent-shell-vertico--jump-position buffer))
+place, as it does for every other command here.
+
+Retracing must not rewrite the history: the redisplay that follows would
+otherwise record the session being left, the entry the reader is moving
+away from, and back would never reach past the previous one.  Naming
+BUFFER as the session the reader is in is what stops it: the tracker
+then finds the window showing the session it already expected."
+  (if other-window
+      (agent-shell-vertico--display-session-other-window (buffer-name buffer))
+    (agent-shell-vertico--display-session (buffer-name buffer)))
+  (setq agent-shell-vertico--jump-current buffer
+        agent-shell-vertico--jump-position buffer))
 
 (defun agent-shell-vertico--read-jump-entry (entries other-window)
   "Read one of ENTRIES with the jump history's own order.
@@ -763,16 +768,22 @@ recently is the whole answer this reader offers."
 (defun agent-shell-vertico-jump-back (&optional other-window)
   "Display the session before this one in the jump history.
 
-The history is every session the reader has been taken away from, most
-recent first, and this steps one entry back along it; running it again
-steps further back and `agent-shell-vertico-jump-forward' returns.  The
+The history is every session the reader has left, most recently left
+first, and this steps one entry back along it; running it again steps
+further back and `agent-shell-vertico-jump-forward' returns.  The
 session being left is recorded first, so the retrace can always be
 undone, exactly as vim's `C-o' pushes the position it starts from.
 
+From a buffer that is no session — a file, magit, the sidebar — this
+goes to the session last left, which is the head of the list.  That
+buffer cannot be an entry, so there is nothing to pin and nothing to
+step past; the reader is asking to be returned to their session.
+
 With OTHER-WINDOW, display the session in another window."
   (interactive "P")
-  (agent-shell-vertico--jump-pin-current)
-  (let ((target (agent-shell-vertico--jump-neighbour 1)))
+  (let ((target (if (agent-shell-vertico--jump-pin-current)
+                    (agent-shell-vertico--jump-neighbour 1)
+                  (car (agent-shell-vertico--jump-entries)))))
     (unless target
       (user-error "No earlier session in the jump history"))
     (agent-shell-vertico--jump-display target other-window)))
@@ -806,7 +817,9 @@ carry on from there.
 
 The session being read is left out, being the one place selecting cannot
 take the reader; the first candidate is therefore what
-`agent-shell-vertico-jump-back' would display.
+`agent-shell-vertico-jump-back' would display.  From a buffer that is no
+session every entry is offered, the session last left first, as back
+would go there.
 
 With OTHER-WINDOW, display the session in another window."
   (interactive "P")
@@ -1659,6 +1672,11 @@ loads.  Repeated calls are safe."
     (agent-shell-vertico-consult-setup-buffer-search))
   (with-eval-after-load 'embark
     (agent-shell-vertico--setup-embark-integrations)))
+
+(add-hook 'window-selection-change-functions
+          #'agent-shell-vertico--jump-track)
+(add-hook 'window-buffer-change-functions
+          #'agent-shell-vertico--jump-track)
 
 (provide 'agent-shell-vertico)
 

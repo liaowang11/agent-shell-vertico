@@ -367,22 +367,25 @@ rather than an address, and it is why the reading jump exists beside it.
 
 **Retracing the jumps.** The jump history lives in the core module, not
 the sidebar, because it is not the sidebar's question: `--jump-history`
-is the sessions the reader has been taken away from, newest first, and
+is the sessions the reader has left, most recently left first, and
 `agent-shell-vertico-jump-back`, `-jump-forward` and `-jump-history` walk
-it as vim's `C-o`, `C-i` and `:jumps` walk theirs. Entries are recorded
-in `--display-session` and `--display-session-other-window`, which every
-command here displays a session through, so the switch commands, the
-sidebar's jumps, the Embark actions and the picker all feed one list and
-none of them records anything of its own; the record is taken *before*
-`--before-display`, because that hook is free to switch workspaces and
-take the session being left off the screen it would be read from.
-`--departing-session` is what is recorded: the selected window's session,
-a viewport counting as its own, and otherwise the first session in
-`buffer-list`, which is the one last selected — most jumps are taken from
-a file, from magit or from the sidebar beside a session rather than from
-inside one, and without that fallback those would record nothing to come
-back to. `--viewport-buffer` moved here from the sidebar for it, and the
-sidebar now calls the core's.
+it as vim's `C-o`, `C-i` and `:jumps` walk theirs. What is recorded is a
+*departure*, however it happened, which is evil's rule for a buffer
+crossing: `--jump-track` runs from `window-selection-change-functions`
+and `window-buffer-change-functions` (both, because switching buffers in
+place leaves the selected window alone), compares the selected window's
+session against `--jump-current`, the session the reader was last seen
+in, and pushes the old one when they differ. So `C-x b`, `other-window`,
+a click, a workspace restore and every package command all feed one list
+and none of them records anything of its own. An earlier version
+recorded inside `--display-session` instead, so only package commands
+counted, and guessed the departing session from `buffer-list` when a
+jump was taken from a file; the guess made standing beside a session the
+same as standing in it, and back from a file skipped the session just
+left. A viewport counts as its session (`--current-session` resolves it
+through upstream's `agent-shell--current-shell`), and the minibuffer is
+not a departure, or `M-x` and cancel would move the session to the head
+and end a retrace.
 
 A session is held once, `--jump-push` dropping its older entry, as vim
 keeps one entry per position: two sessions read back and forth would
@@ -393,17 +396,26 @@ kept for the reader who has more than they care to retrace.
 `--jump-position` names where the reader stands in the list, as a buffer
 rather than an index, because entries drop out whenever a session is
 killed and an index into a list that shrinks under it would point at
-someone else. Nil means no retrace is in progress. Retracing binds
-`--jump-navigating`, so the display it causes records nothing and back
-and forward retrace one list instead of each other's steps.
+someone else. Nil means no retrace is in progress. A retrace
+(`--jump-display`) sets `--jump-current` to the session it displayed, so
+the redisplay that follows finds the window showing what the tracker
+already expected and records nothing; that is how back and forward
+retrace one list instead of each other's steps.
 `--jump-pin-current` is what lets forward return: the session a retrace
 starts from is pushed to the head and the position stood on it, exactly
 as `C-o` pushes the position it starts from. It declines when the
 position already names the session the reader is in, since re-pinning
 would move that entry to the head and turn the next step back into a step
 forward; a position naming another session is stale — they got there some
-way the history cannot see — and pinning corrects it. The reader offered
-by `-jump-history` leaves out the session being read, so its first
+way the history cannot see — and pinning corrects it. It returns nil when
+the selected window shows no session, and `jump-back` then goes to the
+head of the list rather than to a neighbour: a file is not an entry, so
+there is nothing to pin and nothing to step past, and the reader is
+asking to be returned to the session they left. The one thing evil can
+do here that this cannot is step forward from that session back to the
+file, since a file is not an entry; that limit is accepted rather than
+letting files into a list of sessions. The reader offered by
+`-jump-history` leaves out the session being read, so its first
 candidate is what back would display, and it passes `identity` to
 `--table` (and binds `--group-by` to nil) because its own order is the
 answer rather than `agent-shell-vertico-sort-by`.

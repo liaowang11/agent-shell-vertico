@@ -11400,15 +11400,20 @@ there is no record for the command to hide it by dropping."
   (declare (indent 0))
   `(let ((agent-shell-vertico--jump-history nil)
          (agent-shell-vertico--jump-position nil)
-         (agent-shell-vertico--jump-navigating nil)
+         (agent-shell-vertico--jump-current nil)
          (agent-shell-vertico-jump-history-size 30))
      (save-window-excursion
        (delete-other-windows)
        ,@body)))
 
 (defun agent-shell-vertico-tests--look-at (buffer)
-  "Show BUFFER in the selected window, as displaying it would."
-  (set-window-buffer (selected-window) buffer))
+  "Show BUFFER in the selected window, then let the jump history see it.
+
+Batch Emacs never redisplays, so the window hooks the history records
+from never run; calling the tracker here is the redisplay that would
+have followed the switch."
+  (set-window-buffer (selected-window) buffer)
+  (agent-shell-vertico--jump-track))
 
 (defun agent-shell-vertico-tests--jump (command &rest arguments)
   "Call COMMAND with ARGUMENTS, then look at whatever it displayed.
@@ -11423,7 +11428,7 @@ that left the window behind would answer about the step before it."
   agent-shell-test-displayed-buffer)
 
 (ert-deftest agent-shell-vertico-jump-history-records-the-session-left ()
-  "Displaying a session records the one it was displayed from."
+  "Leaving a session for another records the one left."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -11432,15 +11437,81 @@ that left the window behind would answer about the step before it."
     (let ((agent-shell-test-buffers (list alpha beta)))
       (agent-shell-vertico-tests--with-jump-history
         (agent-shell-vertico-tests--look-at alpha)
-        (agent-shell-vertico--display-session (buffer-name beta))
+        (agent-shell-vertico-tests--look-at beta)
         (should (equal agent-shell-vertico--jump-history (list alpha)))
+        (should (eq agent-shell-vertico--jump-current beta))
         (should-not agent-shell-vertico--jump-position)))))
+
+(ert-deftest agent-shell-vertico-jump-history-records-leaving-for-a-file ()
+  "Leaving a session for a file records it, however the reader left.
+
+This is evil's rule for a buffer crossing: the departure is what counts,
+not which command caused it.  A plain `switch-to-buffer' therefore
+records exactly as a package command does."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (agent-shell-vertico-tests--look-at alpha)
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (should (equal agent-shell-vertico--jump-history (list alpha)))
+            (should-not agent-shell-vertico--jump-current))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-jump-history-tracks-from-the-window-hooks ()
+  "The tracker runs from both window hooks.
+
+`window-selection-change-functions' runs only when the selected window
+changes, and switching buffers in place leaves it alone; only
+`window-buffer-change-functions' sees that departure."
+  (should (memq #'agent-shell-vertico--jump-track
+                window-selection-change-functions))
+  (should (memq #'agent-shell-vertico--jump-track
+                window-buffer-change-functions)))
+
+(ert-deftest agent-shell-vertico-jump-history-ignores-the-minibuffer ()
+  "Entering the minibuffer is not leaving the session.
+
+Evil records a crossing only when a window's buffer changes, and the
+minibuffer window is not the session's window; recording it would move
+the session to the head and end a retrace every time the reader typed
+\\[execute-extended-command]."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at alpha)
+        (with-selected-window (minibuffer-window)
+          (agent-shell-vertico--jump-track))
+        (should-not agent-shell-vertico--jump-history)
+        (should (eq agent-shell-vertico--jump-current alpha))))))
+
+(ert-deftest agent-shell-vertico-jump-history-drops-a-killed-current ()
+  "Leaving a session by killing it records nothing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (let ((agent-shell-test-buffers (list alpha)))
+              (agent-shell-vertico-tests--look-at alpha))
+            (kill-buffer alpha)
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (should-not agent-shell-vertico--jump-history)
+            (should-not agent-shell-vertico--jump-current))
+        (kill-buffer elsewhere)))))
 
 (ert-deftest agent-shell-vertico-jump-history-records-every-display ()
   "Every command displaying a session feeds one history.
 
-The switch commands and the sidebar's jumps go through the same two
-display functions, which is why neither records anything of its own."
+The switch commands and the sidebar's jumps all move the reader between
+sessions, and the departure is what is recorded, which is why none of
+them records anything of its own."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -11454,11 +11525,11 @@ display functions, which is why neither records anything of its own."
            (lambda (&rest _) (buffer-name beta))))
       (agent-shell-vertico-tests--with-jump-history
         (agent-shell-vertico-tests--look-at alpha)
-        (agent-shell-vertico-switch)
+        (agent-shell-vertico-tests--jump #'agent-shell-vertico-switch)
         (should (equal agent-shell-vertico--jump-history (list alpha)))
-        (agent-shell-vertico-tests--look-at beta)
-        (agent-shell-vertico-sidebar-jump-to-index 1)
-        (should (eq agent-shell-test-displayed-buffer alpha))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-sidebar-jump-to-index 1)
+                    alpha))
         (should (equal agent-shell-vertico--jump-history (list beta alpha)))))))
 
 (ert-deftest agent-shell-vertico-jump-history-ignores-the-session-displayed ()
@@ -11469,31 +11540,44 @@ display functions, which is why neither records anything of its own."
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-jump-history
         (agent-shell-vertico-tests--look-at alpha)
-        (agent-shell-vertico--display-session (buffer-name alpha))
+        (agent-shell-vertico-tests--jump
+         #'agent-shell-vertico--display-session (buffer-name alpha))
         (should-not agent-shell-vertico--jump-history)))))
 
 (ert-deftest agent-shell-vertico-jump-history-records-through-a-viewport ()
-  "A reader sitting in a viewport records that viewport's session."
+  "A reader sitting in a viewport is in that viewport's session.
+
+Moving from the viewport to the session's own buffer is therefore not a
+departure, and leaving either records the session."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Beta"))))))
-    (let ((viewport (generate-new-buffer " *viewport*")))
+    (let ((viewport (generate-new-buffer
+                     (concat (buffer-name alpha)
+                             agent-shell-viewport--suffix)))
+          (agent-shell-viewport-view-mode-hook nil))
+      (with-current-buffer viewport
+        (agent-shell-viewport-view-mode))
       (unwind-protect
-          (let ((agent-shell-test-buffers (list alpha))
-                (agent-shell-test-viewport-buffer viewport))
+          (let ((agent-shell-test-buffers (list alpha beta)))
             (agent-shell-vertico-tests--with-jump-history
               (agent-shell-vertico-tests--look-at viewport)
-              (agent-shell-vertico--display-session (buffer-name beta))
+              (should (eq agent-shell-vertico--jump-current alpha))
+              (agent-shell-vertico-tests--look-at alpha)
+              (should-not agent-shell-vertico--jump-history)
+              (agent-shell-vertico-tests--look-at viewport)
+              (agent-shell-vertico-tests--look-at beta)
               (should (equal agent-shell-vertico--jump-history (list alpha)))))
         (kill-buffer viewport)))))
 
-(ert-deftest agent-shell-vertico-jump-history-records-the-last-session-read ()
-  "A jump taken from beside a session records that session.
+(ert-deftest agent-shell-vertico-jump-history-records-a-departure-once ()
+  "A jump taken from beside a session adds nothing to the history.
 
-Most jumps are taken with point in a file, in magit or in the sidebar,
-and the session left behind is the one the reader last selected."
+Most jumps are taken with point in a file, in magit or in the sidebar.
+The session left behind was recorded when the reader moved beside it,
+so the jump itself has no departure to record."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -11503,10 +11587,100 @@ and the session left behind is the one the reader last selected."
           (elsewhere (generate-new-buffer " *notes*")))
       (unwind-protect
           (agent-shell-vertico-tests--with-jump-history
-            (switch-to-buffer alpha)
-            (switch-to-buffer elsewhere)
-            (agent-shell-vertico--display-session (buffer-name beta))
-            (should (equal agent-shell-vertico--jump-history (list alpha))))
+            (agent-shell-vertico-tests--look-at alpha)
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (agent-shell-vertico-tests--jump
+             #'agent-shell-vertico--display-session (buffer-name beta))
+            (should (equal agent-shell-vertico--jump-history (list alpha)))
+            (should (eq agent-shell-vertico--jump-current beta)))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-jump-back-from-a-file-returns-to-the-session ()
+  "From a buffer that is no session, back goes to the session last left.
+
+A file is not an entry, so there is nothing to pin: the session the
+reader was in is at the head, and that is where back goes.  A second
+back has nothing earlier, and forward has nothing later, because the
+file the reader came from cannot be an entry."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (agent-shell-vertico-tests--look-at alpha)
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (should (eq (agent-shell-vertico-tests--jump
+                         #'agent-shell-vertico-jump-back)
+                        alpha))
+            (should (eq agent-shell-vertico--jump-position alpha))
+            (should (equal agent-shell-vertico--jump-history (list alpha)))
+            (should (equal (should-error (agent-shell-vertico-jump-back)
+                                         :type 'user-error)
+                           '(user-error
+                             "No earlier session in the jump history")))
+            (should (equal (should-error (agent-shell-vertico-jump-forward)
+                                         :type 'user-error)
+                           '(user-error
+                             "No later session in the jump history"))))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-jump-back-from-a-file-then-retraces ()
+  "Back from a file lands on the last session, and carries on from there."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (agent-shell-vertico-tests--look-at alpha)
+            (agent-shell-vertico-tests--jump
+             #'agent-shell-vertico--display-session (buffer-name beta))
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (should (equal agent-shell-vertico--jump-history
+                           (list beta alpha)))
+            (should (eq (agent-shell-vertico-tests--jump
+                         #'agent-shell-vertico-jump-back)
+                        beta))
+            (should (eq (agent-shell-vertico-tests--jump
+                         #'agent-shell-vertico-jump-back)
+                        alpha))
+            (should (eq (agent-shell-vertico-tests--jump
+                         #'agent-shell-vertico-jump-forward)
+                        beta))
+            (should (equal agent-shell-vertico--jump-history
+                           (list beta alpha))))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-jump-history-from-a-file-offers-the-last-left ()
+  "From a file, the reader offers every entry, the session last left first."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (elsewhere (generate-new-buffer " *notes*"))
+          shown)
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (agent-shell-vertico-tests--look-at alpha)
+            (agent-shell-vertico-tests--jump
+             #'agent-shell-vertico--display-session (buffer-name beta))
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (let ((agent-shell-vertico-read-session-function
+                   (lambda (_prompt table &optional _other-window)
+                     (setq shown (all-completions "" table))
+                     (buffer-name beta))))
+              (should (eq (agent-shell-vertico-tests--jump
+                           #'agent-shell-vertico-jump-history)
+                          beta)))
+            (should (equal shown (list (buffer-name beta) (buffer-name alpha))))
+            (should (eq agent-shell-vertico--jump-position beta)))
         (kill-buffer elsewhere)))))
 
 (ert-deftest agent-shell-vertico-jump-back-returns-to-the-session-left ()
