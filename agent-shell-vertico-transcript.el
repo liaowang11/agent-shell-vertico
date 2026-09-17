@@ -1123,7 +1123,11 @@ It receives a prompt and a list of transcript records.")
            #'agent-shell-vertico-transcript--project-candidate
            (agent-shell-vertico-transcript--project-roots)))
          (selection
-          (completing-read "Project: " candidates nil t)))
+          ;; `--project-roots' puts the current project first, so the
+          ;; order is part of the answer and the reader must not sort.
+          (completing-read
+           "Project: "
+           (agent-shell-vertico--ordered-table candidates) nil t)))
     (or
      (when-let* ((candidate (assoc-string selection candidates)))
        (get-text-property

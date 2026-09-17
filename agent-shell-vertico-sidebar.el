@@ -2918,7 +2918,12 @@ configuration, so it runs alongside it rather than replacing it."
                     ("Recency" . recency)
                     ("Status" . status)
                     ("Name" . name)))
-         (choice (completing-read "Sort sessions by: " choices nil t))
+         ;; The criteria are listed in their own order, the default
+         ;; first, which a reader left to sort would alphabetize away.
+         (choice (completing-read
+                  "Sort sessions by: "
+                  (agent-shell-vertico--ordered-table (mapcar #'car choices))
+                  nil t))
          (sort-by (cdr (assoc choice choices))))
     (setq agent-shell-vertico-sidebar-sort-by sort-by)
     (agent-shell-vertico-sidebar-refresh)))

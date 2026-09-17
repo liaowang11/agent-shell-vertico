@@ -222,10 +222,14 @@ end-of-prompt marker carries the `shell-maker--marker` property. Without
 those two checks a prompt an agent echoed inside a response would become
 a page of its own. `tests/support/shell-maker.el` keeps both rules, which
 is what makes the tests about echoed prompts mean anything. A candidate
-is `N: PROMPT`, and its table declares `identity` for both sort
-functions, because the history's order is the answer: a table that
-declares none leaves the order to the reader, and Vertico's default
-sorts by history and then by length. The number is right-aligned so the
+is `N: PROMPT`, read through `--ordered-table`, which declares `identity`
+for both sort functions because the history's order is the answer: a
+table that declares none leaves the order to the reader, and Vertico's
+default sorts by history and then by length. That helper serves every
+reader whose order is the answer and which has no category of its own —
+the project reader, whose `--project-roots` puts the current project
+first, and the sidebar's sort-criterion reader, which lists its default
+first. The number is right-aligned so the
 prompts of a ten-page history keep one column, and it is also what tells
 two exchanges opening with the same prompt apart, which the prompt alone
 could not.

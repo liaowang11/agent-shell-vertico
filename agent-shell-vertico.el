@@ -484,6 +484,22 @@ the text alone."
                         (/ remaining agent-shell-vertico--key-range)))))
     (propertize key 'invisible t)))
 
+(defun agent-shell-vertico--ordered-table (candidates)
+  "Return a completion table over CANDIDATES that keeps their order.
+
+A table declaring no `display-sort-function' leaves the order to the
+reader, and Vertico's own default sorts by history and then by length,
+so a list built in a deliberate order arrives shuffled.  This is for the
+readers whose order is itself the answer and which have no category of
+their own; a reader with one declares the same thing in its own
+metadata."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        `(metadata
+          (display-sort-function . ,#'identity)
+          (cycle-sort-function . ,#'identity))
+      (complete-with-action action candidates string pred))))
+
 (defun agent-shell-vertico--table (buffers-function &optional sort-function)
   "Return a completion table over the buffers BUFFERS-FUNCTION returns.
 
@@ -948,21 +964,6 @@ nothing on a row said where in the history it sat."
              (1+ index)))
      history)))
 
-(defun agent-shell-vertico--viewport-page-table (pages)
-  "Return a completion table over PAGES.
-
-PAGES is what `agent-shell-vertico--viewport-pages' returns.  The
-history's own order is the answer here, so the table sorts by nothing: a
-table that declares no `display-sort-function' leaves the order to the
-reader, and Vertico's own default sorts by history and then by length,
-which shuffles the pages."
-  (lambda (string pred action)
-    (if (eq action 'metadata)
-        `(metadata
-          (display-sort-function . ,#'identity)
-          (cycle-sort-function . ,#'identity))
-      (complete-with-action action (mapcar #'car pages) string pred))))
-
 (defun agent-shell-vertico--read-viewport-page (page)
   "Return the viewport history page PAGE names.
 
@@ -980,7 +981,8 @@ reads one by its number and prompt text."
                       (user-error "No items in history")))
            (selection (completing-read
                        "Page: "
-                       (agent-shell-vertico--viewport-page-table pages)
+                       (agent-shell-vertico--ordered-table
+                        (mapcar #'car pages))
                        nil t)))
       (or (cdr (assoc selection pages))
           (user-error "Unknown page: %s" selection)))))

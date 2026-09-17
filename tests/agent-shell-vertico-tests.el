@@ -5278,6 +5278,30 @@ value would pre-bind it, clobbering embark's own default finder list."
       (agent-shell-vertico-transcript--read-project)
       "/work/project/"))))
 
+(ert-deftest agent-shell-vertico-transcript-read-project-keeps-order ()
+  "The current project stays first, whatever the reader would sort by.
+
+`--project-roots' puts it there deliberately, and a plain list hands the
+order to the reader, which sorts by history and then by length."
+  (cl-letf (((symbol-function
+              'agent-shell-vertico-transcript--project-roots)
+             (lambda () '("/work/current/" "/work/bb/" "/work/a/"))))
+    (let (table)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt candidates &rest _args)
+                   (setq table candidates)
+                   (substring-no-properties
+                    (car (all-completions "" candidates))))))
+        (agent-shell-vertico-transcript--read-project))
+      (should (equal (mapcar #'substring-no-properties
+                             (all-completions "" table))
+                     '("current  /work/current/"
+                       "bb  /work/bb/"
+                       "a  /work/a/")))
+      (should (eq (cdr (assq 'display-sort-function
+                             (cdr (funcall table "" nil 'metadata))))
+                  #'identity)))))
+
 (ert-deftest agent-shell-vertico-transcript-read-record-resolves-selection ()
   (let ((record
          (agent-shell-vertico-transcript-record-create
@@ -9971,6 +9995,27 @@ resolves its shell from its own buffer name."
              ,@body))
        (dolist (buffer (list shell viewport))
          (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest agent-shell-vertico-sidebar-set-sort-keeps-choice-order ()
+  "The criteria are offered in their own order, not alphabetically.
+
+Priority leads because it is the default; a plain list would let the
+reader sort, which puts Activity first and Priority third."
+  (let ((agent-shell-vertico-sidebar-sort-by 'priority)
+        table)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt candidates &rest _args)
+                 (setq table candidates)
+                 (car (all-completions "" candidates))))
+              ((symbol-function 'agent-shell-vertico-sidebar-refresh)
+               #'ignore))
+      (agent-shell-vertico-sidebar-set-sort)
+      (should (equal (all-completions "" table)
+                     '("Priority" "Activity" "Recency" "Status" "Name")))
+      (should (eq (cdr (assq 'display-sort-function
+                             (cdr (funcall table "" nil 'metadata))))
+                  #'identity))
+      (should (eq agent-shell-vertico-sidebar-sort-by 'priority)))))
 
 (ert-deftest agent-shell-vertico-viewport-goto-page-reads-a-page ()
   "The page is chosen by its numbered prompt and the shell moves to it."
