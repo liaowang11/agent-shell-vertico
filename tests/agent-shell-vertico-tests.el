@@ -9973,21 +9973,71 @@ resolves its shell from its own buffer name."
          (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest agent-shell-vertico-viewport-goto-page-reads-a-page ()
-  "The page is chosen by its prompt text and the shell moves to it."
+  "The page is chosen by its numbered prompt and the shell moves to it."
   (agent-shell-vertico-tests--with-viewport
       '(("first question" . "first answer")
         ("second question" . "second answer"))
     (let (offered)
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _arguments)
-                   (setq offered collection)
-                   "second question")))
+                   (setq offered (all-completions "" collection))
+                   "2: second question")))
         (agent-shell-vertico-viewport-goto-page nil))
-      (should (equal offered '("first question" "second question"))))
+      (should (equal offered '("1: first question" "2: second question"))))
     (with-current-buffer (agent-shell-viewport--shell-buffer)
       (should (looking-at "> second question")))
     (should agent-shell-test-viewport-refreshed)
     (should agent-shell-test-viewport-header-updated)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-keeps-history-order ()
+  "The table sorts by nothing, so the reader shows the pages in order.
+
+Without this the reader applies its own sort -- Vertico orders by
+history and then by length -- and the pages arrive shuffled."
+  (agent-shell-vertico-tests--with-viewport
+      '(("a longer first question" . "first answer")
+        ("short" . "second answer"))
+    (let (table)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _arguments)
+                   (setq table collection)
+                   "1: a longer first question")))
+        (agent-shell-vertico-viewport-goto-page nil))
+      (let* ((metadata (funcall table "" nil 'metadata))
+             (sort (cdr (assq 'display-sort-function (cdr metadata))))
+             (candidates (all-completions "" table)))
+        (should (eq sort #'identity))
+        (should (eq (cdr (assq 'cycle-sort-function (cdr metadata)))
+                    #'identity))
+        (should (equal (funcall sort candidates) candidates))))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-numbers-align ()
+  "Page numbers are padded, so ten or more pages keep one prompt column."
+  (agent-shell-vertico-tests--with-viewport
+      (mapcar (lambda (index)
+                (cons (format "question %d" index) "answer"))
+              (number-sequence 1 10))
+    (let ((pages (agent-shell-vertico--viewport-pages)))
+      (should (equal (car (nth 0 pages)) " 1: question 1"))
+      (should (equal (car (nth 9 pages)) "10: question 10")))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-separates-repeats ()
+  "Two exchanges starting the same way are still two candidates.
+
+The prompt alone was the candidate before, so the second of a repeated
+prompt could not be reached at all."
+  (agent-shell-vertico-tests--with-viewport
+      '(("continue" . "first answer")
+        ("continue" . "second answer"))
+    (let (offered)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _arguments)
+                   (setq offered (all-completions "" collection))
+                   "2: continue")))
+        (agent-shell-vertico-viewport-goto-page nil))
+      (should (equal offered '("1: continue" "2: continue"))))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (should (= (line-number-at-pos) 4)))))
 
 (ert-deftest agent-shell-vertico-viewport-goto-page-takes-a-page-number ()
   "A numeric prefix argument names the page without reading one."
@@ -10026,7 +10076,7 @@ resolves its shell from its own buffer name."
       '(("first question" . "quoting\n> second question\nback to prose")
         ("real second" . "second answer"))
     (cl-letf (((symbol-function 'completing-read)
-               (lambda (&rest _arguments) "real second")))
+               (lambda (&rest _arguments) "2: real second")))
       (agent-shell-vertico-viewport-goto-page nil))
     (with-current-buffer (agent-shell-viewport--shell-buffer)
       (should (looking-at "> real second")))))

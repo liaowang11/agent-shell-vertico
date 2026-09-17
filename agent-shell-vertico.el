@@ -918,26 +918,56 @@ shell for a viewport."
 ;; them one step at a time.  These read which exchange to show instead,
 ;; naming each by the prompt that started it.
 
+(defun agent-shell-vertico--viewport-page-candidate (prompt page width)
+  "Return the candidate naming PAGE, the exchange PROMPT started.
+
+The number leads, right-aligned in WIDTH columns, so the prompts of a
+history with ten or more pages still start in one column."
+  (format "%s: %s"
+          (string-pad (number-to-string page) width nil t)
+          (string-trim (or prompt ""))))
+
 (defun agent-shell-vertico--viewport-pages ()
-  "Return the current viewport's history as (PROMPT . PAGE) pairs.
+  "Return the current viewport's history as (CANDIDATE . PAGE) pairs.
 
 PAGE counts from one, which is how the viewport numbers its own
-position."
+position, and CANDIDATE leads with that number.  The prompt alone named
+a page before, which cost the reader both ends of the same fact: two
+exchanges opened with the same prompt collapsed onto the first, and
+nothing on a row said where in the history it sat."
   (agent-shell-viewport--ensure-buffer)
   (when-let* ((shell-buffer (agent-shell-viewport--shell-buffer))
               (history (with-current-buffer shell-buffer
                          (shell-maker-history)))
-              ((not (seq-empty-p history))))
+              ((not (seq-empty-p history)))
+              (width (length (number-to-string (length history)))))
     (seq-map-indexed
      (lambda (item index)
-       (cons (string-trim (or (car item) "")) (1+ index)))
+       (cons (agent-shell-vertico--viewport-page-candidate
+              (car item) (1+ index) width)
+             (1+ index)))
      history)))
+
+(defun agent-shell-vertico--viewport-page-table (pages)
+  "Return a completion table over PAGES.
+
+PAGES is what `agent-shell-vertico--viewport-pages' returns.  The
+history's own order is the answer here, so the table sorts by nothing: a
+table that declares no `display-sort-function' leaves the order to the
+reader, and Vertico's own default sorts by history and then by length,
+which shuffles the pages."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        `(metadata
+          (display-sort-function . ,#'identity)
+          (cycle-sort-function . ,#'identity))
+      (complete-with-action action (mapcar #'car pages) string pred))))
 
 (defun agent-shell-vertico--read-viewport-page (page)
   "Return the viewport history page PAGE names.
 
 PAGE is a prefix argument: a number selects that page directly, and nil
-reads one by its prompt text."
+reads one by its number and prompt text."
   (if page
       (let* ((position (or (agent-shell-viewport--position :force-refresh t)
                            (user-error "No items in history")))
@@ -948,7 +978,10 @@ reads one by its prompt text."
         number)
     (let* ((pages (or (agent-shell-vertico--viewport-pages)
                       (user-error "No items in history")))
-           (selection (completing-read "Page: " (mapcar #'car pages) nil t)))
+           (selection (completing-read
+                       "Page: "
+                       (agent-shell-vertico--viewport-page-table pages)
+                       nil t)))
       (or (cdr (assoc selection pages))
           (user-error "Unknown page: %s" selection)))))
 
