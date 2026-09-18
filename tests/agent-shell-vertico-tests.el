@@ -10487,6 +10487,81 @@ prompt could not be reached at all."
       (agent-shell-vertico-sidebar-jump)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
+(ert-deftest agent-shell-vertico-sidebar-jump-ranks-unread-above-waiting ()
+  "Output nobody has read outranks a decision the reader has already seen.
+A blocked session keeps asking for as long as its permission is
+unanswered, and its activity time is older than any turn that has
+finished since, so ranking it by age alone would pin every jump to it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (unread "Codex Agent @ unread" "/work/unread/"
+               '((:session . ((:id . "u") (:title . "Unread"))))))
+    (let ((agent-shell-test-buffers (list waiting unread))
+          (agent-shell-test-statuses (list (cons waiting 'blocked)
+                                           (cons unread 'ready))))
+      ;; The blocked session has been read, and has been waiting longer.
+      (puthash waiting 100.0 agent-shell-vertico-sidebar--activity)
+      (puthash unread 200.0 agent-shell-vertico-sidebar--unread)
+      (should (= (agent-shell-vertico-sidebar--status-rank unread) 0))
+      (should (= (agent-shell-vertico-sidebar--status-rank waiting) 1))
+      (should (equal (agent-shell-vertico-sidebar--attention-sessions)
+                     (list unread waiting)))
+      (agent-shell-vertico-sidebar-jump)
+      (should (eq agent-shell-test-displayed-buffer unread)))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-counts-waiting-as-attention ()
+  "A blocked session the reader has read is still counted as attention."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "b") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list waiting working))
+          (agent-shell-test-statuses (list (cons waiting 'blocked)
+                                           (cons working 'busy))))
+      (should (equal (agent-shell-vertico-sidebar--session-statistics)
+                     [1 1 0 0])))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-passes-over-the-session-in-hand ()
+  "A jump taken from inside a waiting session goes to the next one.
+The permission is owed wherever the reader goes, so arriving again
+settles nothing and would strand every other session behind it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (unread "Codex Agent @ unread" "/work/unread/"
+               '((:session . ((:id . "u") (:title . "Unread"))))))
+    (let ((agent-shell-test-buffers (list waiting unread))
+          (agent-shell-test-statuses (list (cons waiting 'blocked)
+                                           (cons unread 'ready))))
+      (puthash unread 200.0 agent-shell-vertico-sidebar--unread)
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (buffer) (eq buffer waiting))))
+        (agent-shell-vertico-sidebar-jump)
+        (should (eq agent-shell-test-displayed-buffer unread))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-reports-the-session-in-hand ()
+  "With nothing else waiting, a jump from the waiting session says so."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting"))))))
+    (let ((agent-shell-test-buffers (list waiting))
+          (agent-shell-test-statuses (list (cons waiting 'blocked)))
+          (reported nil))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (buffer) (eq buffer waiting)))
+                ((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (setq reported (apply #'format-message format arguments)))))
+        (agent-shell-vertico-sidebar-jump))
+      (should-not agent-shell-test-displayed-buffer)
+      (should
+       (equal reported
+              "No other session needs attention (this one is waiting)")))))
+
 (ert-deftest agent-shell-vertico-sidebar-jump-marks-visited-session-seen ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"

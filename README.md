@@ -155,7 +155,11 @@ session itself.  Removing `project` also removes the flat context line.
 Activating an agent value starts a new session with that agent in the same
 project.
 The default `priority` sort puts sessions waiting for attention first, followed
-by working and ready sessions.  Attention and working sessions order oldest
+by working and ready sessions.  Within the waiting group, sessions holding
+output nobody has read come before a session whose permission decision you
+have already seen: answering that decision is the only thing that settles it,
+so it does not hold the head of the list in the meantime.  Attention and
+working sessions order oldest
 first, so the same session `agent-shell-attention-jump` visits leads the
 list, and streamed chunks do not reorder working sessions; idle sessions
 order by their latest activity, newest first, so reading a finished session
@@ -176,6 +180,11 @@ by what it shows and not by where you last were; a session off the frame,
 or on another frame, is not marked at all.  This is only the marker,
 not what counts as reading a session: unread still clears only when a
 session's own window is selected.
+
+A jump taken from inside a session that is waiting for a permission decision
+goes to the next session that needs you, since arriving where you already are
+settles nothing; with no other session waiting it reports that instead of not
+moving.  Answering the decision removes the session from the list.
 
 The sidebar follows `agent-shell` events, so a completed turn in another
 window is marked for attention.  A failed request, a session waiting for a

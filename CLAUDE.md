@@ -313,9 +313,20 @@ saying Working — a mark asking for the reader on a session with nothing
 to read yet. `mark-unread` refuses a `busy` session for the same reason
 and said it first; `mark-read` reads and drops the record rather than
 the deferred mark, so it still works on a session that is working.
-The `priority` sort puts the attention sessions first, oldest-first
-within that tier, so `agent-shell-vertico-sidebar-jump` visits the head of
-`--sort-buffers ... 'priority'` and nothing else has to rank them again.
+The `priority` sort puts the attention sessions first, and they are two
+tiers rather than one (`--status-rank-for`): unread output, then a
+`blocked` session the reader has already seen. Ranking them together
+oldest-first pinned every jump to the blocked one, whose wait always
+began before any turn that has finished since, and arriving settles
+nothing that a permission decision does not; the split is also the
+order `--mark-face` draws, red rows above yellow. Both tiers run
+oldest-first, as the working one does (`--oldest-first-rank-p`), so
+`agent-shell-vertico-sidebar-jump` visits the head of `--sort-buffers
+... 'priority'` and nothing else has to rank them again. The jump
+passes over a session the reader is already in, which after the split
+only a blocked one can be, and says so rather than not moving
+(`--attention-here-message`); `--statistics-slots` folds the two ranks
+back into the one attention count a header shows.
 `agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets
 by hand, and it writes the same record the events write, so status names,
 icons, ranks, counters and the jump order need no case for it. It stamps

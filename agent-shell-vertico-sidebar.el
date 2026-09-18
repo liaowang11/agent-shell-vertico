@@ -694,7 +694,7 @@ a finished turn leaves a session `Ready'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-rank)
       (agent-shell-vertico-sidebar--status-rank-for
        (agent-shell-vertico-sidebar--raw-status buffer)
-       (agent-shell-vertico-sidebar--needs-attention-p buffer))))
+       (agent-shell-vertico-sidebar--unread-p buffer))))
 
 (defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
   "Return the raw status rank for BUFFER.  Lower ranks sort first.
@@ -705,17 +705,45 @@ ignores attention metadata; attention is the concern of `priority'."
       (agent-shell-vertico-sidebar--status-sort-rank-for
        (agent-shell-vertico-sidebar--raw-status buffer))))
 
-(defun agent-shell-vertico-sidebar--status-rank-for (status attention)
-  "Return the priority rank for STATUS, given ATTENTION.
+(defun agent-shell-vertico-sidebar--status-rank-for (status unread)
+  "Return the priority rank for STATUS, given UNREAD.
+
+The attention tier is two ranks, not one, because its two halves ask
+for the reader differently.  Unread output ranks first: arriving is
+what settles it.  A blocked session the reader has already seen ranks
+below it, because the decision is owed wherever the reader stands and
+reading the session again does not make it; ranking the two together
+by age pinned every jump to the blocked session, whose wait always
+began before any turn that has finished since.  Red rows above yellow
+ones is also what `agent-shell-vertico-sidebar--mark-face' draws.
 
 A session nobody is waiting on ranks by what it is doing.  A failed one
 that has been read ranks last with the sessions that can do nothing:
 it has already said all it has to say."
   (cond
-   (attention 0)
-   ((eq status 'busy) 1)
-   ((eq status 'ready) 2)
-   (t 3)))
+   (unread 0)
+   ((eq status 'blocked) 1)
+   ((eq status 'busy) 2)
+   ((eq status 'ready) 3)
+   (t 4)))
+
+(defun agent-shell-vertico-sidebar--oldest-first-rank-p (rank)
+  "Return non-nil when priority orders the tier at RANK oldest first.
+
+The tiers that are waiting on something — the two attention ranks and
+the working one — lead with whoever has been waiting longest, which is
+what makes the sidebar's first session the one a jump visits.  The
+tiers that are waiting on nobody lead with whoever was read or finished
+most recently."
+  (<= rank 2))
+
+(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 2 3]
+  "Which header statistic each status rank is counted in.
+
+The statistics keep one attention count, so both attention ranks land
+in the same slot.  See `agent-shell-vertico-sidebar--status-rank-for'
+for the ranks and `agent-shell-vertico-sidebar--session-statistics' for
+the slots.")
 
 (defun agent-shell-vertico-sidebar--status-sort-rank-for (status)
   "Return the raw status rank for STATUS."
@@ -748,7 +776,6 @@ repeating those queries during one redisplay."
          (unread (agent-shell-vertico-sidebar--unread-for
                   status (gethash buffer
                                   agent-shell-vertico-sidebar--unread)))
-         (attention (or (and unread t) (eq status 'blocked)))
          (busy-since-time
           (if (eq status 'busy)
               (or (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
@@ -771,7 +798,7 @@ repeating those queries during one redisplay."
           :status-name
           (agent-shell-vertico-sidebar--status-name-for status)
           :status-rank (agent-shell-vertico-sidebar--status-rank-for
-                        status attention)
+                        status (and unread t))
           :mark (agent-shell-vertico-sidebar--mark-for status unread)
           :raw-status-rank
           (agent-shell-vertico-sidebar--status-sort-rank-for status)
@@ -1361,11 +1388,12 @@ what does not.  Marks with no sessions are left out."
 (defun agent-shell-vertico-sidebar--compare-buffers (left right sort-by)
   "Return non-nil when LEFT sorts before RIGHT by SORT-BY.
 
-Under `priority' the attention and working tiers order oldest first,
-so the sidebar's first session is the one
+Under `priority' the tiers waiting on something order oldest first, so
+the sidebar's first session is the one
 `agent-shell-vertico-sidebar-jump' visits; the remaining tiers order
 newest first so a session that was read or finished recently stays near
-the top of its tier."
+the top of its tier.  See
+`agent-shell-vertico-sidebar--oldest-first-rank-p' for which is which."
   (let* ((left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
          (left-rank (when (memq sort-by '(status priority))
@@ -1409,7 +1437,7 @@ the top of its tier."
       (< left-rank right-rank))
      ((and (eq sort-by 'priority) (/= left-time right-time))
       ;; Ranks are equal here, so LEFT's rank picks the tier's direction.
-      (if (<= left-rank 1)
+      (if (agent-shell-vertico-sidebar--oldest-first-rank-p left-rank)
           (< left-time right-time)
         (> left-time right-time)))
      ((/= left-time right-time) (> left-time right-time))
@@ -3033,7 +3061,8 @@ in that order."
   (let ((counts (make-vector 4 0)))
     (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
       (cl-incf (aref counts
-                     (agent-shell-vertico-sidebar--status-rank buffer))))
+                     (aref agent-shell-vertico-sidebar--statistics-slots
+                           (agent-shell-vertico-sidebar--status-rank buffer)))))
     counts))
 
 (defconst agent-shell-vertico-sidebar--status-labels
@@ -3438,12 +3467,32 @@ every live session, not only the ones needing attention."
   (if read
       (agent-shell-vertico-sidebar--jump-display
        (get-buffer (agent-shell-vertico--read-session "Agent shell: " 'all)))
-    (if-let* ((buffer (car (agent-shell-vertico-sidebar--attention-sessions))))
-        ;; Visiting reads whatever the session had to say.  A
-        ;; permission decision is still owed afterwards, and the
-        ;; blocked status keeps the session in place for it.
-        (agent-shell-vertico-sidebar--jump-display buffer)
-      (message "%s" (agent-shell-vertico-sidebar--no-attention-message)))))
+    (let* ((sessions (agent-shell-vertico-sidebar--attention-sessions))
+           (target
+            (seq-find
+             (lambda (buffer)
+               (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
+             sessions)))
+      (cond
+       ;; Visiting reads whatever the session had to say.  A
+       ;; permission decision is still owed afterwards, and the
+       ;; blocked status keeps the session in place for it.
+       (target (agent-shell-vertico-sidebar--jump-display target))
+       ;; Every session asking is the one the reader is already in,
+       ;; which only a blocked one can be: arriving would settle
+       ;; nothing, and saying so beats a jump that does not move.
+       (sessions
+        (message "%s"
+                 (agent-shell-vertico-sidebar--attention-here-message
+                  (car sessions))))
+       (t
+        (message
+         "%s" (agent-shell-vertico-sidebar--no-attention-message)))))))
+
+(defun agent-shell-vertico-sidebar--attention-here-message (buffer)
+  "Return what to report when only BUFFER asks and the reader is in it."
+  (format "No other session needs attention (this one is %s)"
+          (downcase (agent-shell-vertico-sidebar--status-name buffer))))
 
 (defun agent-shell-vertico-sidebar--jump-display (buffer)
   "Display session BUFFER, the default action of a jump."
