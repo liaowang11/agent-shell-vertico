@@ -64,6 +64,20 @@ it takes to open."
   :type '(choice (const :tag "No limit" nil) integer)
   :group 'agent-shell-vertico-transcript)
 
+(defcustom agent-shell-vertico-transcript-default-view 'clean
+  "The view a transcript opens in.
+
+`clean' shows only the user and agent messages, as the clean view toggle
+does; `full' shows the transcript as written, tool calls and thoughts
+included.  Either way the toggle still switches between the two.
+
+A transcript already open keeps the view its reader chose.  A search
+match on a line the clean view would hide opens the full view, because
+the reader is taken to that line and has to be able to see it."
+  :type '(choice (const :tag "User and agent messages" clean)
+                 (const :tag "Everything" full))
+  :group 'agent-shell-vertico-transcript)
+
 (cl-defstruct
     (agent-shell-vertico-transcript-record
      (:constructor agent-shell-vertico-transcript-record-create))
@@ -1175,6 +1189,9 @@ It receives a prompt and a list of transcript records.")
   "^### Tool Call \\[[^]\n]+\\]:.*$"
   "Heading that begins hidden tool transcript content.")
 
+(defconst agent-shell-vertico-transcript--message-speakers '(user agent)
+  "The speakers whose sections the clean view shows.")
+
 (defvar-local agent-shell-vertico-transcript--clean-overlays nil
   "Overlays hiding non-message text in the current transcript buffer.")
 
@@ -1432,9 +1449,14 @@ grammar can misread markup at the very end of such a transcript."
 
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)
-  "Open transcript RECORD, optionally in OTHER-WINDOW."
+  "Open transcript RECORD, optionally in OTHER-WINDOW.
+
+A transcript opened here for the first time gets the view
+`agent-shell-vertico-transcript-default-view' asks for; one already
+open keeps the view its reader chose."
   (let* ((file
           (agent-shell-vertico-transcript-record-file record))
+         (open (find-buffer-visiting file))
          (buffer
           (if other-window
               (find-file-other-window file)
@@ -1449,8 +1471,23 @@ grammar can misread markup at the very end of such a transcript."
                    (agent-shell-vertico-transcript-record-match-line
                     record)))
         (goto-char (point-min))
-        (forward-line (1- line))))
+        (forward-line (1- line)))
+      (when (and (not open)
+                 (not agent-shell-vertico-transcript--clean-view-p)
+                 (agent-shell-vertico-transcript--record-read-clean-p record))
+        (agent-shell-vertico-transcript--show-clean-view)))
     buffer))
+
+(defun agent-shell-vertico-transcript--record-read-clean-p (record)
+  "Return non-nil when RECORD is to be read in the clean view.
+
+That is the default view, unless RECORD carries a match on a line the
+clean view would hide: the reader is taken to that line, so it has to
+be visible."
+  (and (eq agent-shell-vertico-transcript-default-view 'clean)
+       (or (null (agent-shell-vertico-transcript-record-match-line record))
+           (memq (agent-shell-vertico-transcript--speaker-for-record record)
+                 agent-shell-vertico-transcript--message-speakers))))
 
 (defun agent-shell-vertico-transcript--record-from-file
     (file project-root)
@@ -1592,16 +1629,6 @@ hidden region to find where that display line starts, which is what
                      agent-shell-vertico-transcript--clean-invisibility)
         (push overlay agent-shell-vertico-transcript--clean-overlays)))))
 
-(defun agent-shell-vertico-transcript--clean-event-at-point ()
-  "Return the transcript visibility event at the current line."
-  (cond
-   ((looking-at-p agent-shell-vertico-transcript--message-heading-regexp)
-    'visible)
-   ((or
-     (looking-at-p agent-shell-vertico-transcript--thought-heading-regexp)
-     (looking-at-p agent-shell-vertico-transcript--tool-heading-regexp))
-    'hidden)))
-
 (defun agent-shell-vertico-transcript--clean-fence-at-point ()
   "Return Markdown fence information for the current line, or nil.
 The return value is (CHARACTER LENGTH CLOSING-P)."
@@ -1635,26 +1662,22 @@ Point is at the beginning of a line that is not inside a fence."
    ((looking-at-p agent-shell-vertico-transcript--tool-heading-regexp)
     'tool)))
 
-(defun agent-shell-vertico-transcript--scan-sections ()
-  "Return the current buffer's sections as a vector of (LINE . SPEAKER).
+(defun agent-shell-vertico-transcript--walk-sections (function)
+  "Call FUNCTION with the speaker at the start of every section heading.
 
-LINE is where the section's heading is, and the sections are in
-ascending order, so the section a line belongs to is the last one at or
-before it.  The whole of a transcript belongs to some section: the one
-before the first heading is `header', which is where the transcript's own
-metadata lives.
+Point is at the beginning of the heading's line for each call, and the
+calls come in buffer order.  The metadata before the first heading is
+not reported: a caller that wants it knows it begins at `point-min'.
 
-Fences are tracked the way the clean view tracks them, and for the same
-reason: tool output is written inside a fence, and an agent that fetches
-a page or reads an older transcript puts lines beginning with `## ' in
-it.  Those lines belong to the tool call that produced them, not to a
-speaker."
+Only the lines `agent-shell-vertico-transcript--section-regexp' matches
+are looked at, which leaves the rest of a transcript to the regexp
+engine.  Fences are tracked so that a heading inside one is not a
+section: tool output is written inside a fence, and an agent that
+fetches a page or reads an older transcript puts lines beginning with
+`## ' in it.  Those lines belong to the tool call that produced them."
   (save-excursion
     (goto-char (point-min))
-    (let ((sections (list (cons 1 'header)))
-          (position (point-min))
-          (line 1)
-          fence)
+    (let (fence)
       (while (re-search-forward
               agent-shell-vertico-transcript--section-regexp nil t)
         (beginning-of-line)
@@ -1672,11 +1695,26 @@ speaker."
            (t
             (when-let* ((speaker
                          (agent-shell-vertico-transcript--speaker-at-point)))
-              (setq line (+ line (count-lines position (point)))
-                    position (point))
-              (push (cons line speaker) sections)))))
-        (forward-line 1))
-      (vconcat (nreverse sections)))))
+              (funcall function speaker)))))
+        (forward-line 1)))))
+
+(defun agent-shell-vertico-transcript--scan-sections ()
+  "Return the current buffer's sections as a vector of (LINE . SPEAKER).
+
+LINE is where the section's heading is, and the sections are in
+ascending order, so the section a line belongs to is the last one at or
+before it.  The whole of a transcript belongs to some section: the one
+before the first heading is `header', which is where the transcript's own
+metadata lives."
+  (let ((sections (list (cons 1 'header)))
+        (position (point-min))
+        (line 1))
+    (agent-shell-vertico-transcript--walk-sections
+     (lambda (speaker)
+       (setq line (+ line (count-lines position (point)))
+             position (point))
+       (push (cons line speaker) sections)))
+    (vconcat (nreverse sections))))
 
 (defvar agent-shell-vertico-transcript--sections-cache
   (make-hash-table :test #'equal)
@@ -1736,38 +1774,21 @@ asks this question."
   "Show only user and agent messages in the current transcript buffer."
   (add-to-invisibility-spec
    agent-shell-vertico-transcript--clean-invisibility)
-  (save-excursion
-    (goto-char (point-min))
-    (let ((hidden-start (point-min))
-          (visible nil)
-          fence)
-      (while (not (eobp))
-        (let ((fence-info
-               (agent-shell-vertico-transcript--clean-fence-at-point)))
-          (cond
-           (fence
-            (when (and fence-info
-                       (= (car fence-info) (car fence))
-                       (>= (cadr fence-info) (cdr fence))
-                       (caddr fence-info))
-              (setq fence nil)))
-           (fence-info
-            (setq fence (cons (car fence-info) (cadr fence-info))))
-           (t
-            (pcase (agent-shell-vertico-transcript--clean-event-at-point)
-              ('visible
-               (unless visible
-                 (agent-shell-vertico-transcript--hide-clean-region
-                  hidden-start (point)))
-               (setq visible t))
-              ('hidden
-               (when visible
-                 (setq hidden-start (point)))
-               (setq visible nil))))))
-        (forward-line 1))
-      (unless visible
-        (agent-shell-vertico-transcript--hide-clean-region
-         hidden-start (point-max)))))
+  (let ((hidden-start (point-min))
+        (visible nil))
+    (agent-shell-vertico-transcript--walk-sections
+     (lambda (speaker)
+       (if (memq speaker agent-shell-vertico-transcript--message-speakers)
+           (unless visible
+             (agent-shell-vertico-transcript--hide-clean-region
+              hidden-start (point))
+             (setq visible t))
+         (when visible
+           (setq hidden-start (point)))
+         (setq visible nil))))
+    (unless visible
+      (agent-shell-vertico-transcript--hide-clean-region
+       hidden-start (point-max))))
   (setq agent-shell-vertico-transcript--clean-view-p t))
 
 (defun agent-shell-vertico-transcript-clean-view ()

@@ -194,15 +194,27 @@ are built in the Consult-free module, so both are plain functions to test;
 `agent-shell-vertico-consult--async-candidates` only turns rg's output
 into calls to them.
 
+**One walk over the sections.** `--walk-sections` is the only code that
+finds section headings: it searches for `--section-regexp` (fences and
+the three heading shapes) rather than visiting every line, tracks fences
+so a `## User` echoed inside tool output is not a heading, and calls back
+with the speaker at each heading. Both `--scan-sections` and the clean
+view (`--show-clean-view`) are consumers of it, so the two cannot
+disagree about what a section is. It is about twice as fast as walking
+line by line (27 ms against 57 ms on a 12.9 MB transcript; 1.5 ms on the
+150 KB median), which is within 2x of the disk read. Transcripts open in
+the clean view by default (`agent-shell-vertico-transcript-default-view`),
+decided by `--record-read-clean-p`: a match on a hidden line opens full,
+and `--open-record` leaves a buffer that was already visiting the file in
+whatever view its reader had chosen.
+
 **Who wrote a match.** Search narrows by speaker, which means answering
 which section of a transcript a matched line falls in.
 `--scan-sections` answers it for a whole buffer as a vector of
 `(LINE . SPEAKER)`, ascending, so `--section-for-line` finds a line's
-section by halving rather than walking. It tracks fences exactly as the
-clean view does, and for the same reason: tool output is written inside a
-fence, and an agent that fetches a page or reads an older transcript puts
-`## User` lines in it. Measured against this author's store, a scan of
-all 2429 transcripts (654 MB, 11.1M lines) costs 5.2 s, 2.1 ms a file, so
+section by halving rather than walking. Measured against this author's
+store, a scan of all 2429 transcripts (654 MB, 11.1M lines) costs 5.2 s,
+2.1 ms a file, so
 the scan is lazy and cached by file plus modification time in
 `--sections-cache`: a transcript is read when one of its matches is first
 asked about and never again while it is unchanged. Drawing a screenful

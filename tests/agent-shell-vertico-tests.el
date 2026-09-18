@@ -6446,6 +6446,96 @@ ends without one modified."
         (kill-buffer buffer))
       (delete-file file))))
 
+(defun agent-shell-vertico-tests--open-speaker-transcript
+    (function &rest fields)
+  "Open a transcript of every section kind and call FUNCTION in its buffer.
+FIELDS are added to the record the transcript is opened from.  The buffer
+and the file are removed afterwards."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (setq buffer
+                  (agent-shell-vertico-transcript--open-record
+                   (apply #'agent-shell-vertico-transcript-record-create
+                          :file file fields))))
+          (with-current-buffer buffer
+            (funcall function)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(defun agent-shell-vertico-tests--invisible-text-p (text)
+  "Return non-nil when the first occurrence of TEXT is invisible."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward (regexp-quote text))
+    (invisible-p (match-beginning 0))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-opens-clean ()
+  "A transcript opens showing only user and agent messages."
+  (agent-shell-vertico-tests--open-speaker-transcript
+   (lambda ()
+     (should agent-shell-vertico-transcript--clean-view-p)
+     (should (agent-shell-vertico-tests--invisible-text-p "a thought"))
+     (should (agent-shell-vertico-tests--invisible-text-p "an echoed"))
+     (should-not (agent-shell-vertico-tests--invisible-text-p "a question"))
+     (should-not (agent-shell-vertico-tests--invisible-text-p "an answer")))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-opens-full-when-asked ()
+  "The full view is the default when the reader asks for it."
+  (let ((agent-shell-vertico-transcript-default-view 'full))
+    (agent-shell-vertico-tests--open-speaker-transcript
+     (lambda ()
+       (should-not agent-shell-vertico-transcript--clean-view-p)
+       (should-not
+        (agent-shell-vertico-tests--invisible-text-p "a thought"))))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-shows-a-hidden-match ()
+  "A match on a line the clean view would hide opens the full view.
+The reader is taken to the match, so it must be able to see it."
+  (agent-shell-vertico-tests--open-speaker-transcript
+   (lambda ()
+     (should-not agent-shell-vertico-transcript--clean-view-p)
+     (should (= (line-number-at-pos) 15))
+     (should-not (agent-shell-vertico-tests--invisible-text-p "a thought")))
+   :match-line 15)
+  (agent-shell-vertico-tests--open-speaker-transcript
+   (lambda ()
+     (should agent-shell-vertico-transcript--clean-view-p)
+     (should (= (line-number-at-pos) 28))
+     (should-not (agent-shell-vertico-tests--invisible-text-p "an answer")))
+   :match-line 28))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-keeps-an-open-view ()
+  "A transcript already open keeps whatever view its reader chose."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (setq buffer (find-file-noselect file))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (should
+             (eq buffer
+                 (agent-shell-vertico-transcript--open-record
+                  (agent-shell-vertico-transcript-record-create :file file)))))
+          (with-current-buffer buffer
+            (should-not agent-shell-vertico-transcript--clean-view-p)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
 (ert-deftest agent-shell-vertico-transcript-record-from-file-takes-header-root ()
   "A record built from a file is scoped by the transcript's own header."
   (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md")))

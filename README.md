@@ -631,7 +631,11 @@ working, and the header line shows whichever key set applies.
 The clean view stays in the transcript buffer. It hides metadata, thoughts,
 tool calls, and tool output with overlays. Markdown headings inside user and
 agent messages remain visible. Toggling back restores the full view without
-changing the file's text or modified state.
+changing the file's text or modified state. Transcripts open in the clean
+view; set `agent-shell-vertico-transcript-default-view` to `full` to open
+them as written. A search match on a hidden line opens the full view
+regardless, so the reader lands on something visible, and a transcript
+already open keeps whichever view it was in.
 
 Both current `**Session ID:**` and legacy `**Session:**` headers are understood.
 Session IDs are treated as opaque strings, so providers are not restricted to
