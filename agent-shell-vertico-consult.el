@@ -147,6 +147,35 @@ milliseconds, and a scanned preview does not need it."
           (font-lock-mode 1))))
     buffer))
 
+(defun agent-shell-vertico-consult--preview-view (buffer record)
+  "Give preview BUFFER the view RECORD is read in.
+
+The same rule `agent-shell-vertico-transcript--open-record' applies:
+the default view, unless RECORD's match is on a line the clean view
+would hide.  Consult keeps a previewed buffer for the next candidate in
+the same transcript, so the view follows each candidate rather than the
+first, switching back to full for a hidden match and to clean for the
+message match after it."
+  (with-current-buffer buffer
+    (if (agent-shell-vertico-transcript--record-read-clean-p record)
+        (unless agent-shell-vertico-transcript--clean-view-p
+          (agent-shell-vertico-transcript--show-clean-view))
+      (when agent-shell-vertico-transcript--clean-view-p
+        (agent-shell-vertico-transcript--show-full-view)))))
+
+(defun agent-shell-vertico-consult--preview-buffer (file record opener)
+  "Open FILE for RECORD with OPENER and return the buffer to preview.
+
+A buffer already visiting FILE belongs to a reader, and Consult previews
+in that buffer rather than in one of its own, so its view is left as
+the reader had it.  Any other buffer is Consult's, and gets the view
+RECORD is read in."
+  (let ((visited (find-buffer-visiting file))
+        (buffer (funcall (or opener #'consult--file-action) file)))
+    (when (and (buffer-live-p buffer) (not visited))
+      (agent-shell-vertico-consult--preview-view buffer record))
+    buffer))
+
 (defun agent-shell-vertico-consult--position (candidate &optional opener)
   "Return a Consult marker for CANDIDATE, opening with OPENER."
   (when candidate
@@ -164,9 +193,8 @@ milliseconds, and a scanned preview does not need it."
                    0 'agent-shell-vertico-transcript-line candidate)
                   1))
                 (buffer
-                 (funcall
-                  (or opener #'consult--file-action)
-                  file))
+                 (agent-shell-vertico-consult--preview-buffer
+                  file record opener))
                 (marker
                  (consult--marker-from-line-column
                   buffer line 0)))

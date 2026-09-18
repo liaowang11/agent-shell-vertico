@@ -649,8 +649,11 @@ be reached. rg is asked for the newest transcript first (`--sortr modified`), so
 matches stream to the reader in that order and nothing is held back to be sorted.
 A changed query cancels the previous search process. Loading `agent-shell-vertico-consult`
 also gives ordinary transcript browsing live preview. A preview opens in the
-same mode as the reader, so a candidate and the transcript it leads to look
-alike, with inline images turned off because a preview is scanned rather than
+same mode and the same view as the reader, so a candidate and the transcript
+it leads to look alike: the clean view by default, which is what lets a
+preview show several exchanges rather than the first prompt and the tool
+output after it, and the full view for a match on a line the clean view would
+hide. Inline images are turned off because a preview is scanned rather than
 read. The mode is named here rather than taken from `auto-mode-alist`: Consult
 previews files with `delay-mode-hooks` bound, which leaves a Markdown mode that
 finishes its setup in hooks (Polymode, for example) unable to fontify, and a

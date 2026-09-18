@@ -73,7 +73,8 @@ included.  Either way the toggle still switches between the two.
 
 A transcript already open keeps the view its reader chose.  A search
 match on a line the clean view would hide opens the full view, because
-the reader is taken to that line and has to be able to see it."
+the reader is taken to that line and has to be able to see it.  Consult
+previews follow the same rule."
   :type '(choice (const :tag "User and agent messages" clean)
                  (const :tag "Everything" full))
   :group 'agent-shell-vertico-transcript)

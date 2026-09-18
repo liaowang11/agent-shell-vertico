@@ -206,7 +206,16 @@ line by line (27 ms against 57 ms on a 12.9 MB transcript; 1.5 ms on the
 the clean view by default (`agent-shell-vertico-transcript-default-view`),
 decided by `--record-read-clean-p`: a match on a hidden line opens full,
 and `--open-record` leaves a buffer that was already visiting the file in
-whatever view its reader had chosen.
+whatever view its reader had chosen. Consult previews apply the same rule
+in `agent-shell-vertico-consult--preview-buffer`, with the same two
+guards: `find-buffer-visiting` before the opener runs, because Consult
+previews in a reader's own buffer when there is one, and a toggle rather
+than an unconditional show, because Consult keeps a previewed buffer for
+the next candidate in the same file (a hidden match then a message match
+must flip it full and back). This is why the clean view is a toggle on a
+buffer and not a separate rendering: a preview of the 150 KB median
+transcript costs 1.5 ms over the read, and Consult already truncates
+files above 1 MB to a 10 KB chunk before the view is applied.
 
 **Who wrote a match.** Search narrows by speaker, which means answering
 which section of a transcript a matched line falls in.

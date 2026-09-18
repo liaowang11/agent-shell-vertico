@@ -7056,6 +7056,103 @@ own line and text, so the reader can go to either one."
           (should-not (memq 'return actions)))
       (kill-buffer temporary-buffer))))
 
+(defun agent-shell-vertico-tests--preview-transcript (function &rest fields)
+  "Preview a transcript of every section kind and call FUNCTION in the buffer.
+
+FIELDS are added to the record each candidate carries.  FUNCTION receives
+a previewer: called with `:match-line' or nil, it previews the candidate
+for that line in the buffer Consult would keep for the file.  Called with
+`:visited', the previewed buffer is one already visiting the file."
+  (let* ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+         (visited nil)
+         (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--speaker-transcript file)
+          (setq buffer (generate-new-buffer " *transcript preview*"))
+          (with-current-buffer buffer
+            (insert-file-contents file))
+          (cl-letf
+              (((symbol-function 'consult--temporary-files)
+                (lambda () (lambda (&optional _name) (or visited buffer))))
+               ((symbol-function 'consult--jump-preview)
+                (lambda () #'ignore))
+               ((symbol-function 'consult--marker-from-line-column)
+                (lambda (buffer _line _column)
+                  (with-current-buffer buffer (point-marker))))
+               ((symbol-function
+                 'agent-shell-vertico-transcript--markdown-major-mode)
+                (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (let ((state (agent-shell-vertico-consult--state)))
+              (funcall
+               function
+               (lambda (line)
+                 (when (eq line :visited)
+                   (setq visited (find-file-noselect file)
+                         line nil))
+                 (funcall
+                  state 'preview
+                  (let ((record
+                         (apply #'agent-shell-vertico-transcript-record-create
+                                :file file :title "title" :match-line line
+                                fields)))
+                    (if line
+                        (agent-shell-vertico-transcript--match-candidate
+                         record 0 80)
+                      (car (agent-shell-vertico-transcript--record-candidates
+                            (list record) 80)))))
+                 (or visited buffer))))))
+      (dolist (buffer (list buffer visited))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+          (kill-buffer buffer)))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-consult-preview-shows-the-clean-view ()
+  "A previewed transcript shows only its user and agent messages."
+  (agent-shell-vertico-tests--preview-transcript
+   (lambda (preview)
+     (with-current-buffer (funcall preview nil)
+       (should agent-shell-vertico-transcript--clean-view-p)
+       (should (agent-shell-vertico-tests--invisible-text-p "a thought"))
+       (should-not
+        (agent-shell-vertico-tests--invisible-text-p "a question"))))))
+
+(ert-deftest agent-shell-vertico-consult-preview-follows-the-default-view ()
+  "A reader who opens transcripts in full previews them in full."
+  (let ((agent-shell-vertico-transcript-default-view 'full))
+    (agent-shell-vertico-tests--preview-transcript
+     (lambda (preview)
+       (with-current-buffer (funcall preview nil)
+         (should-not agent-shell-vertico-transcript--clean-view-p))))))
+
+(ert-deftest agent-shell-vertico-consult-preview-shows-a-hidden-match ()
+  "A match the clean view would hide previews in full, and only that one.
+Consult keeps the buffer for the next candidate in the same transcript,
+so the view has to follow each candidate rather than the first."
+  (agent-shell-vertico-tests--preview-transcript
+   (lambda (preview)
+     (with-current-buffer (funcall preview 15)
+       (should-not agent-shell-vertico-transcript--clean-view-p))
+     (with-current-buffer (funcall preview 28)
+       (should agent-shell-vertico-transcript--clean-view-p)
+       (should-not (agent-shell-vertico-tests--invisible-text-p "an answer")))
+     (with-current-buffer (funcall preview 15)
+       (should-not agent-shell-vertico-transcript--clean-view-p)
+       (should-not
+        (agent-shell-vertico-tests--invisible-text-p "a thought"))))))
+
+(ert-deftest agent-shell-vertico-consult-preview-leaves-a-visited-transcript ()
+  "A transcript already open keeps its view when Consult previews it."
+  (agent-shell-vertico-tests--preview-transcript
+   (lambda (preview)
+     (with-current-buffer (funcall preview :visited)
+       (should (buffer-file-name))
+       (should-not agent-shell-vertico-transcript--clean-view-p)
+       (should-not
+        (agent-shell-vertico-tests--invisible-text-p "a thought"))))))
+
 (ert-deftest agent-shell-vertico-transcript-match-candidate-carries-location ()
   (let* ((record
           (agent-shell-vertico-transcript-record-create
