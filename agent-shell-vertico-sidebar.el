@@ -34,6 +34,10 @@
 (declare-function agent-shell-unsubscribe "agent-shell" (&key subscription))
 (declare-function agent-shell--new-shell "agent-shell"
                   (&key location config no-display))
+(declare-function agent-shell-side-parent-buffer "agent-shell-side"
+                  (&optional buffer))
+(declare-function agent-shell-side-children "agent-shell-side"
+                  (&optional parent-buffer))
 (declare-function evil-local-set-key "evil" (state key def))
 (declare-function evil-get-auxiliary-keymap "evil"
                   (map state &optional create ignore-parent))
@@ -613,6 +617,23 @@ pending."
            (agent-shell--permission-pending-p :shell-buffer buffer)
          (error nil))
        t))
+
+(defun agent-shell-vertico-sidebar--parent-of (buffer)
+  "Return BUFFER's live parent session, or nil.
+
+Nil whenever `agent-shell-side' is not loaded, which makes nesting a
+silent no-op without it: every session then answers with no parent, so
+the whole tree is flat, exactly as before this feature existed."
+  (and (fboundp 'agent-shell-side-parent-buffer)
+       (agent-shell-side-parent-buffer buffer)))
+
+(defun agent-shell-vertico-sidebar--children-of (buffer)
+  "Return BUFFER's live child sessions, or nil.
+
+Nil whenever `agent-shell-side' is not loaded, for the same reason
+`--parent-of' is."
+  (and (fboundp 'agent-shell-side-children)
+       (agent-shell-side-children buffer)))
 
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
@@ -1320,12 +1341,13 @@ touch the digits after it."
           (let ((count (number-to-string count)))
             (if face (propertize count 'face face) count))))
 
-(defun agent-shell-vertico-sidebar--content-width (width nested)
+(defun agent-shell-vertico-sidebar--content-width (width depth)
   "Return the columns left for text on a session row of WIDTH.
 
-NESTED rows are indented below a project header."
+DEPTH is how many levels the row is indented: 1 below a project header
+or a parent session, 2 below both."
   (max 1 (- width
-            (if nested 2 0)
+            (* 2 (or depth 0))
             1
             (string-width (agent-shell-vertico-sidebar--icon-gap)))))
 
@@ -1671,10 +1693,19 @@ property; nothing else reads it."
   (propertize (concat icon (agent-shell-vertico-sidebar--icon-gap))
               'agent-shell-vertico-sidebar-mark-field t))
 
-(defun agent-shell-vertico-sidebar--session-lines (buffer root width &optional nested)
-  "Return rendered session lines for BUFFER at WIDTH under ROOT."
-  (let* ((content-width
-          (agent-shell-vertico-sidebar--content-width width nested))
+(defun agent-shell-vertico-sidebar--session-lines
+    (buffer root width &optional nested depth)
+  "Return rendered session lines for BUFFER at WIDTH under ROOT.
+
+NESTED suppresses the row's own flat project-context line, for a
+session already named by a project header above it.  DEPTH is the
+indent level and defaults to 1 when NESTED, 0 otherwise; a child
+session passes a DEPTH one deeper than its parent's, independently of
+NESTED, since the header that NESTED refers to says nothing about a
+parent-child relationship."
+  (let* ((depth (or depth (if nested 1 0)))
+         (content-width
+          (agent-shell-vertico-sidebar--content-width width depth))
          (title (agent-shell-vertico-sidebar--title buffer))
          (icon (agent-shell-vertico-sidebar--icon buffer))
          (details-visible
@@ -1762,12 +1793,14 @@ restore."
         (set-window-buffer window (current-buffer)))
       t)))
 
-(defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional nested)
+(defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional depth)
   "Insert session LINES with KIND and NODE text properties.
 
-NESTED reserves the two columns a project header spends on its fold
-triangle, so a session icon lines up under the project name; flat rows
-keep their status icon at column zero.
+DEPTH reserves two columns per level, the same two a project header
+spends on its fold triangle, so a session icon lines up under whatever
+is above it: a project name at depth 1, a parent session's icon at
+depth 1 or, nested inside a grouped project, at depth 2.  A flat,
+parentless row at depth 0 keeps its status icon at column zero.
 
 Indentation is a `line-prefix' display property rather than inserted
 spaces, as `agent-shell' does for its own fragments: the columns are
@@ -1783,8 +1816,9 @@ already applies, so it adds no columns of its own either."
                       (agent-shell-vertico-sidebar--current-session-marker
                        (eq node focused))))
          (start (point))
-         (first-prefix (concat marker (and nested "  ")))
-         (continuation-prefix (concat marker (if nested "    " "  ")))
+         (indent (make-string (* 2 (or depth 0)) ?\s))
+         (first-prefix (concat marker indent))
+         (continuation-prefix (concat marker indent "  "))
          (title-end nil)
          (first t))
     (dolist (line lines)
@@ -1862,6 +1896,28 @@ a column of slack rather than pushing its count past the window edge."
                        ?\s)
                       summary)))))
 
+(defun agent-shell-vertico-sidebar--insert-session-and-children
+    (buffer width nested depth)
+  "Insert BUFFER's row at WIDTH and DEPTH, then its child sessions.
+
+NESTED says whether BUFFER already sits under a project header, which
+`--session-lines' uses to suppress the row's own project-context line;
+a child inherits it unchanged, since the same header (or its absence)
+speaks for it too.  Each child is inserted one DEPTH deeper and sorted
+among its siblings the way `--sort-groups' sorts a project's own
+sessions: by `agent-shell-vertico-sidebar-sort-by', scoped to just this
+parent, so nesting never reorders the top level."
+  (agent-shell-vertico-sidebar--insert-row
+   (agent-shell-vertico-sidebar--session-lines
+    buffer (agent-shell-vertico-sidebar--project-root buffer)
+    width nested depth)
+   'session buffer depth)
+  (dolist (child (agent-shell-vertico-sidebar--sort-buffers
+                  (agent-shell-vertico-sidebar--children-of buffer)
+                  agent-shell-vertico-sidebar-sort-by))
+    (agent-shell-vertico-sidebar--insert-session-and-children
+     child width nested (1+ depth))))
+
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
   "Insert project header ROOT and its BUFFERS at WIDTH."
   (let* ((expanded
@@ -1892,9 +1948,8 @@ a column of slack rather than pushing its count past the window edge."
            'kbd-help "TAB/RET/mouse-1: toggle project"))
     (when expanded
       (dolist (buffer buffers)
-        (agent-shell-vertico-sidebar--insert-row
-         (agent-shell-vertico-sidebar--session-lines buffer root width t)
-         'session buffer t)))))
+        (agent-shell-vertico-sidebar--insert-session-and-children
+         buffer width t 1)))))
 
 (cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
@@ -1910,6 +1965,12 @@ a column of slack rather than pushing its count past the window edge."
   ;; column first or the rows are laid out one column too wide.
   (agent-shell-vertico-sidebar--apply-marker-margin)
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         ;; A child with a live parent is inserted under it instead, by
+         ;; `--insert-session-and-children'; everything else, including an
+         ;; orphan whose parent just died, roots its own place in the sort
+         ;; or the grouping below.  `snapshots' still covers every buffer:
+         ;; a nested child's own status still needs tracking and drawing.
+         (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers))
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
          (snapshot-table (make-hash-table :test #'eq))
@@ -1965,18 +2026,15 @@ a column of slack rather than pushing its count past the window edge."
             (if agent-shell-vertico-sidebar-group-by
                 (dolist (group
                          (agent-shell-vertico-sidebar--sort-groups
-                          (agent-shell-vertico-sidebar--group-buffers buffers)
+                          (agent-shell-vertico-sidebar--group-buffers roots)
                           agent-shell-vertico-sidebar-sort-by))
                   (agent-shell-vertico-sidebar--insert-project
                    (car group) (cdr group) width))
               (dolist (buffer
                        (agent-shell-vertico-sidebar--sort-buffers
-                        buffers agent-shell-vertico-sidebar-sort-by))
-                (agent-shell-vertico-sidebar--insert-row
-                 (agent-shell-vertico-sidebar--session-lines
-                  buffer (agent-shell-vertico-sidebar--project-root buffer)
-                  width)
-                 'session buffer))))
+                        roots agent-shell-vertico-sidebar-sort-by))
+                (agent-shell-vertico-sidebar--insert-session-and-children
+                 buffer width nil 0))))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -3705,7 +3763,8 @@ not be relied on to do."
   "Read one key with PROMPT."
   (read-key prompt))
 
-(defun agent-shell-vertico-sidebar--read-jump-keys (labels labelled total)
+(defun agent-shell-vertico-sidebar--read-jump-keys
+    (labels labelled total &optional default-action)
   "Read which of LABELS to act on, and what to do with it.
 
 LABELLED and TOTAL are how many sessions carry a key and how many there
@@ -3714,6 +3773,15 @@ are, which the prompt reports.  Reading loops: an action key from
 session key will do and asks again, `?' adds the list of actions above
 the prompt, and a session key ends the read.  Return (BUFFER . ACTION),
 where ACTION takes a session buffer.
+
+DEFAULT-ACTION is what a session key resolves to absent an explicit
+dispatch key, `--jump-display' unless the caller passes its own.  A
+parent session with children is answered in two reads, one over the
+parent rows and one over just that parent's children once it is
+chosen; passing the first read's result back in as DEFAULT-ACTION for
+the second is what keeps a dispatch key pressed before drilling in
+\(kill, say\) aimed at the child eventually chosen rather than silently
+falling back to a plain jump.
 
 The labels stay drawn throughout, so choosing an action costs no
 redraw, and the action itself is left to the caller to run once the
@@ -3739,6 +3807,7 @@ sidebar is back as it was."
          (session
           (setq result (cons session
                              (or (nth 1 action)
+                                 default-action
                                  #'agent-shell-vertico-sidebar--jump-display))))
          ((eq key ??) (setq help t))
          ((assq key agent-shell-vertico-sidebar-jump-dispatch-alist)
@@ -3747,8 +3816,43 @@ sidebar is back as it was."
          (t (user-error "No session on %s" (single-key-description key))))))
     result))
 
+(defun agent-shell-vertico-sidebar--read-child-jump-target
+    (rows window parent-key parent children action)
+  "Read which of PARENT or its CHILDREN to act on.
+
+ROWS and WINDOW are as in `--read-jump-target'.  PARENT-KEY is the key
+PARENT was already chosen by in the first read, kept live here so
+choosing a session with children does not cost the ability to land on
+the parent itself.  ACTION is the action already resolved for PARENT
+in that first read, offered as the default here so a dispatch key
+pressed before drilling in \(kill, say\) survives to whichever child is
+chosen next instead of quietly falling back to a plain jump.
+
+Return (cons RESULT OVERLAYS), RESULT being
+`agent-shell-vertico-sidebar--read-jump-keys' own (BUFFER . ACTION) and
+OVERLAYS the ones this read drew, for the caller to fold into its own
+cleanup list."
+  (let* ((child-rows (seq-filter (lambda (row) (memq (car row) children))
+                                 rows))
+         (child-keyed (agent-shell-vertico-sidebar--visible-rows
+                       child-rows window))
+         (labels (cons (cons parent-key parent)
+                       (cl-mapcar (lambda (key row) (cons key (car row)))
+                                  (remove parent-key
+                                          agent-shell-vertico-sidebar-jump-keys)
+                                  child-keyed)))
+         (keyed (cons (assq parent rows) child-keyed))
+         (overlays
+          (append (agent-shell-vertico-sidebar--dim-overlays
+                   window rows labels)
+                  (agent-shell-vertico-sidebar--show-jump-labels
+                   labels keyed))))
+    (cons (agent-shell-vertico-sidebar--read-jump-keys
+           labels (length labels) (1+ (length child-rows)) action)
+          overlays)))
+
 (defun agent-shell-vertico-sidebar--read-jump-target ()
-  "Key the sessions listed flat in the sidebar and read which one.
+  "Key the top-level sessions listed flat in the sidebar and read which.
 
 A hidden sidebar is shown for the read and closed again after it.  A
 grouped sidebar is drawn flat for the read, so a folded session has a
@@ -3756,6 +3860,13 @@ row too.  Every exit path renders again under the real grouping, which
 is also what puts a sidebar shown on another frame back: the buffer is
 shared, so the flat render reached that frame too.  The folds
 themselves are never touched.
+
+A session with live children is not enough to end the read: nesting
+already puts a child's row right after its parent's in the flat
+render, so `labels' only keys the rows with no parent \(see
+`--parent-of'\), leaving every child dimmed like any other unlabelled
+row.  Choosing a parent this way starts a second read, scoped to just
+its own rows, via `--read-child-jump-target'.
 
 Return (BUFFER . ACTION) from
 `agent-shell-vertico-sidebar--read-jump-keys'.  The action is returned
@@ -3784,8 +3895,12 @@ window free for a prompt of its own."
           (agent-shell-vertico-sidebar--clear-busy-overlays)
           (let* ((agent-shell-vertico-sidebar--jump-in-progress t)
                  (rows (agent-shell-vertico-sidebar--session-rows))
+                 (roots (seq-remove
+                         (lambda (row)
+                           (agent-shell-vertico-sidebar--parent-of (car row)))
+                         rows))
                  (keyed (agent-shell-vertico-sidebar--visible-rows
-                         rows window))
+                         roots window))
                  (labels (cl-mapcar (lambda (key row) (cons key (car row)))
                                     agent-shell-vertico-sidebar-jump-keys
                                     keyed)))
@@ -3795,8 +3910,20 @@ window free for a prompt of its own."
                     window rows labels)
                    (agent-shell-vertico-sidebar--show-jump-labels
                     labels keyed)))
-            (agent-shell-vertico-sidebar--read-jump-keys
-             labels (length labels) (length rows))))
+            (let* ((choice (agent-shell-vertico-sidebar--read-jump-keys
+                            labels (length labels) (length roots)))
+                   (children (agent-shell-vertico-sidebar--children-of
+                              (car choice))))
+              (if (null children)
+                  choice
+                (mapc #'delete-overlay overlays)
+                (setq overlays nil)
+                (let ((refined
+                       (agent-shell-vertico-sidebar--read-child-jump-target
+                        rows window (car (rassq (car choice) labels))
+                        (car choice) children (cdr choice))))
+                  (setq overlays (cdr refined))
+                  (car refined))))))
       (mapc #'delete-overlay overlays)
       (unless existing
         (when (window-live-p window)
@@ -3821,6 +3948,12 @@ Press `?' to list the actions in
 `agent-shell-vertico-sidebar-jump-dispatch-alist', or an action's key
 to do that to the next session chosen instead of displaying it, the way
 `ace-window' dispatches on `aw-dispatch-alist'.
+
+A session with a child \(a side conversation, see `agent-shell-side'\)
+does not end the read: only sessions with no parent are keyed at
+first, and choosing one with children starts a second read, dimmed
+down to just that session and its children, its own key still live
+for landing on it directly instead of a child.
 
 Only the rows the sidebar window shows are keyed, and only as many as
 there are keys.  Nothing scrolls, because the read cannot be

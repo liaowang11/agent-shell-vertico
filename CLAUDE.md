@@ -343,6 +343,33 @@ resolve their session through `--attention-target`, which reads the sidebar
 row at point when called there and the current buffer's session, viewport
 included, anywhere else.
 
+**Nesting a side conversation under its parent.** A side conversation
+(`agent-shell-side`) is an ordinary `agent-shell` buffer, so without this it
+would sit as its own row wherever the sort put it. `--render` partitions the
+live buffer set into `roots` (everything with no live parent, via
+`--parent-of`) and inserts each root through
+`--insert-session-and-children`, which draws the root's own row and then
+recurses over `--children-of` sorted by the same
+`agent-shell-vertico-sidebar-sort-by`, one level deeper each time — so a
+parent's children sort among themselves and never affect where the parent
+lands among its own siblings. Grouping and the top-level sort never see a
+child at all: both run over `roots`, exactly as before this feature.
+Indentation, which used to be a boolean (`nested`, under a project header or
+not), is now a depth count, since a child under a project-grouped parent
+needs two steps and a project's own sessions still need one; `--content-width`
+and `--insert-row` both take the count directly, while `--session-lines`
+keeps `nested` for the unrelated question of whether the row's own flat
+project line would repeat what a header above it already says — a project
+header and a parent's own row answer two different questions and can each be
+present without the other. A child whose parent has died promotes itself for
+free: nothing records the family relationship on this side, `--parent-of`
+just stops finding a live parent on the next render, and the child falls
+into `roots` like any other session. `agent-shell-side-parent-buffer` and
+`agent-shell-side-children` are the only two functions this reads, added to
+that package as public API for this purpose; both answer nil once
+`agent-shell-side` is not loaded, so nesting is a silent no-op without it,
+the same convention `--live-status` already uses for `agent-shell-status`.
+
 **Jumping to a session by key.** `agent-shell-vertico-sidebar-jump-by-key` is
 the `ace-window` model: assign labels at trigger time, show them where the
 reader is already looking, read one key. The sidebar is the only rendering, so
@@ -390,6 +417,23 @@ tests assert the span and the character under it, not the overlay's existence.
 Keys are positional on purpose: under `priority` sorting rows move, so a
 per-session sticky key would need a persistent label column to be readable,
 and that is a separate feature.
+
+**Drilling into a parent's children.** `--read-jump-target` keys only
+`roots` in its first read, the same set `--render` now sorts at the top
+level, so a child never receives a label there and dims like any other
+unlabelled row. Choosing a root with live children does not end the read:
+`--read-child-jump-target` reuses the chosen key for the parent itself, so
+landing on the parent directly is still one press away, hands out fresh
+keys from `agent-shell-vertico-sidebar-jump-keys' \(minus the one already
+spent\) to its children, and dims everything outside that family with the
+same `--dim-overlays' the first read used. The action a dispatch key had
+already set before drilling in is not lost: it is threaded through as
+`--read-jump-keys''s DEFAULT-ACTION, so pressing an action key, then a
+parent with children, then one of them, still runs that action on the
+child rather than silently falling back to a plain jump. Nothing here
+changes `agent-shell-vertico-sidebar-jump' or `-jump-to-index': both still
+rank and index every live session, child included, because reading two
+keys to choose one is only what a manual jump needs.
 
 **Jumping to a session by position.** `--jump-to-index` is the blind jump the
 `agent-shell-vertico-sidebar-jump-to-1' family is bound to, and it answers a

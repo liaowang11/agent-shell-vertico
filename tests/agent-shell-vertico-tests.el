@@ -220,6 +220,34 @@ Each element in BINDINGS is of the form:
                  (kill-buffer buffer)))
              created))))
 
+(defmacro agent-shell-vertico-tests--with-side-links (links &rest body)
+  "Evaluate BODY with `agent-shell-side' parent/child lookups faked.
+
+LINKS names a variable holding a list of (CHILD . PARENT) conses, read
+afresh on every call so a test can mutate it \(for instance to fake a
+parent's death by removing its entry\) and see the change immediately,
+the way `agent-shell-side-parent-buffer' would once the real parent
+buffer is no longer live.  A parent that is not itself `buffer-live-p'
+answers nil, matching that same liveness contract."
+  (declare (indent 1))
+  ;; The lambda parameters below are named `--side' and `--owner', not
+  ;; `buffer' or `parent': this macro is not hygienic, and LINKS is
+  ;; spliced into each lambda's body, so a parameter reusing a name
+  ;; LINKS's own expression happens to bind (`parent', say) would
+  ;; silently capture it instead of the caller's variable.
+  `(cl-letf (((symbol-function 'agent-shell-side-parent-buffer)
+              (lambda (&optional --side)
+                (let* ((--side (or --side (current-buffer)))
+                       (--found (cdr (assq --side ,links))))
+                  (and --found (buffer-live-p --found) --found))))
+             ((symbol-function 'agent-shell-side-children)
+              (lambda (&optional --owner)
+                (let ((--owner (or --owner (current-buffer))))
+                  (mapcar #'car
+                          (seq-filter (lambda (link) (eq (cdr link) --owner))
+                                      ,links))))))
+     ,@body))
+
 (ert-deftest agent-shell-vertico-sidebar-groups-by-project-root ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
@@ -233,6 +261,106 @@ Each element in BINDINGS is of the form:
       (should (equal (mapcar #'car groups)
                      '("/work/alpha/" "/work/beta/")))
       (should (equal (mapcar #'length (mapcar #'cdr groups)) '(2 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-nests-a-child-under-its-parent ()
+  "A session with a live parent renders right after it, indented.
+
+Nesting does not disturb the top level: `other', with no parent of its
+own, keeps its place rather than landing between parent and child."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (other "Codex Agent @ other" "/work/other/"
+              '((:session . ((:id . "o") (:title . "Zeta Other"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child other))
+            (agent-shell-vertico-sidebar-group-by nil)
+            (agent-shell-vertico-sidebar-sort-by 'name))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (let ((rows (agent-shell-vertico-sidebar--session-rows)))
+            (should (equal (mapcar #'car rows) (list parent child other)))
+            (should-not (get-text-property (cdr (nth 0 rows)) 'line-prefix))
+            (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
+                           "  "))
+            (should-not
+             (get-text-property (cdr (nth 2 rows)) 'line-prefix))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-nests-a-child-two-deep-inside-a-project ()
+  "Grouped by project, a child indents once past its already-nested parent."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child))
+            (agent-shell-vertico-sidebar-group-by 'project)
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-expand-by-default t))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (let ((rows (agent-shell-vertico-sidebar--session-rows)))
+            (should (equal (mapcar #'car rows) (list parent child)))
+            (should (equal (get-text-property (cdr (nth 0 rows)) 'line-prefix)
+                           "  "))
+            (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
+                           "    "))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-sorts-children-within-their-parent ()
+  "A parent's children sort among themselves, not by the top-level order.
+
+Sorting is scoped to the parent: nothing here compares a child against
+a session outside its own family."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Parent")))))
+       (zeta "Codex Agent @ zeta" "/work/parent/"
+             '((:session . ((:id . "z") (:title . "Zeta")))))
+       (alpha "Codex Agent @ alpha" "/work/parent/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    ;; Created oldest first as zeta then alpha, the opposite of name order,
+    ;; so a passing test proves `name' sorting ran rather than creation
+    ;; order surviving by accident.
+    (agent-shell-vertico-tests--with-side-links
+        (list (cons zeta parent) (cons alpha parent))
+      (let ((agent-shell-test-buffers (list parent zeta alpha))
+            (agent-shell-vertico-sidebar-group-by nil)
+            (agent-shell-vertico-sidebar-sort-by 'name))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (should (equal (mapcar #'car
+                                 (agent-shell-vertico-sidebar--session-rows))
+                         (list parent alpha zeta))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-promotes-an-orphaned-child ()
+  "A child whose parent is no longer live renders as its own top-level row."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child"))))))
+    (let ((links (list (cons child parent))))
+      (agent-shell-vertico-tests--with-side-links links
+        (let ((agent-shell-test-buffers (list parent child))
+              (agent-shell-vertico-sidebar-group-by nil)
+              (agent-shell-vertico-sidebar-sort-by 'name))
+          (with-temp-buffer
+            (agent-shell-vertico-sidebar-mode)
+            ;; The parent is gone from the child's point of view, the way
+            ;; `agent-shell-side-parent-buffer' would answer once the real
+            ;; parent buffer is dead, without actually killing it here.
+            (setq links nil)
+            (agent-shell-vertico-sidebar--render)
+            (should-not
+             (get-text-property
+              (cdr (assq child (agent-shell-vertico-sidebar--session-rows)))
+              'line-prefix))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-uses-agent-shell-project-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -3580,13 +3708,14 @@ question mark says what kind of answer."
     ;; Text mode: one column for the character, one for its space.
     (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
       (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 38))
-      (should (= (agent-shell-vertico-sidebar--content-width 40 t) 36)))
+      (should (= (agent-shell-vertico-sidebar--content-width 40 1) 36))
+      (should (= (agent-shell-vertico-sidebar--content-width 40 2) 34)))
     ;; Icons in a terminal spend one more column on the wider gap.
     (cl-letf (((symbol-function 'nerd-icons-codicon)
                (lambda (name &rest _) (format "<cod:%s>" name))))
       (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
         (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 37))
-        (should (= (agent-shell-vertico-sidebar--content-width 40 t) 35))))))
+        (should (= (agent-shell-vertico-sidebar--content-width 40 1) 35))))))
 
 (ert-deftest agent-shell-vertico-sidebar-header-counts-attention-kinds ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -10890,6 +11019,99 @@ names count from 1, so the command's number is the key it is bound to."
         (should (equal agent-shell-vertico-tests--jump-prompt
                        "Jump to session: "))
         (should (eq agent-shell-test-displayed-buffer alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-does-not-label-a-child ()
+  "A session with a live parent is not itself offered a key at the top level."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (other "Codex Agent @ other" "/work/other/"
+              '((:session . ((:id . "o") (:title . "Zeta Other"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child other))
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
+            seen)
+        ;; Other has no children, so answering its own key ends the read
+        ;; in one step: nothing here needs to drill in.
+        (agent-shell-vertico-tests--with-jump-by-key
+            (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown))
+                   ?2)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should (equal seen (list (cons ?1 parent) (cons ?2 other))))
+          (should (eq agent-shell-test-displayed-buffer other)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-drills-into-a-parents-children ()
+  "Choosing a parent starts a second read scoped to its own children.
+
+The parent keeps the key it was already chosen by, so the second read's
+labels are the parent's own key plus fresh ones for each child."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (other "Codex Agent @ other" "/work/other/"
+              '((:session . ((:id . "o") (:title . "Zeta Other"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child other))
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
+            (keys (list ?1 ?2))
+            seen-second-read)
+        (agent-shell-vertico-tests--with-jump-by-key
+            (let ((key (pop keys)))
+              (unless keys
+                (setq seen-second-read
+                      (agent-shell-vertico-tests--jump-labels-shown)))
+              key)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should (equal seen-second-read (list (cons ?1 parent) (cons ?2 child))))
+          (should (eq agent-shell-test-displayed-buffer child)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-can-reselect-the-parent ()
+  "The parent's own key still lands on it once its children are offered."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child))
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
+            (keys (list ?1 ?1)))
+        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+          (agent-shell-vertico-sidebar-jump-by-key)
+          (should (eq agent-shell-test-displayed-buffer parent)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-dispatch-survives-drilling-in ()
+  "An action picked before drilling into a parent still lands on the child.
+
+Without threading the first read's resolved action through as the
+second read's default, choosing the child afterwards would silently
+fall back to a plain jump instead of running the action."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (other "Codex Agent @ other" "/work/other/"
+              '((:session . ((:id . "o") (:title . "Zeta Other"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+      (let ((agent-shell-test-buffers (list parent child other))
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
+            (keys (list ?i ?1 ?2))
+            acted)
+        (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
+               `((?i ,(lambda (buffer) (setq acted buffer)) "interrupt"))))
+          (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+            (agent-shell-vertico-sidebar-jump-by-key)
+            (should (eq acted child))
+            (should-not agent-shell-test-displayed-buffer)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-shows-hidden-sidebar-for-the-read ()
   "A hidden sidebar is shown while the key is read and closed after."
