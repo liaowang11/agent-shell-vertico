@@ -605,9 +605,17 @@ not gain a viewport because a caller asked about it."
                 (agent-shell--resolved-agent-configs)))))
 
 (defun agent-shell-vertico--before-display (buffer)
-  "Let `agent-shell-vertico-before-display-function' prepare BUFFER."
+  "Let `agent-shell-vertico-before-display-function' prepare BUFFER.
+
+The caller's buffer, point and region are restored afterwards, because
+what the hook is for — switching a window layout — has side effects on
+them that the caller never asked for: Doom deactivates the mark on
+`persp-before-deactivate-functions\=', so a workspace switch here silently
+turned a send-the-region into a send-the-line-at-point for every command
+that reads its context after preparing the display."
   (when agent-shell-vertico-before-display-function
-    (funcall agent-shell-vertico-before-display-function buffer)))
+    (save-mark-and-excursion
+      (funcall agent-shell-vertico-before-display-function buffer))))
 
 (defun agent-shell-vertico--display-session (buffer-name)
   "Display agent shell session for BUFFER-NAME.

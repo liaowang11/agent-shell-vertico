@@ -4712,6 +4712,30 @@ first or the session appears wherever the caller stood."
           (should (equal (list command prepared)
                          (list command viewport))))))))
 
+(ert-deftest agent-shell-vertico-with-target-shell-keeps-the-region ()
+  "Preparing the display leaves the caller's region alone.
+A layout package's hook may switch workspaces, and Doom deactivates the
+mark on `persp-before-deactivate-functions'; the body reads its context
+from the region, so losing it turns a send-the-region into a send-the
+line at point."
+  (agent-shell-vertico-tests--with-project-shells
+    (setq agent-shell-test-project-buffers (list alpha-two))
+    (with-temp-buffer
+      (insert "region line\nother line\n")
+      (goto-char (point-min))
+      (push-mark (line-end-position) t t)
+      (let* ((origin (current-buffer))
+             (transient-mark-mode t)
+             (agent-shell-vertico-before-display-function
+              (lambda (_buffer) (deactivate-mark)))
+             region)
+        (agent-shell-vertico--with-target-shell nil
+          (setq region (and (region-active-p)
+                            (eq (current-buffer) origin)
+                            (buffer-substring-no-properties
+                             (region-beginning) (region-end)))))
+        (should (equal region "region line"))))))
+
 (ert-deftest agent-shell-vertico-with-target-shell-prepares-nothing-without-a-shell ()
   "No live shell signals before anything is prepared or displayed."
   (agent-shell-vertico-tests--with-project-shells
