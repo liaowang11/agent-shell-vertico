@@ -3996,17 +3996,31 @@ Show it without selecting its window, or close it when it is visible."
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-focus ()
-  "Focus the visible sidebar, opening it when necessary."
+  "Focus the visible sidebar, opening it when necessary.
+
+Point lands on the row of the session the selected window showed, a
+viewport counting as its session, and stays where it was when that
+window showed none or its row is folded away.  Called from the sidebar,
+select the window used before it instead, leaving the sidebar open."
   (interactive)
-  (let* ((buffer (get-buffer "*Agent Shell Sessions*"))
-         (existing-window (and buffer (get-buffer-window buffer)))
-         (window (or existing-window
-                     (agent-shell-vertico-sidebar--display-buffer))))
-    (when (and existing-window (window-live-p window))
-      (with-current-buffer buffer
-        (when (derived-mode-p 'agent-shell-vertico-sidebar-mode)
-          (agent-shell-vertico-sidebar--render))))
-    (select-window window)))
+  (let ((buffer (get-buffer "*Agent Shell Sessions*")))
+    (if (and buffer (eq (window-buffer (selected-window)) buffer))
+        (select-window (or (get-mru-window nil nil t)
+                           (user-error "No other window to return to")))
+      (let* ((session (agent-shell-vertico-sidebar--session-for-buffer
+                       (window-buffer (selected-window))))
+             (existing-window (and buffer (get-buffer-window buffer)))
+             (window (or existing-window
+                         (agent-shell-vertico-sidebar--display-buffer))))
+        (when (and existing-window (window-live-p window))
+          (with-current-buffer buffer
+            (when (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+              (agent-shell-vertico-sidebar--render))))
+        (select-window window)
+        ;; After selecting, so the move is the window's point and not
+        ;; only the buffer's.
+        (when session
+          (agent-shell-vertico-sidebar--goto-node (cons 'session session)))))))
 
 (defun agent-shell-vertico-sidebar--window-configuration-change
     (&optional _frame)

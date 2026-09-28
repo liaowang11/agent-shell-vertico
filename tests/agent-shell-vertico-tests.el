@@ -1381,6 +1381,58 @@ a session outside its own family."
         (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
+(ert-deftest agent-shell-vertico-sidebar-focus-lands-on-shown-session ()
+  "Focusing from a session's window puts point on that session's row."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (original (selected-window))
+          (original-buffer (window-buffer (selected-window))))
+      (unwind-protect
+          (let (first other)
+            ;; Entered from a window showing no session, point stays on
+            ;; the first row; the session not on it is the one to show.
+            (agent-shell-vertico-sidebar-focus)
+            (setq first (agent-shell-vertico-sidebar--node-at-point)
+                  other (if (eq first alpha) beta alpha))
+            (select-window original)
+            (set-window-buffer original other)
+            (agent-shell-vertico-sidebar-focus)
+            (should (eq (window-buffer (selected-window))
+                        (get-buffer "*Agent Shell Sessions*")))
+            (should (eq (agent-shell-vertico-sidebar--node-at-point) other))
+            (should (= (window-point) (point))))
+        (when (window-live-p original)
+          (select-window original)
+          (set-window-buffer original original-buffer))
+        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focus-from-sidebar-returns ()
+  "Focusing while in the sidebar selects the window it was entered from."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (original (selected-window)))
+      (unwind-protect
+          (progn
+            (agent-shell-vertico-sidebar-focus)
+            (let ((sidebar (selected-window)))
+              (should-not (eq sidebar original))
+              (agent-shell-vertico-sidebar-focus)
+              (should (eq (selected-window) original))
+              ;; Leaving keeps the sidebar open.
+              (should (window-live-p sidebar))))
+        (when (window-live-p original)
+          (select-window original))
+        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
 (ert-deftest agent-shell-vertico-sidebar-permission-request-marks-unread ()
   "A permission request marks the session blocked and stops its busy clock."
   (agent-shell-vertico-tests--with-session-buffers
