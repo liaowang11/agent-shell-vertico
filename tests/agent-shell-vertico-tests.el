@@ -177,6 +177,8 @@ Each element in BINDINGS is of the form:
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--failed)
                      (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--snoozed)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--activity)
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
@@ -10199,7 +10201,7 @@ session is doing now, and the session is working."
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
         (should-not (agent-shell-vertico-sidebar--unread-p alpha))
         (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
         (should (eq (agent-shell-vertico-sidebar--mark-face
                      (agent-shell-vertico-sidebar--mark alpha))
                     'agent-shell-vertico-sidebar-working))
@@ -10226,7 +10228,7 @@ session is doing now, and the session is working."
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
         (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                       '(ready . t)))))))
+                       '(ready t nil)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-burst-defers-a-failed-mark ()
   "A failed session that streams again is working until it stops."
@@ -10237,13 +10239,13 @@ session is doing now, and the session is working."
       (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
         (agent-shell-vertico-sidebar--handle-event alpha '((:event . error)))
         (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                       '(failed . t)))
+                       '(failed t nil)))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                       '(failed . t)))))))
+                       '(failed t nil)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-deferred-mark-notifies-once ()
   "A burst arriving on top of unread output announces nothing new."
@@ -10319,7 +10321,7 @@ the burst's own time rather than the cleared mark's."
         (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 100.0)))
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy)))
+        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
         (should (= (agent-shell-vertico-sidebar--priority-time alpha) 100.0))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))))))
@@ -10403,7 +10405,7 @@ one the sidebar stopped pointing at."
          alpha '((:event . agent-message-chunk)))
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
         (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                       '(blocked . t)))
+                       '(blocked t nil)))
         (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))))
 
 ;;; Viewport pages
@@ -10781,7 +10783,7 @@ finished since, so ranking it by age alone would pin every jump to it."
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons working 'busy))))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                     [1 1 0 0])))))
+                     [1 1 0 0 0])))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-passes-over-the-session-in-hand ()
   "A jump taken from inside a waiting session goes to the next one.
@@ -11627,7 +11629,7 @@ without the reader being told why."
            (list (cons alpha "Alpha Workspace") (cons beta "Beta Workspace")))
           (agent-shell-vertico-sidebar-group-by 'project)
           (agent-shell-vertico-sidebar-expand-by-default nil))
-      (agent-shell-vertico-tests--with-jump-by-key ?z
+      (agent-shell-vertico-tests--with-jump-by-key ?y
         (should-error (agent-shell-vertico-sidebar-jump-by-key)
                       :type 'user-error)
         ;; The window the read borrowed is gone, and the buffer it left
@@ -11839,10 +11841,10 @@ icon font of the mark it is drawn over."
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'ready)))
           (agent-shell-vertico-sidebar-jump-keys '(?1 ?2)))
-      (agent-shell-vertico-tests--with-jump-by-key ?z
+      (agent-shell-vertico-tests--with-jump-by-key ?y
         (should (equal (should-error (agent-shell-vertico-sidebar-jump-by-key)
                                      :type 'user-error)
-                       '(user-error "No session on z")))
+                       '(user-error "No session on y")))
         (should-not agent-shell-test-displayed-buffer)
         (should-not (get-buffer-window "*Agent Shell Sessions*"))
         (should-not (agent-shell-vertico-tests--jump-labels-shown))))))
@@ -13542,6 +13544,206 @@ under its point."
                            (agent-shell-vertico-sidebar--row-point
                             (point-min)))))))
         (kill-buffer other)))))
+
+;;; Snoozing
+
+(defmacro agent-shell-vertico-tests--with-two-sessions (&rest body)
+  "Evaluate BODY with ALPHA and BETA live, both ready."
+  (declare (indent 0))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "a") (:title . "Alpha")))))
+        (beta "Codex Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b") (:title . "Beta"))))))
+     (let ((agent-shell-test-buffers (list alpha beta))
+           (agent-shell-test-statuses (list (cons alpha 'ready)
+                                            (cons beta 'ready))))
+       ,@body)))
+
+(defun agent-shell-vertico-tests--snooze (buffer)
+  "Run the snooze command with BUFFER as the current session."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-snooze)))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-leaves-the-attention-tier ()
+  "A snoozed unread session no longer asks for the reader or the jump."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+    (agent-shell-vertico-tests--snooze alpha)
+    (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+    ;; Snoozing puts off the output; it does not read it.
+    (should (agent-shell-vertico-sidebar--unread-p alpha))
+    (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                   '(ready t t)))
+    (should (eq (agent-shell-vertico-sidebar--mark-face
+                 (agent-shell-vertico-sidebar--mark alpha))
+                'agent-shell-vertico-sidebar-snoozed))
+    (should-not (agent-shell-vertico-sidebar--attention-sessions))
+    (agent-shell-vertico-sidebar-jump)
+    (should-not agent-shell-test-displayed-buffer)
+    (should (equal (agent-shell-vertico-sidebar--no-attention-message)
+                   "No session needs attention, 1 snoozed"))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-passes-over-a-snooze ()
+  "The jump goes past a snoozed session that would otherwise win.
+ALPHA has waited longest and BETA is blocked, so either would be
+visited before GAMMA; snoozed, neither is visited at all."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--with-session-buffers
+        ((gamma "Codex Agent @ gamma" "/work/gamma/"
+                '((:session . ((:id . "g") (:title . "Gamma"))))))
+      (let ((agent-shell-test-buffers (list alpha beta gamma))
+            (agent-shell-test-statuses (list (cons alpha 'ready)
+                                             (cons beta 'blocked)
+                                             (cons gamma 'ready))))
+        (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+        (agent-shell-vertico-sidebar--mark-unread-at gamma 20.0)
+        (agent-shell-vertico-tests--snooze alpha)
+        (agent-shell-vertico-tests--snooze beta)
+        (should (equal (agent-shell-vertico-sidebar--attention-sessions)
+                       (list gamma)))
+        (agent-shell-vertico-sidebar-jump)
+        (should (eq agent-shell-test-displayed-buffer gamma))
+        ;; With GAMMA read, only snoozed sessions are left to ask.
+        (setq agent-shell-test-displayed-buffer nil)
+        (remhash gamma agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar-jump)
+        (should-not agent-shell-test-displayed-buffer)))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-covers-a-blocked-session ()
+  "A permission decision can be put off too, and keeps its status."
+  (agent-shell-vertico-tests--with-two-sessions
+    (setf (alist-get alpha agent-shell-test-statuses) 'blocked)
+    (agent-shell-vertico-tests--snooze alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+    (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    (should (= (agent-shell-vertico-sidebar--status-rank alpha) 3))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-ranks-below-working ()
+  "Snoozed sessions sit between working and ready, oldest snooze first."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((unread "Codex Agent @ unread" "/work/unread/"
+               '((:session . ((:id . "u") (:title . "Unread")))))
+       (working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working")))))
+       (later "Codex Agent @ later" "/work/later/"
+              '((:session . ((:id . "l") (:title . "Later")))))
+       (latest "Codex Agent @ latest" "/work/latest/"
+               '((:session . ((:id . "n") (:title . "Latest")))))
+       (idle "Codex Agent @ idle" "/work/idle/"
+             '((:session . ((:id . "i") (:title . "Idle"))))))
+    (let ((agent-shell-test-buffers (list idle latest later working unread))
+          (agent-shell-test-statuses (list (cons unread 'ready)
+                                           (cons working 'busy)
+                                           (cons later 'ready)
+                                           (cons latest 'ready)
+                                           (cons idle 'ready))))
+      (agent-shell-vertico-sidebar--mark-unread-at unread 50.0)
+      ;; The later snooze holds the older unread output: the tier runs
+      ;; by when each was snoozed, not by what it holds.
+      (agent-shell-vertico-sidebar--mark-unread-at latest 5.0)
+      (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+        (agent-shell-vertico-tests--snooze later))
+      (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 30.0)))
+        (agent-shell-vertico-tests--snooze latest))
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      agent-shell-test-buffers 'priority)
+                     (list unread working later latest idle)))
+      (should (equal (agent-shell-vertico-sidebar--session-statistics)
+                     [1 1 1 0 2])))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-survives-reading-and-output ()
+  "Looking at a snoozed session, or its next turn, leaves it snoozed.
+The output is still recorded, and nobody is told about it."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let* (notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+      (agent-shell-vertico-tests--snooze alpha)
+      (agent-shell-vertico-sidebar--mark-seen alpha)
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+      (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . turn-complete)))
+      (should (agent-shell-vertico-sidebar--unread-p alpha))
+      (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+      (should-not notifications))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-ends-on-a-new-ask ()
+  "A permission request or an error is new, and wakes the session."
+  (dolist (event '(permission-request error))
+    (agent-shell-vertico-tests--with-two-sessions
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-tests--snooze alpha)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha `((:event . ,event)))
+        (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+        (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
+        (should (= (length notifications) 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-ends-when-dealt-with ()
+  "Sending a prompt deals with the session; cleaning it up forgets it."
+  (dolist (event '(input-submitted clean-up))
+    (agent-shell-vertico-tests--with-two-sessions
+      (agent-shell-vertico-tests--snooze alpha)
+      (agent-shell-vertico-sidebar--handle-event alpha `((:event . ,event)))
+      (should-not (agent-shell-vertico-sidebar--snoozed-p alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-yields-to-a-burst ()
+  "A snoozed session streaming output is drawn and ranked as working."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--snooze alpha)
+    (setf (alist-get alpha agent-shell-test-statuses) 'busy)
+    (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (should (= (agent-shell-vertico-sidebar--status-rank alpha) 2))
+    (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
+    (setf (alist-get alpha agent-shell-test-statuses) 'ready)
+    (should (agent-shell-vertico-sidebar--snoozed-p alpha))))
+
+(ert-deftest agent-shell-vertico-sidebar-unsnooze-restores-the-unread-age ()
+  "Snoozing again wakes the session with its unread output as it was."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+    (agent-shell-vertico-tests--snooze alpha)
+    (agent-shell-vertico-tests--snooze alpha)
+    (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
+    (should (= (agent-shell-vertico-sidebar--status-rank alpha) 0))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-refuses-a-working-session ()
+  "A working session has nothing to put off yet."
+  (agent-shell-vertico-tests--with-two-sessions
+    (setf (alist-get alpha agent-shell-test-statuses) 'busy)
+    (should-error (agent-shell-vertico-tests--snooze alpha)
+                  :type 'user-error)
+    (should-not (gethash alpha agent-shell-vertico-sidebar--snoozed))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-wakes-a-snooze ()
+  "Asking for a session again ends its snooze; reading it does not."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+    (agent-shell-vertico-tests--snooze alpha)
+    (with-current-buffer alpha (agent-shell-vertico-sidebar-mark-read))
+    (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (with-current-buffer alpha (agent-shell-vertico-sidebar-mark-unread))
+    (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-keys ()
+  "Snooze is `z' in the sidebar, its action map, Evil, and a jump."
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "z"))
+              #'agent-shell-vertico-sidebar-snooze))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-action-map (kbd "z"))
+              #'agent-shell-vertico-sidebar-snooze))
+  (should (eq (alist-get "z" agent-shell-vertico-sidebar--evil-bindings
+                         nil nil #'equal)
+              #'agent-shell-vertico-sidebar-snooze))
+  (should (eq (car (alist-get ?z agent-shell-vertico-sidebar-jump-dispatch-alist))
+              #'agent-shell-vertico-sidebar--jump-snooze)))
 
 (provide 'agent-shell-vertico-tests)
 

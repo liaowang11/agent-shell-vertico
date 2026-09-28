@@ -287,61 +287,78 @@ idle session, so a live `busy` or `blocked` always wins, and the pending
 decision is asked first among them: a burst streaming beside it is work
 the session does while it waits, not an answer to it.
 
-**Which session needs attention.** `--unread` is the second axis: a buffer
-to the time its unread output arrived, where presence is the whole record.
-It is set from the `agent-shell` event subscription in `--handle-event`
-(a finished turn, a permission request, an error), plus
-`--out-of-turn-settled` for output that arrives with no turn in flight.
-It is cleared when the reader actually looks at the session, which
-`--session-focused-p` decides by comparing against the selected window's
-buffer on a focused frame. Being merely current is not enough: any code
-that does `with-current-buffer` on a session would otherwise mark it read.
-`--needs-attention-p` joins the two axes: unread output, or a `blocked`
-status. Blocked is deliberately not recorded — the session reports itself
-blocked for as long as it waits, so reading the status is the whole
-answer and no record can go stale. Reading a blocked session therefore
-drops its unread mark and leaves it in the attention tier, which is
-right: it still owes a permission decision.
-The one place the axes are not independent is that a working session is
-never unread, and `--unread-for` is where that is said: it holds the
-record back while `--raw-status` says `busy`, and hands it over again
-once the session goes quiet. Nothing is lost, because
-`--out-of-turn-settled` leaves an existing mark at its own time, so the
-row returns to the attention tier with the age it had. Without it,
-out-of-turn output arriving after a turn nobody read drew a red row
-saying Working — a mark asking for the reader on a session with nothing
-to read yet. `mark-unread` refuses a `busy` session for the same reason
-and said it first; `mark-read` reads and drops the record rather than
-the deferred mark, so it still works on a session that is working.
-The `priority` sort puts the attention sessions first, and they are two
-tiers rather than one (`--status-rank-for`): unread output, then a
-`blocked` session the reader has already seen. Ranking them together
-oldest-first pinned every jump to the blocked one, whose wait always
-began before any turn that has finished since, and arriving settles
-nothing that a permission decision does not; the split is also the
-order `--mark-face` draws, red rows above yellow. Both tiers run
-oldest-first, as the working one does (`--oldest-first-rank-p`), so
-`agent-shell-vertico-sidebar-jump` visits the head of `--sort-buffers
-... 'priority'` and nothing else has to rank them again. The jump
-passes over a session the reader is already in, which after the split
-only a blocked one can be, and says so rather than not moving
-(`--attention-here-message`); `--statistics-slots` folds the two ranks
-back into the one attention count a header shows.
-`agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets
-by hand, and it writes the same record the events write, so status names,
-icons, ranks, counters and the jump order need no case for it. It stamps
-the session's last activity time, not the current time, so the
-oldest-first tier stays truthful; it refuses a `busy` session, whose turn
-has produced nothing to miss; and it leaves an existing mark at its own
-time. It deliberately does not fight the clear paths: marking a
-session unread while sitting in it holds only until the reader is next seen
-looking at it, which is a decision, not an oversight.
-`--mark-read` is the same record in reverse and refuses nothing, because
-the unread mark is now the only thing it can drop: a blocked session keeps
-its place through its status and a failed one stays failed. Both commands
-resolve their session through `--attention-target`, which reads the sidebar
-row at point when called there and the current buffer's session, viewport
-included, anywhere else.
+**Which session needs attention.** `--unread` is the second axis: a buffer to
+the time its unread output arrived, where presence is the whole record. It is
+set from the `agent-shell` event subscription in `--handle-event` (a finished
+turn, a permission request, an error), plus `--out-of-turn-settled` for output
+that arrives with no turn in flight. It is cleared when the reader actually
+looks at the session, which `--session-focused-p` decides by comparing against
+the selected window's buffer on a focused frame. Being merely current is not
+enough: any code that does `with-current-buffer` on a session would otherwise
+mark it read. `--needs-attention-p` joins the two axes: unread output, or a
+`blocked` status, unless the reader has snoozed the session (see below). Blocked
+is deliberately not recorded — the session reports itself blocked for as long as
+it waits, so reading the status is the whole answer and no record can go stale.
+Reading a blocked session therefore drops its unread mark and leaves it in the
+attention tier, which is right: it still owes a permission decision. The one
+place the axes are not independent is that a working session is never unread,
+and `--unread-for` is where that is said: it holds the record back while
+`--raw-status` says `busy`, and hands it over again once the session goes quiet.
+Nothing is lost, because `--out-of-turn-settled` leaves an existing mark at its
+own time, so the row returns to the attention tier with the age it had. Without
+it, out-of-turn output arriving after a turn nobody read drew a red row saying
+Working — a mark asking for the reader on a session with nothing to read yet.
+`mark-unread` refuses a `busy` session for the same reason and said it first;
+`mark-read` reads and drops the record rather than the deferred mark, so it
+still works on a session that is working. The `priority` sort puts the attention
+sessions first, and they are two tiers rather than one (`--status-rank-for`):
+unread output, then a `blocked` session the reader has already seen. Ranking
+them together oldest-first pinned every jump to the blocked one, whose wait
+always began before any turn that has finished since, and arriving settles
+nothing that a permission decision does not; the split is also the order
+`--mark-face` draws, red rows above yellow. Both tiers run oldest-first, as the
+working and snoozed ones do (`--oldest-first-rank-p`), so
+`agent-shell-vertico-sidebar-jump` visits the head of `--sort-buffers ...
+'priority'` and nothing else has to rank them again. The jump passes over a
+session the reader is already in, which after the split only a blocked one can
+be, and says so rather than not moving (`--attention-here-message`);
+`--statistics-slots` folds the two ranks back into the one attention count a
+header shows. `agent-shell-vertico-sidebar-mark-unread` is the only mark the
+reader sets by hand, and it writes the same record the events write, so status
+names, icons, ranks, counters and the jump order need no case for it. It stamps
+the session's last activity time, not the current time, so the oldest-first tier
+stays truthful; it refuses a `busy` session, whose turn has produced nothing to
+miss; and it leaves an existing mark at its own time. It deliberately does not
+fight the clear paths: marking a session unread while sitting in it holds only
+until the reader is next seen looking at it, which is a decision, not an
+oversight. `--mark-read` is the same record in reverse and refuses nothing,
+because the unread mark is now the only thing it can drop: a blocked session
+keeps its place through its status and a failed one stays failed. Both commands
+resolve their session through `--attention-target`, which reads the sidebar row
+at point when called there and the current buffer's session, viewport included,
+anywhere else.
+
+**Putting a session off.** Snoozing is a third record, `--snoozed`, beside
+unread and failed, because the reader saying "later" is neither reading a
+session nor being done with it: `mark-read` lost the reminder and leaving
+it unread kept it at the head of the list. It is not a value of `--unread`,
+so snoozing leaves that record alone, and waking a session hands back
+whatever it held at the age it had. `--needs-attention-p` answers nil for a
+snoozed session, which is the one change that takes it out of the jump,
+`--attention-sessions` and a project header's count; `--notify` skips it
+too. `--status-rank-for` gives it its own rank, 3, below working and above
+ready — it is still owed something, which a ready session is not — and it
+runs oldest-snoozed first, `--priority-time` asking the snooze time before
+the unread one. What ends a snooze is dealing with the session or a new
+ask: `input-submitted`, a `permission-request` or an `error` (the agent
+cannot go on without the reader), `mark-unread`, or the command again.
+Looking at it, `mark-read`, a finished turn and settled out-of-turn output
+all leave it alone. `--snoozed-for` is to the snooze what `--unread-for` is
+to unread: a working session is drawn and ranked as working, the record
+kept for when it goes quiet; the command refuses one for the same reason
+`mark-unread` does. A timed snooze was left for later: the record's
+presence is the whole answer today, and a timer would only add a way to
+end it.
 
 **Nesting a side conversation under its parent.** A side conversation
 (`agent-shell-side`) is an ordinary `agent-shell` buffer, so without this it
@@ -529,35 +546,35 @@ action ignores the prefix. Most entries name the existing public
 own target instead, so `--jump-mark-unread` and `--jump-mark-read` run them
 with the session current and let `--attention-target` answer.
 
-**Drawing a session.** A row's mark is a `(STATUS . UNREAD)` cons, built by
-`--mark-for` and cached in the render snapshot as `:mark`. The status picks
-the glyph from `--status-icons`, which lists a filled and an outline
-nerd-icons name plus one plain character per status, and unread picks
-between the two. A `busy` mark is never unread and a `starting` one has
-nothing to have missed, so their filled names are never drawn.
-`--mark-face` colours it: red (`-attention`) for unread,
-yellow (`-unresolved`) for a `blocked` or `failed` session already read,
-then the status colours. Red therefore means exactly `--needs-attention-p`
-minus the sessions the reader has already seen. The plain characters have
-no filled twin for a check or a question mark, so in a terminal the colour
-alone carries unread; that is a deliberate limit, not an oversight.
-`--mark-counts` groups the header and project-header counts by mark, unread
-first, so one status can be counted twice and `--mark-label` says which is
-which in the tooltip. Slots that are not statuses (`project`, `message`,
-`sessions`, the fold triangles) stay in `--icons` and are drawn by
-`--slot-icon`; both go through `--draw-icon`.
-The fringe marker for the sessions on screen is derived, not stored:
-`--current-sessions` lists every session, or viewport, a window of the
-selected frame shows, and nothing else. The selected window alone would be
-too narrow, because moving to the sidebar, a file or magit beside a session
-does not leave it; a session absent from the frame, or on another one, is
-unmarked. This is only the marker: unread still needs the selected window
-(`--session-focused-p`), because seeing a session in a side window is not
-reading it. The render caches what it drew in `--rendered-current-sessions`,
-and the selection and buffer-change hooks compare against that cache as a
-set, so a window rearrangement showing the same sessions redraws nothing and
-the cache can never disagree with the windows for longer than one idle
-refresh.
+**Drawing a session.** A row's mark is a `(STATUS UNREAD SNOOZED)` list, built
+by `--mark-for` and cached in the render snapshot as `:mark`. The status picks
+the glyph from `--status-icons`, which lists a filled and an outline nerd-icons
+name plus one plain character per status, and unread picks between the two. A
+`busy` mark is never unread and a `starting` one has nothing to have missed, so
+their filled names are never drawn. `--mark-face` colours it: grey (`-snoozed`)
+for a snoozed session whatever else it says, red (`-attention`) for unread,
+yellow (`-unresolved`) for a `blocked` or `failed` session already read, then
+the status colours. Red therefore means exactly `--needs-attention-p` minus the
+sessions the reader has already seen; a snoozed session still fills its glyph
+when it holds unread output, so what arrived while it was put off is visible in
+grey. The plain characters have no filled twin for a check or a question mark,
+so in a terminal the colour alone carries unread; that is a deliberate limit,
+not an oversight. `--mark-counts` groups the header and project-header counts by
+mark, unread first and snoozed last, so one status can be counted twice and
+`--mark-label` says which is which in the tooltip. Slots that are not statuses
+(`project`, `message`, `sessions`, the fold triangles) stay in `--icons` and are
+drawn by `--slot-icon`; both go through `--draw-icon`. The fringe marker for the
+sessions on screen is derived, not stored: `--current-sessions` lists every
+session, or viewport, a window of the selected frame shows, and nothing else.
+The selected window alone would be too narrow, because moving to the sidebar, a
+file or magit beside a session does not leave it; a session absent from the
+frame, or on another one, is unmarked. This is only the marker: unread still
+needs the selected window (`--session-focused-p`), because seeing a session in a
+side window is not reading it. The render caches what it drew in
+`--rendered-current-sessions`, and the selection and buffer-change hooks compare
+against that cache as a set, so a window rearrangement showing the same sessions
+redraws nothing and the cache can never disagree with the windows for longer
+than one idle refresh.
 
 **Which of them you are in.** A frame showing several sessions leaves the
 marker unable to say which one the reader is typing into, so the marker has

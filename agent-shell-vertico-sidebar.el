@@ -232,8 +232,9 @@ a finished turn leaves an ordinary `Ready' session holding unread
 output, and a failed one leaves a `Failed' session that stays failed
 after it is read.
 
-Nothing is reported for a session the reader is already looking at, and
-the message text is passed unshortened, since how to fit it belongs to
+Nothing is reported for a session the reader is already looking at, or
+for one they have snoozed until it asks something new, and the message
+text is passed unshortened, since how to fit it belongs to
 whichever channel shows it."
   :type '(choice (const :tag "Do not notify" nil) function)
   :group 'agent-shell-vertico-sidebar)
@@ -264,6 +265,15 @@ ended, so a failed session answers `ready' like any other idle one.  The
 sidebar remembers the failure until a new turn starts, which is what
 makes `failed' a status the reader can see rather than a notification
 they had to catch.")
+
+(defvar agent-shell-vertico-sidebar--snoozed (make-hash-table :test #'eq)
+  "Buffer to the time the reader snoozed it.
+
+A snooze is the reader putting a session off, which is neither reading
+it nor being done with it, so it is a third record beside
+`agent-shell-vertico-sidebar--unread' and `--failed' rather than a
+value of either.  Presence is the whole record.  The time orders the
+snoozed tier oldest first, the way the attention tier is ordered.")
 
 (defvar agent-shell-vertico-sidebar--activity (make-hash-table :test #'eq)
   "Buffer to the latest observed agent activity timestamp.")
@@ -304,7 +314,8 @@ starts a new one.")
     (?t agent-shell-vertico-open-transcript "open transcript")
     (?T agent-shell-vertico-view-traffic "view traffic")
     (?u agent-shell-vertico-sidebar--jump-mark-unread "mark unread")
-    (?! agent-shell-vertico-sidebar--jump-mark-read "mark read"))
+    (?! agent-shell-vertico-sidebar--jump-mark-read "mark read")
+    (?z agent-shell-vertico-sidebar--jump-snooze "snooze or wake"))
   "Actions a jump can take on a session instead of displaying it.
 
 `agent-shell-vertico-sidebar-jump-by-key' offers these the way
@@ -416,6 +427,15 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
 
 A permission request still waiting for its answer, or a failed turn
 nobody has started again."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-snoozed
+  '((t :inherit shadow))
+  "Face for a session the reader has snoozed.
+
+Every other colour here names a status or asks for the reader, and a
+snoozed session asks for nobody, so it takes the colour of what is
+present and not the answer.  The glyph still names the status."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-working
@@ -687,6 +707,27 @@ reader sets by hand, said once for every way a mark is set."
   "Record that BUFFER holds output nobody has read, arriving at TIME."
   (puthash buffer time agent-shell-vertico-sidebar--unread))
 
+(defun agent-shell-vertico-sidebar--snoozed-for (status time)
+  "Return TIME when a session in STATUS is drawn and ranked as snoozed.
+
+A working session is working, snoozed or not: a burst streaming into a
+snoozed session is drawn and ranked with the other working ones, and
+the snooze is back once it goes quiet.  The record is kept throughout,
+as `agent-shell-vertico-sidebar--unread-for' keeps the unread one."
+  (unless (eq status 'busy)
+    time))
+
+(defun agent-shell-vertico-sidebar--snoozed-time (buffer)
+  "Return when BUFFER was snoozed, or nil when it is not snoozed."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :snoozed)
+      (agent-shell-vertico-sidebar--snoozed-for
+       (agent-shell-vertico-sidebar--raw-status buffer)
+       (gethash buffer agent-shell-vertico-sidebar--snoozed))))
+
+(defun agent-shell-vertico-sidebar--snoozed-p (buffer)
+  "Return non-nil when the reader has put BUFFER off."
+  (and (agent-shell-vertico-sidebar--snoozed-time buffer) t))
+
 (defun agent-shell-vertico-sidebar--needs-attention-p (buffer)
   "Return non-nil when BUFFER is waiting on the reader.
 
@@ -697,9 +738,11 @@ reports itself blocked for as long as it waits, so reading the status is
 the whole answer and no record can go stale.
 
 A working session asks for nobody, whatever it is holding: see
-`agent-shell-vertico-sidebar--unread-for'."
-  (or (agent-shell-vertico-sidebar--unread-p buffer)
-      (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked)))
+`agent-shell-vertico-sidebar--unread-for'.  Neither does a snoozed one,
+because the reader has said when they will come back to it."
+  (and (not (agent-shell-vertico-sidebar--snoozed-p buffer))
+       (or (agent-shell-vertico-sidebar--unread-p buffer)
+           (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked))))
 
 (defun agent-shell-vertico-sidebar--status-name (buffer)
   "Return a display status name for BUFFER.
@@ -715,7 +758,8 @@ a finished turn leaves a session `Ready'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-rank)
       (agent-shell-vertico-sidebar--status-rank-for
        (agent-shell-vertico-sidebar--raw-status buffer)
-       (agent-shell-vertico-sidebar--unread-p buffer))))
+       (agent-shell-vertico-sidebar--unread-p buffer)
+       (agent-shell-vertico-sidebar--snoozed-p buffer))))
 
 (defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
   "Return the raw status rank for BUFFER.  Lower ranks sort first.
@@ -726,8 +770,9 @@ ignores attention metadata; attention is the concern of `priority'."
       (agent-shell-vertico-sidebar--status-sort-rank-for
        (agent-shell-vertico-sidebar--raw-status buffer))))
 
-(defun agent-shell-vertico-sidebar--status-rank-for (status unread)
-  "Return the priority rank for STATUS, given UNREAD.
+(defun agent-shell-vertico-sidebar--status-rank-for (status unread
+                                                         &optional snoozed)
+  "Return the priority rank for STATUS, given UNREAD and SNOOZED.
 
 The attention tier is two ranks, not one, because its two halves ask
 for the reader differently.  Unread output ranks first: arriving is
@@ -738,33 +783,41 @@ by age pinned every jump to the blocked session, whose wait always
 began before any turn that has finished since.  Red rows above yellow
 ones is also what `agent-shell-vertico-sidebar--mark-face' draws.
 
+A snoozed session ranks below the working ones and above the ready
+ones, whatever it holds: the reader still owes it something, which a
+ready session is not owed, but has said it can wait.  SNOOZED is the
+answer of `agent-shell-vertico-sidebar--snoozed-for', which is already
+nil for a working session, so a burst ranks as work.
+
 A session nobody is waiting on ranks by what it is doing.  A failed one
 that has been read ranks last with the sessions that can do nothing:
 it has already said all it has to say."
   (cond
+   (snoozed 3)
    (unread 0)
    ((eq status 'blocked) 1)
    ((eq status 'busy) 2)
-   ((eq status 'ready) 3)
-   (t 4)))
+   ((eq status 'ready) 4)
+   (t 5)))
 
 (defun agent-shell-vertico-sidebar--oldest-first-rank-p (rank)
   "Return non-nil when priority orders the tier at RANK oldest first.
 
-The tiers that are waiting on something — the two attention ranks and
-the working one — lead with whoever has been waiting longest, which is
-what makes the sidebar's first session the one a jump visits.  The
-tiers that are waiting on nobody lead with whoever was read or finished
-most recently."
-  (<= rank 2))
+The tiers that are waiting on something — the two attention ranks, the
+working one and the snoozed one — lead with whoever has been waiting
+longest, which is what makes the sidebar's first session the one a jump
+visits and the snoozed tier a queue.  The tiers that are waiting on
+nobody lead with whoever was read or finished most recently."
+  (<= rank 3))
 
-(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 2 3]
+(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 4 2 3]
   "Which header statistic each status rank is counted in.
 
 The statistics keep one attention count, so both attention ranks land
-in the same slot.  See `agent-shell-vertico-sidebar--status-rank-for'
-for the ranks and `agent-shell-vertico-sidebar--session-statistics' for
-the slots.")
+in the same slot.  The snoozed count is last, so the slots that were
+there before it kept their places.  See
+`agent-shell-vertico-sidebar--status-rank-for' for the ranks and
+`agent-shell-vertico-sidebar--session-statistics' for the slots.")
 
 (defun agent-shell-vertico-sidebar--status-sort-rank-for (status)
   "Return the raw status rank for STATUS."
@@ -797,6 +850,9 @@ repeating those queries during one redisplay."
          (unread (agent-shell-vertico-sidebar--unread-for
                   status (gethash buffer
                                   agent-shell-vertico-sidebar--unread)))
+         (snoozed (agent-shell-vertico-sidebar--snoozed-for
+                   status (gethash buffer
+                                   agent-shell-vertico-sidebar--snoozed)))
          (busy-since-time
           (if (eq status 'busy)
               (or (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
@@ -819,11 +875,12 @@ repeating those queries during one redisplay."
           :status-name
           (agent-shell-vertico-sidebar--status-name-for status)
           :status-rank (agent-shell-vertico-sidebar--status-rank-for
-                        status (and unread t))
-          :mark (agent-shell-vertico-sidebar--mark-for status unread)
+                        status (and unread t) (and snoozed t))
+          :mark (agent-shell-vertico-sidebar--mark-for status unread snoozed)
           :raw-status-rank
           (agent-shell-vertico-sidebar--status-sort-rank-for status)
           :unread unread
+          :snoozed snoozed
           :activity-time activity-time
           :busy-since-time busy-since-time
           :recency-time recency-time
@@ -855,8 +912,11 @@ Unread timestamps order sessions waiting for user action.  Working
 sessions use the time their current turn entered the busy state; streamed
 activity is deliberately not a priority tie-breaker.  Every other session
 uses its latest activity, so one read or finished recently stays above
-stale idle sessions instead of dropping to its alphabetical slot."
-  (or (agent-shell-vertico-sidebar--unread-time buffer)
+stale idle sessions instead of dropping to its alphabetical slot.  A
+snoozed session uses the time it was snoozed, whatever it holds, since
+that is the order the reader put the sessions off in."
+  (or (agent-shell-vertico-sidebar--snoozed-time buffer)
+      (agent-shell-vertico-sidebar--unread-time buffer)
       (agent-shell-vertico-sidebar--snapshot-field buffer :busy-since-time)
       (gethash buffer agent-shell-vertico-sidebar--busy-since-times)
       (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
@@ -1351,36 +1411,43 @@ or a parent session, 2 below both."
             1
             (string-width (agent-shell-vertico-sidebar--icon-gap)))))
 
-(defun agent-shell-vertico-sidebar--mark-for (status unread)
-  "Return the mark a session in STATUS gets, given UNREAD.
+(defun agent-shell-vertico-sidebar--mark-for (status unread
+                                                  &optional snoozed)
+  "Return the mark a session in STATUS gets, given UNREAD and SNOOZED.
 
-A mark is the pair the sidebar draws from: the status picks the glyph
-and the colour family, unread fills the glyph and turns it red.
+A mark is the list (STATUS UNREAD SNOOZED) the sidebar draws from: the
+status picks the glyph and the colour family, unread fills the glyph
+and turns it red, and snoozed greys it whatever else it says, so output
+that arrived while the session was put off still fills the glyph.
 
-STATUS and UNREAD are two axes, but not four marks: a `busy' session is
-never unread, because `agent-shell-vertico-sidebar--unread-for' holds
-the mark back until it stops working."
-  (cons status (and unread t)))
+The axes are not independent: a `busy' session is never unread or
+snoozed, because `agent-shell-vertico-sidebar--unread-for' and
+`--snoozed-for' hold both back until it stops working."
+  (list status (and unread t) (and snoozed t)))
 
 (defun agent-shell-vertico-sidebar--mark (buffer)
   "Return the mark drawn for BUFFER."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :mark)
       (agent-shell-vertico-sidebar--mark-for
        (agent-shell-vertico-sidebar--raw-status buffer)
-       (agent-shell-vertico-sidebar--unread-p buffer))))
+       (agent-shell-vertico-sidebar--unread-p buffer)
+       (agent-shell-vertico-sidebar--snoozed-p buffer))))
 
 (defun agent-shell-vertico-sidebar--mark-icon (mark &optional face)
   "Return MARK's glyph, drawn in FACE."
-  (agent-shell-vertico-sidebar--status-icon (car mark) (cdr mark) face))
+  (agent-shell-vertico-sidebar--status-icon (car mark) (nth 1 mark) face))
 
 (defun agent-shell-vertico-sidebar--mark-face (mark)
   "Return the face MARK is drawn in.
 
-Red is what nobody has read.  Yellow is what the reader has seen and
-still owes something: a permission decision, or a failure they have not
-started again.  Everything else is drawn in its status colour."
+Grey is what the reader has put off, whatever it holds, since a snooze
+is the reader saying none of it is urgent.  Red is what nobody has
+read.  Yellow is what the reader has seen and still owes something: a
+permission decision, or a failure they have not started again.
+Everything else is drawn in its status colour."
   (cond
-   ((cdr mark) 'agent-shell-vertico-sidebar-attention)
+   ((nth 2 mark) 'agent-shell-vertico-sidebar-snoozed)
+   ((nth 1 mark) 'agent-shell-vertico-sidebar-attention)
    ((memq (car mark) '(blocked failed))
     'agent-shell-vertico-sidebar-unresolved)
    ((eq (car mark) 'busy) 'agent-shell-vertico-sidebar-working)
@@ -1391,14 +1458,18 @@ started again.  Everything else is drawn in its status colour."
   "Return an alist of mark to count for MARKS, in display order.
 
 Unread marks come first, so a header reads what wants the reader before
-what does not.  Marks with no sessions are left out."
+what does not, and snoozed marks come last, since the reader has put
+them off.  Marks with no sessions are left out."
   (let (counts)
-    (dolist (unread '(t nil))
-      (dolist (status agent-shell-vertico-sidebar--status-order)
-        (let* ((mark (agent-shell-vertico-sidebar--mark-for status unread))
-               (count (seq-count (lambda (other) (equal other mark)) marks)))
-          (when (> count 0)
-            (push (cons mark count) counts)))))
+    (dolist (snoozed '(nil t))
+      (dolist (unread '(t nil))
+        (dolist (status agent-shell-vertico-sidebar--status-order)
+          (let* ((mark (agent-shell-vertico-sidebar--mark-for
+                        status unread snoozed))
+                 (count (seq-count (lambda (other) (equal other mark))
+                                   marks)))
+            (when (> count 0)
+              (push (cons mark count) counts))))))
     (nreverse counts)))
 
 (defun agent-shell-vertico-sidebar--icon (buffer)
@@ -1865,7 +1936,8 @@ asks for a reply."
               (seq-find
                (lambda (entry)
                  (let ((mark (car entry)))
-                   (or (cdr mark) (eq (car mark) 'blocked))))
+                   (and (not (nth 2 mark))
+                        (or (nth 1 mark) (eq (car mark) 'blocked)))))
                (agent-shell-vertico-sidebar--mark-counts
                 (mapcar #'agent-shell-vertico-sidebar--mark buffers)))))
     (agent-shell-vertico-sidebar--count-text
@@ -2192,7 +2264,7 @@ which is why nothing reflows and no row has to be built differently."
                                (when (eq (plist-get snapshot :status) 'busy)
                                  (plist-get snapshot :buffer)))
                              snapshots))
-          (face (agent-shell-vertico-sidebar--mark-face '(busy . nil))))
+          (face (agent-shell-vertico-sidebar--mark-face '(busy nil nil))))
       (when working
         (pcase-dolist (`(,buffer . ,start)
                        (agent-shell-vertico-sidebar--session-rows))
@@ -2223,7 +2295,7 @@ render that re-places them."
   (unless agent-shell-vertico-sidebar--jump-in-progress
     (setq agent-shell-vertico-sidebar--busy-tick
           (1+ agent-shell-vertico-sidebar--busy-tick))
-    (let ((face (agent-shell-vertico-sidebar--mark-face '(busy . nil)))
+    (let ((face (agent-shell-vertico-sidebar--mark-face '(busy nil nil)))
           (rescale nil))
       (dolist (overlay agent-shell-vertico-sidebar--busy-overlays)
         (when (overlay-buffer overlay)
@@ -2487,9 +2559,11 @@ message boundary."
 
 The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
 this after the unread mark and the status are in place, since both are
-read back from the session."
+read back from the session.  A snoozed session is not reported: the
+events that end a snooze end it before they get here."
   (when (and agent-shell-vertico-sidebar-notify-function
              (buffer-live-p buffer)
+             (not (agent-shell-vertico-sidebar--snoozed-p buffer))
              (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
     (funcall agent-shell-vertico-sidebar-notify-function
              :buffer buffer
@@ -2509,13 +2583,16 @@ read back from the session."
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        ;; The request itself is news; the session reports itself blocked
-       ;; for as long as it waits, so nothing records that part.
+       ;; for as long as it waits, so nothing records that part.  It is
+       ;; also a new ask, which no snooze put off.
+       (remhash buffer agent-shell-vertico-sidebar--snoozed)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (puthash buffer t agent-shell-vertico-sidebar--failed)
+       (remhash buffer agent-shell-vertico-sidebar--snoozed)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('turn-complete
@@ -2530,9 +2607,11 @@ read back from the session."
        (puthash buffer now agent-shell-vertico-sidebar--busy-since-times)
        ;; Submitting a new prompt means the user has seen whatever the
        ;; previous turn produced, and starts a turn of their own, so how
-       ;; the last one ended stops being what the session is.
+       ;; the last one ended stops being what the session is.  It is
+       ;; also dealing with the session, which is what a snooze waits for.
        (remhash buffer agent-shell-vertico-sidebar--unread)
-       (remhash buffer agent-shell-vertico-sidebar--failed))
+       (remhash buffer agent-shell-vertico-sidebar--failed)
+       (remhash buffer agent-shell-vertico-sidebar--snoozed))
       ('permission-response
        ;; Answering a request is reading it, whether or not another one
        ;; is already pending behind it.
@@ -2546,6 +2625,7 @@ read back from the session."
        (remhash buffer agent-shell-vertico-sidebar--messages)
        (remhash buffer agent-shell-vertico-sidebar--unread)
        (remhash buffer agent-shell-vertico-sidebar--failed)
+       (remhash buffer agent-shell-vertico-sidebar--snoozed)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
       (_ nil))
@@ -2570,6 +2650,7 @@ read back from the session."
     (remhash (current-buffer) agent-shell-vertico-sidebar--messages)
     (remhash (current-buffer) agent-shell-vertico-sidebar--unread)
     (remhash (current-buffer) agent-shell-vertico-sidebar--failed)
+    (remhash (current-buffer) agent-shell-vertico-sidebar--snoozed)
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
@@ -3114,9 +3195,9 @@ the whole command runs there however it was called."
 (defun agent-shell-vertico-sidebar--session-statistics ()
   "Return status counts for live agent-shell sessions.
 
-The returned vector contains attention, working, ready, and starting counts
-in that order."
-  (let ((counts (make-vector 4 0)))
+The returned vector contains attention, working, ready, starting and
+snoozed counts in that order."
+  (let ((counts (make-vector 5 0)))
     (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
       (cl-incf (aref counts
                      (aref agent-shell-vertico-sidebar--statistics-slots
@@ -3136,14 +3217,13 @@ The marks replace the words, so the wording moves to the tooltip.")
 (defun agent-shell-vertico-sidebar--mark-label (mark)
   "Return the tooltip wording for MARK.
 
-Two counts can share a glyph, one unread and one read, so the wording
-says which this one is."
-  (let ((status (or (alist-get (car mark)
-                               agent-shell-vertico-sidebar--status-labels)
-                    "unknown")))
-    (if (cdr mark)
-        (concat status ", unread")
-      status)))
+Several counts can share a glyph, unread or read and snoozed or not, so
+the wording says which this one is."
+  (concat (or (alist-get (car mark)
+                         agent-shell-vertico-sidebar--status-labels)
+              "unknown")
+          (and (nth 1 mark) ", unread")
+          (and (nth 2 mark) ", snoozed")))
 
 (defun agent-shell-vertico-sidebar--header-stat (count mark)
   "Return compact COUNT text for MARK, drawn and named as MARK."
@@ -3210,6 +3290,7 @@ are what the reader is looking for."
    "  t / T       Traffic / transcript (regular); reverse in Evil\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
+   "  z           Snooze the session until it asks again, or wake it\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
    "Metadata values are individually clickable.  Project values open their\n"
@@ -3242,6 +3323,7 @@ are what the reader is looking for."
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
+    (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
     map)
@@ -3275,6 +3357,7 @@ are what the reader is looking for."
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
+    (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "q") #'quit-window)
@@ -3315,6 +3398,7 @@ are what the reader is looking for."
     ("T" . agent-shell-vertico-sidebar-view-traffic)
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
+    ("z" . agent-shell-vertico-sidebar-snooze)
     ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
@@ -3430,11 +3514,14 @@ been waiting longest."
   "Return what to report when no session needs attention.
 
 Counting the sessions still working separates a quiet moment in a busy
-run from nothing running at all."
-  (let ((working (aref (agent-shell-vertico-sidebar--session-statistics) 1)))
-    (if (> working 0)
-        (format "No session needs attention, %d working" working)
-      "No session needs attention")))
+run from nothing running at all, and counting the snoozed ones says
+what is still owed once the reader wants it."
+  (let* ((statistics (agent-shell-vertico-sidebar--session-statistics))
+         (working (aref statistics 1))
+         (snoozed (aref statistics 4)))
+    (concat "No session needs attention"
+            (and (> working 0) (format ", %d working" working))
+            (and (> snoozed 0) (format ", %d snoozed" snoozed)))))
 
 (defun agent-shell-vertico-sidebar--attention-target ()
   "Return the session the attention marking commands act on.
@@ -3465,6 +3552,9 @@ A working session is refused, because nothing has finished for the
 reader to have missed, and the turn marks itself unread when it
 completes away from the reader.
 
+A snoozed session is woken: asking for it again is the opposite of
+putting it off.
+
 Leave the session after marking it.  The mark is cleared again as soon
 as the reader is seen looking at the session, which includes staying in
 it until Emacs regains input focus."
@@ -3475,8 +3565,13 @@ it until Emacs regains input focus."
      ((eq status 'busy)
       (user-error "Session %s is still working" (buffer-name buffer)))
      ((agent-shell-vertico-sidebar--unread-p buffer)
-      (message "Session %s is already unread" (buffer-name buffer)))
+      (if (not (gethash buffer agent-shell-vertico-sidebar--snoozed))
+          (message "Session %s is already unread" (buffer-name buffer))
+        (remhash buffer agent-shell-vertico-sidebar--snoozed)
+        (agent-shell-vertico-sidebar-refresh)
+        (message "Session %s marked unread" (buffer-name buffer))))
      (t
+      (remhash buffer agent-shell-vertico-sidebar--snoozed)
       (agent-shell-vertico-sidebar--mark-unread-at
        buffer (or (gethash buffer agent-shell-vertico-sidebar--activity)
                   (float-time)))
@@ -3495,8 +3590,10 @@ sidebar itself, stops holding the head of the `priority' order and
 `agent-shell-vertico-sidebar-jump' moves on to the next session.
 
 Only the unread mark goes.  A session waiting for a permission decision
-keeps its place through its status, which no command can mark away, and
-a failed session stays failed until a new turn starts.
+keeps its place through its status, which marking it read cannot
+change (`agent-shell-vertico-sidebar-snooze' can put it off), and a
+failed session stays failed until a new turn starts.  A snooze is kept,
+since reading a session is not dealing with it.
 
 New output marks the session again, which includes a turn that finishes
 after this and a background stream that goes quiet after this.
@@ -3510,6 +3607,41 @@ is holding back still goes: the record is what this command is about."
       (remhash buffer agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s marked read" (buffer-name buffer)))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-snooze ()
+  "Snooze the session at point, or the current session, or wake it.
+
+A snoozed session stops asking for the reader without being marked
+read: it leaves the head of the sidebar's `priority' order for a tier
+of its own, below the working sessions and above the ready ones, and
+`agent-shell-vertico-sidebar-jump' passes it over.  Its mark turns
+grey, and still says what the session is and whether it holds output
+nobody has read.  Nothing is reported to
+`agent-shell-vertico-sidebar-notify-function' while it is snoozed.
+
+Looking at a snoozed session, marking it read and new output all leave
+it snoozed, because none of them is dealing with it.  Sending it a
+prompt is, and so is a new permission request or an error, since the
+agent cannot go on without the reader; so is running this again, or
+`agent-shell-vertico-sidebar-mark-unread'.  Whatever it held comes
+back with the age it had.
+
+A working session is refused, because it has not yet said anything to
+put off."
+  (interactive)
+  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+    (cond
+     ((gethash buffer agent-shell-vertico-sidebar--snoozed)
+      (remhash buffer agent-shell-vertico-sidebar--snoozed)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s woken" (buffer-name buffer)))
+     ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+      (user-error "Session %s is still working" (buffer-name buffer)))
+     (t
+      (puthash buffer (float-time) agent-shell-vertico-sidebar--snoozed)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s snoozed" (buffer-name buffer))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-jump (&optional read)
@@ -3576,6 +3708,12 @@ for a session buffer is that buffer."
 Run the same way as `agent-shell-vertico-sidebar--jump-mark-unread'."
   (with-current-buffer buffer
     (agent-shell-vertico-sidebar-mark-read)))
+
+(defun agent-shell-vertico-sidebar--jump-snooze (buffer)
+  "Snooze or wake session BUFFER.
+Run the same way as `agent-shell-vertico-sidebar--jump-mark-unread'."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-snooze)))
 
 (defun agent-shell-vertico-sidebar--dispatch-help ()
   "Return the action list `?' shows during a jump, one action a line.

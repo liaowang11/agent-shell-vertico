@@ -218,6 +218,17 @@ derived from its live status rather than recorded: it cannot proceed until
 you answer it.  New output marks the session again, whether a turn finishes
 or a background stream goes quiet.
 
+`z` snoozes a session you mean to come back to, which neither `u` nor `!`
+can say: `!` loses the reminder, and leaving it unread keeps it at the head
+of the list.  A snoozed session is drawn grey, sorts below the working
+sessions and above the ready ones under `priority`, and is passed over by
+`agent-shell-vertico-sidebar-jump` and the notification function.  Its mark
+still shows its status and whether it holds unread output.  Looking at it,
+marking it read and new output leave it snoozed; sending it a prompt, a new
+permission request, an error, `u`, or `z` again wakes it, with whatever it
+held back at the age it had.  A working session is refused.  Like `u` and
+`!`, `agent-shell-vertico-sidebar-snooze` works from the session buffer too.
+
 `agent-shell-vertico-sidebar-jump-by-key` picks a session the way
 `ace-window` picks a window.  The sessions are listed flat in the sidebar,
 each row's status mark replaced by a key from
@@ -273,7 +284,8 @@ action's key does that to the next session chosen instead of displaying
 it, the way `ace-window` dispatches on `aw-dispatch-alist`.  The shipped
 actions are `o` open in another window, `x` kill, `r` restart, `i`
 interrupt, `m` set mode, `M` set model, `t` open transcript, `T` view
-traffic, `u` mark unread, and `!` mark read.  The prompt names the
+traffic, `u` mark unread, `!` mark read, and `z` snooze or wake.  The
+prompt names the
 pending action, the keys stay drawn while you choose, and the action runs
 once the sidebar is back as it was, so a command that asks something of
 its own has a window to ask in.  Each entry is a key, a function of one
@@ -436,21 +448,22 @@ previous row, session or project header), `TAB` (fold or session details),
 `S-TAB` (cycle all fold levels),
 `=` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
 `r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
-(traffic/transcript), `u`/`!` (mark unread/read), `?` (show the key
+(traffic/transcript), `u`/`!` (mark unread/read), `z` (snooze), `?` (show
+the key
 reference), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
-rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the
-current row or metadata field, `o` opens the session,
-`O` opens it in another window, `TAB` toggles the current row, and `S-TAB`
-cycles every row through the fold levels.  `gr` refreshes, `D`
-kills, `R` restarts, and `I` interrupts the current session; `t` opens its
-transcript, `T` shows traffic, and `u`/`!` mark the session unread or read;
-`!` takes precedence over Evil's `evil-shell-command` in this read-only
-list.  `q` closes the sidebar, while `=`, `s`,
-`c`, `m`/`M`, and the other mnemonic actions remain available.  `v` remains
-Evil's visual-state key.  `?` shows the same key reference.  The local `C-c`
-prefix remains available as a fallback (for example, `C-c k` kills).
+rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the current row or
+metadata field, `o` opens the session, `O` opens it in another window, `TAB`
+toggles the current row, and `S-TAB` cycles every row through the fold levels.
+`gr` refreshes, `D` kills, `R` restarts, and `I` interrupts the current session;
+`t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
+read, and `z` snoozes it; `!` and `z` take precedence over Evil's
+`evil-shell-command` and `z` prefix (scrolling and folds) in this read-only
+list.  `q` closes the sidebar, while `=`, `s`, `c`, `m`/`M`, and the other
+mnemonic actions remain available.  `v` remains Evil's visual-state key.  `?`
+shows the same key reference.  The local `C-c` prefix remains available as a
+fallback (for example, `C-c k` kills).
 
 ## Project-scoped shell commands
 
