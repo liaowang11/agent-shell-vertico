@@ -266,26 +266,25 @@ displayed. One setting covers the switch commands, the Embark actions and
 the sidebar, which is why it is a variable here rather than advice in a
 user's configuration.
 
-**Status and unread are two axes.** What a session *is* and what it
-*owes the reader* are separate questions, and conflating them was a bug:
-a finished turn used to report the status `Done`, so an idle session
-reported as busy-ish and a failure could never be read away. `--raw-status`
-answers the first question with `starting`, `ready`, `busy`, `blocked` or
-`failed`, taking what `agent-shell-status` reports and overlaying what it
-does not. That function answers about the turn in flight, so whatever
-outlives a turn is the sidebar's own: `starting` is a session with no ACP
-session id yet, recorded nowhere because the id's absence is the whole
-answer; `failed` is recorded in `--failed` from the `error` event and
-dropped when a new turn starts, because agent-shell reports what a
-session is doing and not how its last turn ended; `busy` covers an
-out-of-turn burst; and `blocked` covers a permission request from a task
-that outlived its turn, which `agent-shell-status` calls ready because it
-asks for a turn in flight as well (`--permission-pending-p` puts
-agent-shell's own question rather than repeating it, so the two cannot
-disagree about what is pending). The overlays only apply to an otherwise
-idle session, so a live `busy` or `blocked` always wins, and the pending
-decision is asked first among them: a burst streaming beside it is work
-the session does while it waits, not an answer to it.
+**Status and unread are two axes.** What a session *is* and what it owes the
+*reader* are separate questions, and conflating them was a bug: a finished turn
+*used to report the status `Done`, so an idle session reported as busy-ish and a
+*failure could never be read away. `--raw-status` answers the first question
+*with `starting`, `ready`, `busy`, `background`, `blocked` or `failed`, taking
+*what `agent-shell-status` reports and overlaying what it does not. That
+*function answers about the turn in flight, so whatever outlives a turn is the
+*sidebar's own: `starting` is a session with no ACP session id yet, recorded
+*nowhere because the id's absence is the whole answer; `failed` is recorded in
+*`--failed` from the `error` event and dropped when a new turn starts, because
+*agent-shell reports what a session is doing and not how its last turn ended;
+*`busy` covers an out-of-turn burst; and `blocked` covers a permission request
+*from a task that outlived its turn, which `agent-shell-status` calls ready
+*because it asks for a turn in flight as well (`--permission-pending-p` puts
+*agent-shell's own question rather than repeating it, so the two cannot disagree
+*about what is pending). The overlays only apply to an otherwise idle session,
+*so a live `busy` or `blocked` always wins, and the pending decision is asked
+*first among them: a burst streaming beside it is work the session does while it
+*waits, not an answer to it.
 
 **Which session needs attention.** `--unread` is the second axis: a buffer to
 the time its unread output arrived, where presence is the whole record. It is
@@ -340,25 +339,62 @@ anywhere else.
 
 **Putting a session off.** Snoozing is a third record, `--snoozed`, beside
 unread and failed, because the reader saying "later" is neither reading a
-session nor being done with it: `mark-read` lost the reminder and leaving
-it unread kept it at the head of the list. It is not a value of `--unread`,
-so snoozing leaves that record alone, and waking a session hands back
-whatever it held at the age it had. `--needs-attention-p` answers nil for a
-snoozed session, which is the one change that takes it out of the jump,
-`--attention-sessions` and a project header's count; `--notify` skips it
-too. `--status-rank-for` gives it its own rank, 3, below working and above
-ready — it is still owed something, which a ready session is not — and it
-runs oldest-snoozed first, `--priority-time` asking the snooze time before
-the unread one. What ends a snooze is dealing with the session or a new
-ask: `input-submitted`, a `permission-request` or an `error` (the agent
-cannot go on without the reader), `mark-unread`, or the command again.
-Looking at it, `mark-read`, a finished turn and settled out-of-turn output
-all leave it alone. `--snoozed-for` is to the snooze what `--unread-for` is
-to unread: a working session is drawn and ranked as working, the record
-kept for when it goes quiet; the command refuses one for the same reason
-`mark-unread` does. A timed snooze was left for later: the record's
-presence is the whole answer today, and a timer would only add a way to
+session nor being done with it: `mark-read` lost the reminder and leaving it
+unread kept it at the head of the list. It is not a value of `--unread`, so
+snoozing leaves that record alone, and waking a session hands back whatever it
+held at the age it had. `--needs-attention-p` answers nil for a snoozed session,
+which is the one change that takes it out of the jump, `--attention-sessions`
+and a project header's count; `--notify` skips it too. `--status-rank-for` gives
+it its own rank, 4, below working and background and above ready — it is still
+owed something, which a ready session is not — and it runs oldest-snoozed first,
+`--priority-time` asking the snooze time before the unread one. What ends a
+snooze is dealing with the session or a new ask: `input-submitted`, a
+`permission-request` or an `error` (the agent cannot go on without the reader),
+`mark-unread`, or the command again. Looking at it, `mark-read`, a finished turn
+and settled out-of-turn output all leave it alone. `--snoozed-for` is to the
+snooze what `--unread-for` is to unread: a working session is drawn and ranked
+as working, the record kept for when it goes quiet; the command refuses one for
+the same reason `mark-unread` does. A timed snooze was left for later: the
+record's presence is the whole answer today, and a timer would only add a way to
 end it.
+
+**Work behind a prompt.** `background` is an idle session with a subagent or an
+async task still running: `agent-shell-status` calls it ready, because no turn
+is in flight, and it does take a prompt, which is what separates it from `busy`.
+agent-shell emits no event when either kind starts or ends, and agent-shell is
+not to be changed for it, so `--background-work` reads the session's state
+directly — a subagent in `:native-subagents` runs until its record gains
+`:ended-at`, an async task in `:async-tasks` until its `:state` is terminal —
+and answers `(SUBAGENTS . TASKS)` or nil. Every kind counts alike, a dev server
+with a subagent, because nothing in a task says whether it will end; that is
+also why the unread mark is not held back by it: holding a mark back until the
+work ends would hold it forever behind a server. What it does add is one
+notification. A turn that ends with work running (`--background-at-turn-end`)
+usually says only that the work started, and its mark would silence the report
+that follows, since a burst on an unread mark announces nothing; so the first
+burst to settle once nothing runs is announced anyway, once, and the mark keeps
+its own time. A server that never ends never releases it, which leaves the
+report silent as it would be without this, and blocks nothing. `--raw-status`
+overlays it after `failed` (a failure says more) and `starting`, and stamps
+`--background-since` through `--track-background`, since async tasks carry no
+spawn time of their own; the tier (rank 3, between working and snoozed) runs
+oldest-first from that stamp. Polling was chosen over an `:after` advice on
+`agent-shell-subagents--changed`, which would be exact, because it depends on
+the state's shape rather than a function's name. Work starts inside a turn,
+whose events render anyway; work ends silently as often as not, so
+`--ensure-background-refresh` runs `--background-poll` every two seconds while a
+render drew something running and the sidebar is visible, comparing
+`--background-signature` against `--rendered-background` and scheduling a render
+on a difference. The other internal read is `agent-shell--subagent-group`, which
+agent-shell binds around the dispatch of a subagent's notification — the same
+dynamic extent its subscribers run in — because it emits a subagent's messages
+and tool calls as the root's events with nothing in them saying whose they are.
+`--subagent-event-p` keeps those out of `--out-of-turn-p` and
+`--record-message-chunk`, so a streaming subagent reads as `background` rather
+than a Working burst, and never becomes the notification's `:last-message`.
+`--background-line` draws `2 subagents · 1 task` under the row whenever
+something runs, details shown or not, with the `subagents` and `tasks` slot
+icons, and `S` runs upstream's `agent-shell-subagents` in the session.
 
 **Nesting a side conversation under its parent.** A side conversation
 (`agent-shell-side`) is an ordinary `agent-shell` buffer, so without this it

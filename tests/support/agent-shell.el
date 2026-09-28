@@ -270,6 +270,16 @@ token."
   (setq agent-shell-test-last-command 'agent-shell-view-traffic
         agent-shell-test-last-buffer (current-buffer)))
 
+(defvar agent-shell--subagent-group nil
+  "The subagent whose notification is being dispatched, as upstream binds it.
+Non-nil only around a subagent's content; tests bind it to fake one.")
+
+(defun agent-shell-subagents ()
+  "Record a subagents list action."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-subagents
+        agent-shell-test-last-buffer (current-buffer)))
+
 (defun agent-shell-interrupt ()
   "Record an interrupt action."
   (interactive)

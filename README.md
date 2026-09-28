@@ -230,6 +230,21 @@ permission request, an error, `u`, or `z` again wakes it, with whatever it held
 back at the age it had.  A working session is refused.  Like `u` and `!`,
 `agent-shell-vertico-sidebar-snooze` works from the session buffer too.
 
+A session whose turn has ended but which still has a subagent or an async task
+running is shown as `Background`: a cyan clock, filled when it holds unread
+output, and a line under the row counting what runs, such as `2 subagents · 1
+task`.  It takes a prompt, which is what separates it from a working session,
+and it sorts just below the working sessions under `priority`.  It never needs
+attention by itself, so `agent-shell-vertico-sidebar-jump` passes over it, but a
+finished turn still marks it unread as usual.  The report the agent writes once
+the work has ended is announced even though the session is already unread, so
+the notification you get is the result, not only the launch.  Any running task
+counts, a dev server included.  `S` opens `agent-shell-subagents` for the
+session, the list agent-shell keeps of its subagents and tasks, where they can
+be opened or stopped.  agent-shell reports none of this as an event, so the
+sidebar reads it from the session's state, and checks every two seconds while it
+shows something running.
+
 `agent-shell-vertico-sidebar-jump-by-key` picks a session the way
 `ace-window` picks a window.  The sessions are listed flat in the sidebar,
 each row's status mark replaced by a key from
@@ -288,20 +303,18 @@ Each of these jumps is recorded in the jump history above, so
 `agent-shell-vertico-jump-back` undoes whichever one you took.
 
 `?` during the read lists the actions in
-`agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its
-key coloured, and pressing an
-action's key does that to the next session chosen instead of displaying
-it, the way `ace-window` dispatches on `aw-dispatch-alist`.  The shipped
-actions are `o` open in another window, `x` kill, `r` restart, `i`
-interrupt, `m` set mode, `M` set model, `t` open transcript, `T` view
-traffic, `u` mark unread, `!` mark read, and `z` snooze or wake.  The
-prompt names the
-pending action, the keys stay drawn while you choose, and the action runs
-once the sidebar is back as it was, so a command that asks something of
-its own has a window to ask in.  Each entry is a key, a function of one
-session buffer, and a description, so a custom action is a three-element
-list.  A session key wins over an action key, which is why no shipped
-action key is also a shipped session key.
+`agent-shell-vertico-sidebar-jump-dispatch-alist`, one a line with its key
+coloured, and pressing an action's key does that to the next session chosen
+instead of displaying it, the way `ace-window` dispatches on
+`aw-dispatch-alist`.  The shipped actions are `o` open in another window, `x`
+kill, `r` restart, `i` interrupt, `m` set mode, `M` set model, `t` open
+transcript, `T` view traffic, `u` mark unread, `!` mark read, `z` snooze or
+wake, and `S` list subagents.  The prompt names the pending action, the keys
+stay drawn while you choose, and the action runs once the sidebar is back as it
+was, so a command that asks something of its own has a window to ask in.  Each
+entry is a key, a function of one session buffer, and a description, so a custom
+action is a three-element list.  A session key wins over an action key, which is
+why no shipped action key is also a shipped session key.
 
 An agent can also produce output with no turn in flight: background tasks
 such as subagents keep streaming after a turn ends, and a prompt steered in
@@ -455,12 +468,11 @@ built-in `help-at-pt` support:
 
 The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
 previous row, session or project header), `TAB` (fold or session details),
-`S-TAB` (cycle all fold levels),
-`=` (group/flat), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
-`r` (restart), `i` (interrupt), `m`/`M` (mode/model), `t`/`T`
-(traffic/transcript), `u`/`!` (mark unread/read), `z` (snooze), `?` (show
-the key
-reference), and `q` (close the side window).
+`S-TAB` (cycle all fold levels), `=` (group/flat), `s` (sort), `g` (refresh),
+`c` (new session), `k` (kill), `r` (restart), `i` (interrupt), `m`/`M`
+(mode/model), `t`/`T` (traffic/transcript), `u`/`!` (mark unread/read), `z`
+(snooze), `S` (list subagents), `?` (show the key reference), and `q` (close the
+side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the current row or
@@ -468,12 +480,12 @@ metadata field, `o` opens the session, `O` opens it in another window, `TAB`
 toggles the current row, and `S-TAB` cycles every row through the fold levels.
 `gr` refreshes, `D` kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
-read, and `z` snoozes it; `!` and `z` take precedence over Evil's
-`evil-shell-command` and `z` prefix (scrolling and folds) in this read-only
-list.  `q` closes the sidebar, while `=`, `s`, `c`, `m`/`M`, and the other
-mnemonic actions remain available.  `v` remains Evil's visual-state key.  `?`
-shows the same key reference.  The local `C-c` prefix remains available as a
-fallback (for example, `C-c k` kills).
+read, `z` snoozes it, and `S` lists its subagents; `!`, `z` and `S` take
+precedence over Evil's `evil-shell-command`, `z` prefix (scrolling and folds)
+and `evil-change-whole-line` in this read-only list.  `q` closes the sidebar,
+while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
+`v` remains Evil's visual-state key.  `?` shows the same key reference.  The
+local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
 
 ## Project-scoped shell commands
 

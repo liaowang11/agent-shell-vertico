@@ -44,6 +44,11 @@
 (declare-function evil-next-line "evil" ())
 (declare-function evil-previous-line "evil" ())
 (declare-function dired-other-window "dired" (dirname))
+(declare-function agent-shell-subagents "agent-shell-subagents" ())
+
+;; Bound by agent-shell around the dispatch of a subagent's notification,
+;; which is when its event subscribers run.  No value, see CLAUDE.md.
+(defvar agent-shell--subagent-group)
 
 (defgroup agent-shell-vertico-sidebar nil
   "Compact sidebar for `agent-shell' sessions."
@@ -223,9 +228,9 @@ before the switch is reopened right after it."
 It is called with the keyword arguments `:buffer', the session buffer;
 `:agent', the agent's display name; `:status', the wording the sidebar
 shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
-\"Ready\" or \"Starting\"; `:unread', non-nil when the session holds
-output nobody has read; and `:last-message', the agent's newest message
-as it arrived, or nil.
+\"Background\", \"Ready\" or \"Starting\"; `:unread', non-nil when the
+session holds output nobody has read; and `:last-message', the agent's
+newest message as it arrived, or nil.
 
 Status and unread are separate because they answer different questions:
 a finished turn leaves an ordinary `Ready' session holding unread
@@ -275,6 +280,25 @@ it nor being done with it, so it is a third record beside
 value of either.  Presence is the whole record.  The time orders the
 snoozed tier oldest first, the way the attention tier is ordered.")
 
+(defvar agent-shell-vertico-sidebar--background-since
+  (make-hash-table :test #'eq)
+  "Buffer to when the sidebar first saw it working in the background.
+
+agent-shell stamps when a subagent spawned but not when an async task
+did, so the sidebar keeps its own time, from the first status it reads
+that says `background'.  It orders the background tier oldest first,
+and goes as soon as a status says anything else.")
+
+(defvar agent-shell-vertico-sidebar--background-at-turn-end
+  (make-hash-table :test #'eq)
+  "Buffers whose last turn ended with background work still running.
+
+Such a turn usually says only that the work has started, and marks the
+session unread; the result comes later, as out-of-turn output that
+finds the mark in place and would announce nothing.  Presence says the
+next burst to settle once the work has ended is that result, so
+`agent-shell-vertico-sidebar--out-of-turn-settled' announces it.")
+
 (defvar agent-shell-vertico-sidebar--activity (make-hash-table :test #'eq)
   "Buffer to the latest observed agent activity timestamp.")
 
@@ -315,7 +339,8 @@ starts a new one.")
     (?T agent-shell-vertico-view-traffic "view traffic")
     (?u agent-shell-vertico-sidebar--jump-mark-unread "mark unread")
     (?! agent-shell-vertico-sidebar--jump-mark-read "mark read")
-    (?z agent-shell-vertico-sidebar--jump-snooze "snooze or wake"))
+    (?z agent-shell-vertico-sidebar--jump-snooze "snooze or wake")
+    (?S agent-shell-vertico-sidebar--jump-subagents "list subagents"))
   "Actions a jump can take on a session instead of displaying it.
 
 `agent-shell-vertico-sidebar-jump-by-key' offers these the way
@@ -384,6 +409,16 @@ separately.")
 (defvar-local agent-shell-vertico-sidebar--busy-timer nil
   "Repeating timer drawing the next frame of every working mark.")
 
+(defvar-local agent-shell-vertico-sidebar--background-timer nil
+  "Repeating timer checking whether background work has changed.")
+
+(defvar-local agent-shell-vertico-sidebar--rendered-background nil
+  "What the last render drew as running in each session's background.
+See `agent-shell-vertico-sidebar--background-signature'.")
+
+(defconst agent-shell-vertico-sidebar--background-poll-seconds 2
+  "Seconds between two checks of the sessions' background work.")
+
 (defvar-local agent-shell-vertico-sidebar--busy-tick 0
   "Which frame the working marks are showing.
 
@@ -451,6 +486,14 @@ while the mark beside it says what the session is."
 (defface agent-shell-vertico-sidebar-working
   '((t :inherit ansi-color-magenta :background "unspecified-bg"))
   "Face for working sessions."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-background
+  '((t :inherit ansi-color-cyan :background "unspecified-bg"))
+  "Face for a session with work running behind a prompt it would take.
+
+Cyan is the one colour no other mark uses, and it sits beside the
+working magenta the way the two statuses sit beside each other."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-ready
@@ -665,6 +708,43 @@ Nil whenever `agent-shell-side' is not loaded, for the same reason
   (and (fboundp 'agent-shell-side-children)
        (agent-shell-side-children buffer)))
 
+(defconst agent-shell-vertico-sidebar--async-task-terminal-states
+  '("completed" "failed" "stopped")
+  "Async task states after which a task no longer runs.
+The same list as `agent-shell-subagents--async-task-terminal-states'.")
+
+(defun agent-shell-vertico-sidebar--background-work (buffer)
+  "Return BUFFER's running subagents and async tasks as a count cons.
+
+The answer is (SUBAGENTS . TASKS), or nil when neither is running.
+agent-shell keeps both in the session's state and emits no event for
+either, so this reads the state: a subagent runs until its record gains
+`:ended-at', and an async task until its `:state' is terminal.  Both
+are agent-shell's internals; a state without them answers nil, which is
+a session with nothing in the background."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :background)
+      (let* ((state (agent-shell-vertico--state buffer))
+             (subagents
+              (seq-count (lambda (entry) (not (map-elt (cdr entry) :ended-at)))
+                         (map-elt state :native-subagents)))
+             (terminal agent-shell-vertico-sidebar--async-task-terminal-states)
+             (tasks
+              (seq-count (lambda (entry)
+                           (not (member (plist-get (cdr entry) :state)
+                                        terminal)))
+                         (map-elt state :async-tasks))))
+        (unless (and (zerop subagents) (zerop tasks))
+          (cons subagents tasks)))))
+
+(defun agent-shell-vertico-sidebar--track-background (buffer status)
+  "Record when BUFFER entered the background, given its STATUS.
+See `agent-shell-vertico-sidebar--background-since'."
+  (if (eq status 'background)
+      (unless (gethash buffer agent-shell-vertico-sidebar--background-since)
+        (puthash buffer (float-time)
+                 agent-shell-vertico-sidebar--background-since))
+    (remhash buffer agent-shell-vertico-sidebar--background-since)))
+
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
@@ -679,16 +759,31 @@ agent-shell has nothing to call it but ready, since no turn is in flight
 either way.  All four only apply to an otherwise idle session: a live
 `busy' or `blocked' means a real turn owns the session and wins.  The
 pending decision comes first among them, because a burst beside it is
-work the session does while it waits, not an answer to it."
+work the session does while it waits, not an answer to it.
+
+A fifth is the background: an idle session with a subagent or an async
+task still running, which agent-shell calls ready because no turn is in
+flight.  The session takes a prompt, which is what separates it from
+`busy', but it is not done either.  A failure says more, so it wins, and
+nothing runs before a session has started.  Every running kind counts
+alike, a dev server with a subagent, since a task says nothing about
+whether it will ever end."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
-      (let ((status (agent-shell-vertico-sidebar--live-status buffer)))
-        (cond
-         ((not (eq status 'ready)) status)
-         ((agent-shell-vertico-sidebar--permission-pending-p buffer) 'blocked)
-         ((gethash buffer agent-shell-vertico-sidebar--out-of-turn) 'busy)
-         ((gethash buffer agent-shell-vertico-sidebar--failed) 'failed)
-         ((not (agent-shell-vertico--session-field buffer :id)) 'starting)
-         (t status)))))
+      (let* ((live (agent-shell-vertico-sidebar--live-status buffer))
+             (status
+              (cond
+               ((not (eq live 'ready)) live)
+               ((agent-shell-vertico-sidebar--permission-pending-p buffer)
+                'blocked)
+               ((gethash buffer agent-shell-vertico-sidebar--out-of-turn) 'busy)
+               ((gethash buffer agent-shell-vertico-sidebar--failed) 'failed)
+               ((not (agent-shell-vertico--session-field buffer :id))
+                'starting)
+               ((agent-shell-vertico-sidebar--background-work buffer)
+                'background)
+               (t live))))
+        (agent-shell-vertico-sidebar--track-background buffer status)
+        status)))
 
 (defun agent-shell-vertico-sidebar--unread-for (status time)
   "Return TIME when a session in STATUS owes the reader that output.
@@ -793,7 +888,10 @@ by age pinned every jump to the blocked session, whose wait always
 began before any turn that has finished since.  Red rows above yellow
 ones is also what `agent-shell-vertico-sidebar--mark-face' draws.
 
-A snoozed session ranks below the working ones and above the ready
+A session in the background ranks just below the working ones: it is
+working too, though it takes a prompt, and it asks for nobody.
+
+A snoozed session ranks below the background ones and above the ready
 ones, whatever it holds: the reader still owes it something, which a
 ready session is not owed, but has said it can wait.  SNOOZED is the
 answer of `agent-shell-vertico-sidebar--snoozed-for', which is already
@@ -803,29 +901,31 @@ A session nobody is waiting on ranks by what it is doing.  A failed one
 that has been read ranks last with the sessions that can do nothing:
 it has already said all it has to say."
   (cond
-   (snoozed 3)
+   (snoozed 4)
    (unread 0)
    ((eq status 'blocked) 1)
    ((eq status 'busy) 2)
-   ((eq status 'ready) 4)
-   (t 5)))
+   ((eq status 'background) 3)
+   ((eq status 'ready) 5)
+   (t 6)))
 
 (defun agent-shell-vertico-sidebar--oldest-first-rank-p (rank)
   "Return non-nil when priority orders the tier at RANK oldest first.
 
 The tiers that are waiting on something — the two attention ranks, the
-working one and the snoozed one — lead with whoever has been waiting
-longest, which is what makes the sidebar's first session the one a jump
-visits and the snoozed tier a queue.  The tiers that are waiting on
-nobody lead with whoever was read or finished most recently."
-  (<= rank 3))
+working and background ones and the snoozed one — lead with whoever has
+been waiting longest, which is what makes the sidebar's first session
+the one a jump visits and the snoozed tier a queue.  The tiers that are
+waiting on nobody lead with whoever was read or finished most recently."
+  (<= rank 4))
 
-(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 4 2 3]
+(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 5 4 2 3]
   "Which header statistic each status rank is counted in.
 
 The statistics keep one attention count, so both attention ranks land
-in the same slot.  The snoozed count is last, so the slots that were
-there before it kept their places.  See
+in the same slot.  The snoozed and background counts come last, in the
+order they were added, so the slots that were there before them kept
+their places.  See
 `agent-shell-vertico-sidebar--status-rank-for' for the ranks and
 `agent-shell-vertico-sidebar--session-statistics' for the slots.")
 
@@ -835,9 +935,10 @@ there before it kept their places.  See
     ('blocked 0)
     ('failed 1)
     ('busy 2)
-    ('ready 3)
-    ('starting 4)
-    (_ 5)))
+    ('background 3)
+    ('ready 4)
+    ('starting 5)
+    (_ 6)))
 
 (defun agent-shell-vertico-sidebar--status-name-for (status)
   "Return a display status name for STATUS."
@@ -845,6 +946,7 @@ there before it kept their places.  See
     ('blocked "Waiting")
     ('failed "Failed")
     ('busy "Working")
+    ('background "Background")
     ('ready "Ready")
     ('starting "Starting")
     (_ "Unknown")))
@@ -870,6 +972,7 @@ repeating those queries during one redisplay."
                            agent-shell-vertico-sidebar--busy-since-times))
             (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
             nil))
+         (background (agent-shell-vertico-sidebar--background-work buffer))
          (root (agent-shell-vertico-sidebar--project-root buffer))
          (project-name
           (agent-shell-vertico-sidebar--project-name-from-buffer buffer root))
@@ -893,6 +996,9 @@ repeating those queries during one redisplay."
           :snoozed snoozed
           :activity-time activity-time
           :busy-since-time busy-since-time
+          :background background
+          :background-since
+          (gethash buffer agent-shell-vertico-sidebar--background-since)
           :recency-time recency-time
           :model (agent-shell-vertico--model-name buffer)
           :mode (agent-shell-vertico--mode-name buffer)
@@ -923,6 +1029,7 @@ sessions use the time their current turn entered the busy state; streamed
 activity is deliberately not a priority tie-breaker.  Every other session
 uses its latest activity, so one read or finished recently stays above
 stale idle sessions instead of dropping to its alphabetical slot.  A
+session in the background uses the time it was first seen there.  A
 snoozed session uses the time it was snoozed, whatever it holds, since
 that is the order the reader put the sessions off in."
   (or (agent-shell-vertico-sidebar--snoozed-time buffer)
@@ -932,6 +1039,8 @@ that is the order the reader put the sessions off in."
       (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
         (puthash buffer (float-time)
                  agent-shell-vertico-sidebar--busy-since-times))
+      (agent-shell-vertico-sidebar--snapshot-field buffer :background-since)
+      (gethash buffer agent-shell-vertico-sidebar--background-since)
       (agent-shell-vertico-sidebar--activity-time buffer)))
 
 (defun agent-shell-vertico-sidebar--title (buffer)
@@ -1090,6 +1199,29 @@ stays total and deterministic."
            root)
           'agent-shell-vertico-sidebar-detail)))
 
+(defun agent-shell-vertico-sidebar--background-line (buffer width)
+  "Return the line saying what runs in BUFFER's background, at WIDTH.
+
+It is drawn whenever something runs, details shown or not, because the
+clock alone cannot say what the session is waiting on.  Each kind gets
+its own icon, so a subagent reads apart from a shell at a glance."
+  (when-let* ((work (agent-shell-vertico-sidebar--background-work buffer)))
+    (let (parts)
+      (pcase-dolist (`(,slot ,count ,noun)
+                     `((subagents ,(car work) "subagent")
+                       (tasks ,(cdr work) "task")))
+        (when (> count 0)
+          (let ((icon (agent-shell-vertico-sidebar--slot-icon slot)))
+            (push (concat (if parts
+                              (concat icon
+                                      (agent-shell-vertico-sidebar--icon-gap))
+                            (agent-shell-vertico-sidebar--mark-field icon))
+                          (format "%d %s%s" count noun (if (= count 1) "" "s")))
+                  parts))))
+      (cons (agent-shell-vertico-sidebar--fit
+             (string-join (nreverse parts) " · ") width)
+            'agent-shell-vertico-sidebar-detail))))
+
 (defun agent-shell-vertico-sidebar--session-details-expanded-p (buffer)
   "Return non-nil when BUFFER's detail lines should be shown.
 
@@ -1167,6 +1299,8 @@ default in `agent-shell-vertico-sidebar-show-details'."
               "nf-md-help_circle_outline"   "?")
     (busy     "nf-md-dots_circle"
               "nf-md-dots_circle"           "◆")
+    (background "nf-md-clock"
+                "nf-md-clock_outline"       "◔")
     (ready    "nf-md-check_circle"
               "nf-md-check_circle_outline"  "✓")
     (starting "nf-md-circle_outline"
@@ -1175,7 +1309,8 @@ default in `agent-shell-vertico-sidebar-show-details'."
 
 One glyph per status, so a mark says what the session is: an empty
 circle has produced nothing yet, dots are working, a check has finished,
-a question mark is asking the reader something, and a cross failed.  The
+a question mark is asking the reader something, a clock has work
+still running behind a prompt it would take, and a cross failed.  The
 filled variant marks unread output, which the colour says too.  A
 terminal has no filled twin for a check or a question mark, so its plain
 character is the same read or unread and the colour carries it alone.
@@ -1186,7 +1321,7 @@ back until it stops.  Their filled names are never drawn, and are the
 same glyph as their outline ones.")
 
 (defconst agent-shell-vertico-sidebar--status-order
-  '(failed blocked busy ready starting)
+  '(failed blocked busy background ready starting)
   "Order in which status counts appear in headers.")
 
 (defconst agent-shell-vertico-sidebar--icons
@@ -1194,6 +1329,8 @@ same glyph as their outline ones.")
     (message   "nf-cod-arrow_small_right" "↳")
     (sessions  "nf-cod-layers"            "⧉")
     (snoozed   "nf-md-sleep"              "z")
+    (subagents "nf-md-robot_outline"      "◇")
+    (tasks     "nf-md-console"            "$")
     (expanded  nil                        "▼")
     (collapsed nil                        "▶"))
   "Slot, nerd-icons name, and plain character for each mark that is not
@@ -1462,6 +1599,7 @@ Everything else is drawn in its status colour."
    ((memq (car mark) '(blocked failed))
     'agent-shell-vertico-sidebar-unresolved)
    ((eq (car mark) 'busy) 'agent-shell-vertico-sidebar-working)
+   ((eq (car mark) 'background) 'agent-shell-vertico-sidebar-background)
    ((eq (car mark) 'ready) 'agent-shell-vertico-sidebar-ready)
    (t 'agent-shell-vertico-sidebar-detail)))
 
@@ -1815,6 +1953,9 @@ parent-child relationship."
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
             (when project-line (list project-line))
+            (when-let* ((line (agent-shell-vertico-sidebar--background-line
+                               buffer content-width)))
+              (list line))
             detail-lines)))
 
 (defun agent-shell-vertico-sidebar--restore-field-properties (start end)
@@ -2094,6 +2235,13 @@ parent, so nesting never reorders the top level."
           (agent-shell-vertico-sidebar--cancel-busy-refresh)
           (setq agent-shell-vertico-sidebar--dirty nil
                 agent-shell-vertico-sidebar--last-rendered-width width
+                agent-shell-vertico-sidebar--rendered-background
+                (delq nil
+                      (mapcar (lambda (snapshot)
+                                (when-let* ((work (plist-get snapshot
+                                                             :background)))
+                                  (cons (plist-get snapshot :buffer) work)))
+                              snapshots))
                 agent-shell-vertico-sidebar--rendered-current-sessions
                 (and buffers
                      (agent-shell-vertico-sidebar--current-sessions buffers))
@@ -2140,6 +2288,7 @@ parent, so nesting never reorders the top level."
                anchor node-positions)))
           (agent-shell-vertico-sidebar--place-busy-overlays snapshots)
           (agent-shell-vertico-sidebar--ensure-busy-refresh)
+          (agent-shell-vertico-sidebar--ensure-background-refresh)
           (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
       (setq agent-shell-vertico-sidebar--render-snapshots nil))))
 
@@ -2260,6 +2409,61 @@ from."
   (when (timerp agent-shell-vertico-sidebar--busy-timer)
     (cancel-timer agent-shell-vertico-sidebar--busy-timer)
     (setq agent-shell-vertico-sidebar--busy-timer nil)))
+
+(defun agent-shell-vertico-sidebar--cancel-background-refresh ()
+  "Cancel the repeating background-work check."
+  (when (timerp agent-shell-vertico-sidebar--background-timer)
+    (cancel-timer agent-shell-vertico-sidebar--background-timer)
+    (setq agent-shell-vertico-sidebar--background-timer nil)))
+
+(defun agent-shell-vertico-sidebar--background-signature (buffers)
+  "Return an alist of each of BUFFERS with background work to that work."
+  (delq nil
+        (mapcar (lambda (buffer)
+                  (when-let* ((work
+                               (agent-shell-vertico-sidebar--background-work
+                                buffer)))
+                    (cons buffer work)))
+                buffers)))
+
+(defun agent-shell-vertico-sidebar--background-poll ()
+  "Schedule a render when background work differs from what was drawn.
+
+agent-shell emits no event when a subagent or an async task starts or
+ends, and a task can end with nothing said, so the sidebar asks.  Work
+starts inside a turn, whose events render the sidebar anyway, which is
+why this only runs while something is drawn as running."
+  (unless (equal (agent-shell-vertico-sidebar--background-signature
+                  (seq-filter #'buffer-live-p (agent-shell-buffers)))
+                 agent-shell-vertico-sidebar--rendered-background)
+    (agent-shell-vertico-sidebar--schedule-refresh)))
+
+(defun agent-shell-vertico-sidebar--ensure-background-refresh ()
+  "Check background work on a timer while some is drawn and on screen."
+  (let ((sidebar (or (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                          (current-buffer))
+                     (get-buffer "*Agent Shell Sessions*"))))
+    (when sidebar
+      (with-current-buffer sidebar
+        (if (and agent-shell-vertico-sidebar--rendered-background
+                 (agent-shell-vertico-sidebar--sidebar-visible-p sidebar))
+            (unless (timerp agent-shell-vertico-sidebar--background-timer)
+              (setq agent-shell-vertico-sidebar--background-timer
+                    (run-with-timer
+                     agent-shell-vertico-sidebar--background-poll-seconds
+                     agent-shell-vertico-sidebar--background-poll-seconds
+                     (lambda ()
+                       (agent-shell-vertico-sidebar--background-beat
+                        sidebar)))))
+          (agent-shell-vertico-sidebar--cancel-background-refresh))))))
+
+(defun agent-shell-vertico-sidebar--background-beat (sidebar)
+  "Check SIDEBAR's background work, or stop once it is not on screen."
+  (when (buffer-live-p sidebar)
+    (with-current-buffer sidebar
+      (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
+          (agent-shell-vertico-sidebar--background-poll)
+        (agent-shell-vertico-sidebar--cancel-background-refresh)))))
 
 (defun agent-shell-vertico-sidebar--clear-busy-overlays ()
   "Drop the overlays the busy animation draws on."
@@ -2428,7 +2632,8 @@ sessions just to decide whether an age timer is needed."
         (agent-shell-vertico-sidebar--cancel-refresh)
         (agent-shell-vertico-sidebar--cancel-resize)
         (agent-shell-vertico-sidebar--cancel-age-refresh)
-        (agent-shell-vertico-sidebar--cancel-busy-refresh)))))
+        (agent-shell-vertico-sidebar--cancel-busy-refresh)
+        (agent-shell-vertico-sidebar--cancel-background-refresh)))))
 
 (defconst agent-shell-vertico-sidebar--out-of-turn-events
   '(agent-message-chunk tool-call-update)
@@ -2455,14 +2660,29 @@ agree on when a burst has stopped."
        2.0)
      agent-shell-vertico-sidebar--out-of-turn-settle-margin))
 
+(defun agent-shell-vertico-sidebar--subagent-event-p ()
+  "Return non-nil when the event being handled is a subagent's.
+
+agent-shell emits a subagent's messages and tool calls as the root
+session's events, with nothing in them to say whose they are, but it
+binds `agent-shell--subagent-group' around the dispatch that emits them,
+and subscribers run inside that dispatch."
+  (and (boundp 'agent-shell--subagent-group)
+       agent-shell--subagent-group
+       t))
+
 (defun agent-shell-vertico-sidebar--out-of-turn-p (buffer kind)
   "Return non-nil when a KIND event in BUFFER is out-of-turn output.
 
 Requires agent output with no request of any kind in flight.  Checking
 the status alone is not enough: a steered prompt's own request is
 tracked while `agent-shell-status' still answers `ready', and the updates
-arriving during that round trip belong to the turn it is joining."
+arriving during that round trip belong to the turn it is joining.
+
+A subagent's output is not the session speaking: it is the background
+work `agent-shell-vertico-sidebar--background-work' already reports."
   (and (memq kind agent-shell-vertico-sidebar--out-of-turn-events)
+       (not (agent-shell-vertico-sidebar--subagent-event-p))
        (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                   '(busy blocked)))
        (not (map-elt (agent-shell-vertico--state buffer) :active-requests))))
@@ -2508,26 +2728,43 @@ nothing: quiet is the only signal there is, and it cannot tell one
 message paused from a second wave minutes later, so a wave that would
 have announced itself twice for one message stays silent instead.  A
 wave arriving after the last one was read finds no mark and announces
-itself as usual."
+itself as usual.
+
+The one wave that does announce itself on a mark is the result of
+background work: a turn that ended with work still running recorded so
+in `agent-shell-vertico-sidebar--background-at-turn-end', and the first
+wave to settle once nothing runs is what that turn was waiting for.  It
+is announced once, and the mark keeps its own time."
   (let ((burst (gethash buffer agent-shell-vertico-sidebar--out-of-turn)))
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
     (when (and (buffer-live-p buffer)
                ;; A real turn started meanwhile and owns the session now.
                (not (memq (agent-shell-vertico-sidebar--live-status buffer)
-                          '(busy blocked)))
-               ;; An earlier unread mark keeps its own time, so the
-               ;; attention tier still orders oldest first.  The record
-               ;; is asked directly rather than through
-               ;; `agent-shell-vertico-sidebar--unread-time', because
-               ;; this writes the record: what a row would show is
-               ;; deferred while a session works and answers nothing.
-               (not (gethash buffer agent-shell-vertico-sidebar--unread))
-               (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
-      (puthash buffer
-               (or (plist-get burst :time) (float-time))
-               agent-shell-vertico-sidebar--unread)
-      (agent-shell-vertico-sidebar--notify buffer))
+                          '(busy blocked))))
+      (let ((result (and (gethash
+                          buffer
+                          agent-shell-vertico-sidebar--background-at-turn-end)
+                         (not (agent-shell-vertico-sidebar--background-work
+                               buffer)))))
+        (when result
+          (remhash buffer
+                   agent-shell-vertico-sidebar--background-at-turn-end))
+        (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
+          (cond
+           ;; An earlier unread mark keeps its own time, so the
+           ;; attention tier still orders oldest first.  The record is
+           ;; asked directly rather than through
+           ;; `agent-shell-vertico-sidebar--unread-time', because this
+           ;; writes the record: what a row would show is deferred while
+           ;; a session works and answers nothing.
+           ((not (gethash buffer agent-shell-vertico-sidebar--unread))
+            (puthash buffer
+                     (or (plist-get burst :time) (float-time))
+                     agent-shell-vertico-sidebar--unread)
+            (agent-shell-vertico-sidebar--notify buffer))
+           (result
+            (agent-shell-vertico-sidebar--notify buffer))))))
     ;; The burst stopping is a message boundary, the same way any other
     ;; event is one.  Two waves of chunks carry no event between them,
     ;; so without this the second wave's message would start with the
@@ -2550,16 +2787,20 @@ message; what streams next starts a new one."
 agent-shell emits one event per streamed chunk and accumulates none of
 them, so the sidebar keeps the newest message for a notification to
 carry.  Any other event ends the message, which is agent-shell's own
-message boundary."
+message boundary.  A subagent's events are neither, since what a
+subagent says is not the message the session has for the reader."
   (let ((entry (gethash buffer agent-shell-vertico-sidebar--messages)))
-    (if (not (eq (map-elt event :event) 'agent-message-chunk))
-        (agent-shell-vertico-sidebar--close-message buffer)
+    (cond
+     ((agent-shell-vertico-sidebar--subagent-event-p))
+     ((not (eq (map-elt event :event) 'agent-message-chunk))
+      (agent-shell-vertico-sidebar--close-message buffer))
+     (t
       (unless (plist-get entry :open)
         (setq entry (list :chunks nil :open t)))
       (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
         (setq entry (plist-put entry :chunks
                                (cons chunk (plist-get entry :chunks)))))
-      (puthash buffer entry agent-shell-vertico-sidebar--messages))))
+      (puthash buffer entry agent-shell-vertico-sidebar--messages)))))
 
 (defun agent-shell-vertico-sidebar--last-message (buffer)
   "Return the newest agent message streamed into BUFFER, or nil."
@@ -2613,6 +2854,10 @@ events that end a snooze end it before they get here."
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
+       (if (agent-shell-vertico-sidebar--background-work buffer)
+           (puthash buffer t
+                    agent-shell-vertico-sidebar--background-at-turn-end)
+         (remhash buffer agent-shell-vertico-sidebar--background-at-turn-end))
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
            (remhash buffer agent-shell-vertico-sidebar--unread)
          (agent-shell-vertico-sidebar--mark-unread-at buffer now)
@@ -2626,7 +2871,8 @@ events that end a snooze end it before they get here."
        ;; also dealing with the session, which is what a snooze waits for.
        (remhash buffer agent-shell-vertico-sidebar--unread)
        (remhash buffer agent-shell-vertico-sidebar--failed)
-       (remhash buffer agent-shell-vertico-sidebar--snoozed))
+       (remhash buffer agent-shell-vertico-sidebar--snoozed)
+       (remhash buffer agent-shell-vertico-sidebar--background-at-turn-end))
       ('permission-response
        ;; Answering a request is reading it, whether or not another one
        ;; is already pending behind it.
@@ -2641,6 +2887,8 @@ events that end a snooze end it before they get here."
        (remhash buffer agent-shell-vertico-sidebar--unread)
        (remhash buffer agent-shell-vertico-sidebar--failed)
        (remhash buffer agent-shell-vertico-sidebar--snoozed)
+       (remhash buffer agent-shell-vertico-sidebar--background-since)
+       (remhash buffer agent-shell-vertico-sidebar--background-at-turn-end)
        (remhash buffer agent-shell-vertico-sidebar--busy-since-times)
        (remhash buffer agent-shell-vertico-sidebar--activity))
       (_ nil))
@@ -2666,6 +2914,9 @@ events that end a snooze end it before they get here."
     (remhash (current-buffer) agent-shell-vertico-sidebar--unread)
     (remhash (current-buffer) agent-shell-vertico-sidebar--failed)
     (remhash (current-buffer) agent-shell-vertico-sidebar--snoozed)
+    (remhash (current-buffer) agent-shell-vertico-sidebar--background-since)
+    (remhash (current-buffer)
+             agent-shell-vertico-sidebar--background-at-turn-end)
     (remhash (current-buffer)
              agent-shell-vertico-sidebar--busy-since-times)
     (remhash (current-buffer) agent-shell-vertico-sidebar--activity)
@@ -3210,9 +3461,9 @@ the whole command runs there however it was called."
 (defun agent-shell-vertico-sidebar--session-statistics ()
   "Return status counts for live agent-shell sessions.
 
-The returned vector contains attention, working, ready, starting and
-snoozed counts in that order."
-  (let ((counts (make-vector 5 0)))
+The returned vector contains attention, working, ready, starting,
+snoozed and background counts in that order."
+  (let ((counts (make-vector 6 0)))
     (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
       (cl-incf (aref counts
                      (aref agent-shell-vertico-sidebar--statistics-slots
@@ -3223,6 +3474,7 @@ snoozed counts in that order."
   '((failed . "failed")
     (blocked . "waiting")
     (busy . "working")
+    (background . "in the background")
     (ready . "ready")
     (starting . "starting"))
   "Tooltip wording for each status counted in a header.
@@ -3313,6 +3565,7 @@ last, whatever their statuses."
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
+   "  S           List the session's subagents and background tasks\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
    "Metadata values are individually clickable.  Project values open their\n"
@@ -3346,6 +3599,7 @@ last, whatever their statuses."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
     map)
@@ -3380,6 +3634,7 @@ last, whatever their statuses."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "q") #'quit-window)
@@ -3421,6 +3676,7 @@ last, whatever their statuses."
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
+    ("S" . agent-shell-vertico-sidebar-subagents)
     ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
   "Dired-style direct bindings for Evil sidebar states.
@@ -3472,6 +3728,8 @@ while normal and motion states get the same direct mnemonic commands."
               agent-shell-vertico-sidebar--age-refresh-timer nil
               agent-shell-vertico-sidebar--resize-timer nil
               agent-shell-vertico-sidebar--busy-timer nil
+              agent-shell-vertico-sidebar--background-timer nil
+              agent-shell-vertico-sidebar--rendered-background nil
               agent-shell-vertico-sidebar--busy-tick 0
               agent-shell-vertico-sidebar--busy-overlays nil
               agent-shell-vertico-sidebar--dirty nil
@@ -3490,6 +3748,8 @@ while normal and motion states get the same direct mnemonic commands."
             #'agent-shell-vertico-sidebar--cancel-resize nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-busy-refresh nil t)
+  (add-hook 'kill-buffer-hook
+            #'agent-shell-vertico-sidebar--cancel-background-refresh nil t)
   (local-set-key (kbd "TAB") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "<tab>") #'agent-shell-vertico-sidebar-toggle-at-point)
   (local-set-key (kbd "S-TAB")
@@ -3540,9 +3800,12 @@ run from nothing running at all, and counting the snoozed ones says
 what is still owed once the reader wants it."
   (let* ((statistics (agent-shell-vertico-sidebar--session-statistics))
          (working (aref statistics 1))
+         (background (aref statistics 5))
          (snoozed (aref statistics 4)))
     (concat "No session needs attention"
             (and (> working 0) (format ", %d working" working))
+            (and (> background 0)
+                 (format ", %d in the background" background))
             (and (> snoozed 0) (format ", %d snoozed" snoozed)))))
 
 (defun agent-shell-vertico-sidebar--attention-target ()
@@ -3629,6 +3892,21 @@ is holding back still goes: the record is what this command is about."
       (remhash buffer agent-shell-vertico-sidebar--unread)
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s marked read" (buffer-name buffer)))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-subagents ()
+  "List the subagents and background tasks of the session at point.
+
+Called outside the sidebar, list the current session's, a viewport's
+included.  This is agent-shell's own list, `agent-shell-subagents', run
+in the session, so it offers what that list offers: opening a subagent,
+jumping to where it started, and stopping a task."
+  (interactive)
+  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+    (unless (fboundp 'agent-shell-subagents)
+      (user-error "This agent-shell has no subagents list"))
+    (with-current-buffer buffer
+      (agent-shell-subagents))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-snooze ()
@@ -3730,6 +4008,12 @@ for a session buffer is that buffer."
 Run the same way as `agent-shell-vertico-sidebar--jump-mark-unread'."
   (with-current-buffer buffer
     (agent-shell-vertico-sidebar-mark-read)))
+
+(defun agent-shell-vertico-sidebar--jump-subagents (buffer)
+  "List session BUFFER's subagents and background tasks.
+Run the same way as `agent-shell-vertico-sidebar--jump-mark-unread'."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-subagents)))
 
 (defun agent-shell-vertico-sidebar--jump-snooze (buffer)
   "Snooze or wake session BUFFER.
@@ -4276,11 +4560,13 @@ directory, so the group to unfold is that ancestor's."
       (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
           (progn
             (agent-shell-vertico-sidebar--ensure-age-refresh)
-            (agent-shell-vertico-sidebar--ensure-busy-refresh))
+            (agent-shell-vertico-sidebar--ensure-busy-refresh)
+            (agent-shell-vertico-sidebar--ensure-background-refresh))
         (agent-shell-vertico-sidebar--cancel-refresh)
         (agent-shell-vertico-sidebar--cancel-resize)
         (agent-shell-vertico-sidebar--cancel-age-refresh)
-        (agent-shell-vertico-sidebar--cancel-busy-refresh)))))
+        (agent-shell-vertico-sidebar--cancel-busy-refresh)
+        (agent-shell-vertico-sidebar--cancel-background-refresh)))))
 
 (defvar agent-shell-vertico-sidebar--visible-before-workspace-switch nil
   "Whether the sidebar was visible in the workspace being left.")

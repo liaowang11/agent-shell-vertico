@@ -179,6 +179,12 @@ Each element in BINDINGS is of the form:
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--snoozed)
                      (make-hash-table :test #'eq))
+                    ((symbol-value
+                      'agent-shell-vertico-sidebar--background-since)
+                     (make-hash-table :test #'eq))
+                    ((symbol-value
+                      'agent-shell-vertico-sidebar--background-at-turn-end)
+                     (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--activity)
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
@@ -10783,7 +10789,7 @@ finished since, so ranking it by age alone would pin every jump to it."
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons working 'busy))))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                     [1 1 0 0 0])))))
+                     [1 1 0 0 0 0])))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-passes-over-the-session-in-hand ()
   "A jump taken from inside a waiting session goes to the next one.
@@ -13738,7 +13744,7 @@ visited before GAMMA; snoozed, neither is visited at all."
     (agent-shell-vertico-tests--snooze alpha)
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
     (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
-    (should (= (agent-shell-vertico-sidebar--status-rank alpha) 3))))
+    (should (= (agent-shell-vertico-sidebar--status-rank alpha) 4))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-ranks-below-working ()
   "Snoozed sessions sit between working and ready, oldest snooze first."
@@ -13771,7 +13777,7 @@ visited before GAMMA; snoozed, neither is visited at all."
                       agent-shell-test-buffers 'priority)
                      (list unread working later latest idle)))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                     [1 1 1 0 2])))))
+                     [1 1 1 0 2 0])))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-survives-reading-and-output ()
   "Looking at a snoozed session, or its next turn, leaves it snoozed.
@@ -13907,6 +13913,283 @@ The output is still recorded, and nobody is told about it."
               #'agent-shell-vertico-sidebar-snooze))
   (should (eq (car (alist-get ?z agent-shell-vertico-sidebar-jump-dispatch-alist))
               #'agent-shell-vertico-sidebar--jump-snooze)))
+
+;;; Background work
+
+(defconst agent-shell-vertico-tests--running-subagent
+  '(("child" . ((:name . "Explore") (:task . "Survey the code"))))
+  "A `:native-subagents' registry holding one subagent still running.")
+
+(defmacro agent-shell-vertico-tests--with-background (state &rest body)
+  "Evaluate BODY with ALPHA live and ready, its state extended by STATE.
+BETA is live and idle beside it."
+  (declare (indent 1))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               ;; Copied, since tests edit the registries they are given.
+               (copy-tree
+                (append ,state
+                        '((:session . ((:id . "a") (:title . "Alpha")))))))
+        (beta "Codex Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b") (:title . "Beta"))))))
+     (let ((agent-shell-test-buffers (list alpha beta))
+           (agent-shell-test-statuses (list (cons alpha 'ready)
+                                            (cons beta 'ready))))
+       ,@body)))
+
+(ert-deftest agent-shell-vertico-sidebar-background-from-a-subagent ()
+  "An idle session with a subagent still running is in the background."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Background"))
+    (should (equal (agent-shell-vertico-sidebar--background-work alpha)
+                   '(1 . 0)))
+    ;; A subagent that has ended is not running.
+    (with-current-buffer alpha
+      (setf (map-elt (cdr (assoc "child" (map-elt agent-shell--state
+                                                  :native-subagents)))
+                     :ended-at)
+            '(0 0)))
+    (should-not (agent-shell-vertico-sidebar--background-work alpha))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-from-an-async-task ()
+  "A running async task counts; a finished one does not."
+  (agent-shell-vertico-tests--with-background
+      '((:async-tasks . (("t1" . (:name "npm run dev" :state "running"))
+                         ("t2" . (:name "tests" :state "completed")))))
+    (should (equal (agent-shell-vertico-sidebar--background-work alpha)
+                   '(0 . 1)))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
+    (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'ready))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-yields-to-the-turn ()
+  "A live turn, a pending decision and a failure all say more."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (dolist (status '(busy blocked))
+      (setf (alist-get alpha agent-shell-test-statuses) status)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) status)))
+    (setf (alist-get alpha agent-shell-test-statuses) 'ready)
+    (puthash alpha t agent-shell-vertico-sidebar--failed)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-ranks-below-working ()
+  "Background sits between working and snoozed, and asks for nobody."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((working "Codex Agent @ working" "/work/working/"
+                  '((:session . ((:id . "w") (:title . "Working")))))
+         (later "Codex Agent @ later" "/work/later/"
+                '((:session . ((:id . "l") (:title . "Later"))))))
+      (let ((agent-shell-test-buffers (list beta later alpha working))
+            (agent-shell-test-statuses (list (cons alpha 'ready)
+                                             (cons beta 'ready)
+                                             (cons working 'busy)
+                                             (cons later 'ready))))
+        (agent-shell-vertico-tests--snooze later)
+        (should (= (agent-shell-vertico-sidebar--status-rank alpha) 3))
+        (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                        agent-shell-test-buffers 'priority)
+                       (list working alpha later beta)))
+        (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+        (should (equal (agent-shell-vertico-sidebar--session-statistics)
+                       [0 1 1 0 1 1]))
+        (should (equal (agent-shell-vertico-sidebar--no-attention-message)
+                       (concat "No session needs attention, 1 working,"
+                               " 1 in the background, 1 snoozed")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-runs-oldest-first ()
+  "Among background sessions, the one working longest comes first."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (with-current-buffer beta
+      (setq-local agent-shell--state
+                  (append `((:native-subagents
+                             . ,agent-shell-vertico-tests--running-subagent))
+                          agent-shell--state)))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+      (agent-shell-vertico-sidebar--raw-status beta))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 30.0)))
+      (agent-shell-vertico-sidebar--raw-status alpha))
+    (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                    (list alpha beta) 'priority)
+                   (list beta alpha)))
+    ;; Leaving the background forgets when it began.
+    (with-current-buffer beta
+      (setq-local agent-shell--state
+                  (assq-delete-all :native-subagents agent-shell--state)))
+    (agent-shell-vertico-sidebar--raw-status beta)
+    (should-not (gethash beta agent-shell-vertico-sidebar--background-since))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-unread-is-attention ()
+  "A finished turn with work still running is unread like any other."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . turn-complete)))
+    (should (equal (agent-shell-vertico-sidebar--mark alpha)
+                   '(background t nil)))
+    (should (eq (agent-shell-vertico-sidebar--mark-face
+                 (agent-shell-vertico-sidebar--mark alpha))
+                'agent-shell-vertico-sidebar-attention))
+    (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    (remhash alpha agent-shell-vertico-sidebar--unread)
+    (should (eq (agent-shell-vertico-sidebar--mark-face
+                 (agent-shell-vertico-sidebar--mark alpha))
+                'agent-shell-vertico-sidebar-background))))
+
+(ert-deftest agent-shell-vertico-sidebar-subagent-output-is-not-a-burst ()
+  "A subagent streaming is background work, not the root speaking."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell--subagent-group '("child")))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Found three files.")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . tool-call-update))))
+      (should-not (gethash alpha agent-shell-vertico-sidebar--out-of-turn))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
+      (should-not (agent-shell-vertico-sidebar--last-message alpha))
+      ;; The root's own words still count.
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . agent-message-chunk)
+               (:data . ((:text-chunk . "All done.")))))
+      (should (gethash alpha agent-shell-vertico-sidebar--out-of-turn))
+      (should (equal (agent-shell-vertico-sidebar--last-message alpha)
+                     "All done.")))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-detail-line ()
+  "A row in the background says what is running, one count per kind."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents
+         . (("one" . ((:name . "A"))) ("two" . ((:name . "B")))))
+        (:async-tasks . (("t1" . (:name "npm" :state "running")))))
+    (let ((agent-shell-vertico-sidebar-group-by nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (should (re-search-forward "2 subagents · \\$ +1 task$" nil t))
+        (goto-char (point-min))
+        (search-forward "Beta")
+        (should-not (search-forward "subagent" nil t))))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  (assq-delete-all :async-tasks agent-shell--state)))
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--render)
+      (goto-char (point-min))
+      (should (re-search-forward "2 subagents$" nil t)))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-poll-sees-work-end ()
+  "The poll redraws once what runs in the background has changed."
+  (agent-shell-vertico-tests--with-background
+      '((:async-tasks . (("t1" . (:name "npm" :state "running")))))
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should-not agent-shell-vertico-sidebar--dirty)
+      (agent-shell-vertico-sidebar--background-poll)
+      (should-not agent-shell-vertico-sidebar--dirty)
+      (with-current-buffer alpha
+        (setq-local agent-shell--state
+                    (cons '(:async-tasks
+                            . (("t1" . (:name "npm" :state "completed"))))
+                          (assq-delete-all :async-tasks agent-shell--state))))
+      (agent-shell-vertico-sidebar--background-poll)
+      (should agent-shell-vertico-sidebar--dirty))))
+
+(defun agent-shell-vertico-tests--end-subagent (buffer)
+  "Mark BUFFER's running test subagent ended."
+  (with-current-buffer buffer
+    (setf (map-elt (cdr (assoc "child" (map-elt agent-shell--state
+                                                :native-subagents)))
+                   :ended-at)
+          '(0 0))))
+
+(defun agent-shell-vertico-tests--settle-root-burst (buffer)
+  "Stream a root message into BUFFER with no turn in flight, then settle it."
+  (agent-shell-vertico-sidebar--handle-event
+   buffer '((:event . agent-message-chunk)
+            (:data . ((:text-chunk . "Here is what they found.")))))
+  (agent-shell-vertico-sidebar--out-of-turn-settled buffer))
+
+(ert-deftest agent-shell-vertico-sidebar-background-result-notifies ()
+  "The report that follows background work announces itself, once.
+The turn that started the work already marked the session unread, and a
+burst on an unread mark is otherwise silent."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . turn-complete))))
+        (should (= (length notifications) 1))
+        ;; A word while the work still runs is not the result.
+        (agent-shell-vertico-tests--settle-root-burst alpha)
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-tests--end-subagent alpha)
+        (agent-shell-vertico-tests--settle-root-burst alpha)
+        (should (= (length notifications) 2))
+        (should (equal (plist-get (car notifications) :last-message)
+                       "Here is what they found."))
+        ;; The mark keeps the age it had.
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
+        ;; Once is enough: a later wave on the same mark stays silent.
+        (agent-shell-vertico-tests--settle-root-burst alpha)
+        (should (= (length notifications) 2))))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-result-needs-work ()
+  "Without background work at the turn's end, nothing extra is announced."
+  (agent-shell-vertico-tests--with-background nil
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . turn-complete)))
+        (agent-shell-vertico-tests--settle-root-burst alpha)
+        (should (= (length notifications) 1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-result-forgotten ()
+  "A new prompt or the session's end forgets the result it waited for."
+  (dolist (event '(input-submitted clean-up))
+    (agent-shell-vertico-tests--with-background
+        `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . turn-complete)))
+      (should (gethash alpha
+                       agent-shell-vertico-sidebar--background-at-turn-end))
+      (agent-shell-vertico-sidebar--handle-event alpha `((:event . ,event)))
+      (should-not
+       (gethash alpha agent-shell-vertico-sidebar--background-at-turn-end)))))
+
+(ert-deftest agent-shell-vertico-sidebar-subagents-opens-the-list ()
+  "`S' lists the subagents of the session at point, in that session."
+  (agent-shell-vertico-tests--with-background nil
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-subagents))
+    (should (eq agent-shell-test-last-command 'agent-shell-subagents))
+    (should (eq agent-shell-test-last-buffer alpha)))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "S"))
+              #'agent-shell-vertico-sidebar-subagents))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-action-map (kbd "S"))
+              #'agent-shell-vertico-sidebar-subagents))
+  (should (eq (alist-get "S" agent-shell-vertico-sidebar--evil-bindings
+                         nil nil #'equal)
+              #'agent-shell-vertico-sidebar-subagents))
+  (should (eq (car (alist-get
+                    ?S agent-shell-vertico-sidebar-jump-dispatch-alist))
+              #'agent-shell-vertico-sidebar--jump-subagents)))
 
 (provide 'agent-shell-vertico-tests)
 
