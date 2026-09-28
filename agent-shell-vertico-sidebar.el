@@ -3807,6 +3807,74 @@ With OTHER-WINDOW, display the session in another window."
       (format "Jump to session #%d in the order the sidebar lists them."
               index))))
 
+(defun agent-shell-vertico-sidebar--display-order ()
+  "Return every live session in the order the sidebar draws its rows.
+
+This is the walk `--render' makes, without drawing: the sessions with no
+live parent, grouped by project when `agent-shell-vertico-sidebar-group-by'
+says so, each followed depth-first by its children.  A folded project
+still lists its sessions, because nothing is drawn for the reader to
+look at and a step should not depend on how the sidebar was left."
+  (let* ((sort-by agent-shell-vertico-sidebar-sort-by)
+         (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers)))
+    (named-let walk ((buffers
+                      (if agent-shell-vertico-sidebar-group-by
+                          (seq-mapcat
+                           #'cdr
+                           (agent-shell-vertico-sidebar--sort-groups
+                            (agent-shell-vertico-sidebar--group-buffers roots)
+                            sort-by))
+                        (agent-shell-vertico-sidebar--sort-buffers
+                         roots sort-by))))
+      (seq-mapcat (lambda (buffer)
+                    (cons buffer
+                          (walk (agent-shell-vertico-sidebar--sort-buffers
+                                 (agent-shell-vertico-sidebar--children-of
+                                  buffer)
+                                 sort-by))))
+                  buffers))))
+
+(defun agent-shell-vertico-sidebar--step-session (offset other-window)
+  "Display the session OFFSET rows from this one in the sidebar's order.
+
+The order wraps, so a step past either end arrives at the other.  From a
+buffer that is no session, a step forward starts at the top row and a
+step back at the bottom one.  The order is asked afresh every step, so
+under `priority' the session just read may have moved by the next one;
+that is the same trade `agent-shell-vertico-sidebar-jump-to-index'
+makes.  OTHER-WINDOW displays the session in another window."
+  (let ((order (agent-shell-vertico-sidebar--display-order)))
+    (unless order
+      (user-error "No agent-shell sessions"))
+    (let* ((index (or (seq-position order
+                                    (agent-shell-vertico--current-session)
+                                    #'eq)
+                      (if (> offset 0) -1 0)))
+           (buffer (nth (mod (+ index offset) (length order)) order)))
+      (if other-window
+          (agent-shell-vertico-sidebar--jump-display-other-window buffer)
+        (agent-shell-vertico-sidebar--jump-display buffer))
+      (agent-shell-vertico-sidebar-refresh))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-next-session (&optional other-window)
+  "Display the session on the row below this one in the sidebar.
+
+Every live session counts, folded or not, and the bottom row wraps to
+the top.  With OTHER-WINDOW, display the session in another window."
+  (interactive "P")
+  (agent-shell-vertico-sidebar--step-session 1 other-window))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-previous-session (&optional other-window)
+  "Display the session on the row above this one in the sidebar.
+
+Every live session counts, folded or not, and the top row wraps to the
+bottom.  With OTHER-WINDOW, display the session in another window."
+  (interactive "P")
+  (agent-shell-vertico-sidebar--step-session -1 other-window))
+
 (defun agent-shell-vertico-sidebar--session-rows ()
   "Return (BUFFER . POSITION) for each session row, top to bottom."
   (seq-keep (pcase-lambda (`((,kind . ,node) . ,position))

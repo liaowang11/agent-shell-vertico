@@ -469,6 +469,20 @@ jumping reads the session and moves it out of the attention tier, so the same
 key answers differently next time. That was the user's call, a quick jump
 rather than an address, and it is why the reading jump exists beside it.
 
+**Stepping along the rows.** `agent-shell-vertico-sidebar-next-session`
+and `-previous-session` move one row from the session in the selected
+window (`agent-shell-vertico--current-session`, so a viewport counts),
+wrapping at both ends; from a buffer that is no session they start at the
+top or bottom row. The order is `--display-order`, the walk `--render`
+makes without drawing it: the roots, grouped when
+`agent-shell-vertico-sidebar-group-by` says so, each followed depth-first
+by its children. It is not `-jump-to-index`'s flat sort, which ignores
+both grouping and nesting. A folded project still lists its sessions,
+because nothing is drawn. The order is asked again on every step rather
+than kept for a run of presses, so under `priority` the session just read
+may have moved by the next step. That was the user's call, the same trade
+the index jump makes.
+
 **Retracing the jumps.** The jump history lives in the core module, not
 the sidebar, because it is not the sidebar's question: `--jump-history`
 is the sessions the reader has left, most recently left first, and

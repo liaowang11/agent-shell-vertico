@@ -11127,6 +11127,126 @@ names count from 1, so the command's number is the key it is bound to."
             (call-interactively 'agent-shell-vertico-sidebar-jump-to-2)))
         (should (eq other-window-buffer beta))))))
 
+(ert-deftest agent-shell-vertico-sidebar-display-order-matches-the-rows ()
+  "The order stepped through is the order the sidebar draws.
+
+Grouped by project, with a child nested under its parent, the rows are
+neither the flat sort nor creation order, so a passing test proves the
+two walks agree rather than happening to coincide.  A folded project
+still counts, since the step opens no sidebar and draws nothing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((zeta "Codex Agent @ zeta" "/work/alpha/"
+             '((:session . ((:id . "z") (:title . "Zeta")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (child "Codex Agent @ child" "/work/beta/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-side-links (list (cons child beta))
+      (let ((agent-shell-test-buffers (list zeta beta child alpha))
+            (agent-shell-vertico-sidebar-group-by 'project)
+            (agent-shell-vertico-sidebar-sort-by 'name)
+            (agent-shell-vertico-sidebar-expand-by-default t))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (should (equal (mapcar #'car
+                                 (agent-shell-vertico-sidebar--session-rows))
+                         (list alpha zeta beta child)))
+          (should (equal (agent-shell-vertico-sidebar--display-order)
+                         (list alpha zeta beta child))))
+        (let ((agent-shell-vertico-sidebar-expand-by-default nil))
+          (should (equal (agent-shell-vertico-sidebar--display-order)
+                         (list alpha zeta beta child))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-next-session-steps-and-wraps ()
+  "Next and previous step one row along the sidebar, wrapping at the ends."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ gamma" "/work/gamma/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list gamma alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)
+                                           (cons gamma 'ready)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at beta)
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-sidebar-next-session)
+                    gamma))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-sidebar-next-session)
+                    alpha))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-sidebar-previous-session)
+                    gamma))
+        (should (eq (agent-shell-vertico-tests--jump
+                     #'agent-shell-vertico-sidebar-previous-session)
+                    beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-next-session-from-elsewhere ()
+  "From a buffer that is no session, next is the top row, previous the last."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list beta alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (elsewhere (generate-new-buffer " *notes*")))
+      (unwind-protect
+          (agent-shell-vertico-tests--with-jump-history
+            (agent-shell-vertico-tests--look-at elsewhere)
+            (agent-shell-vertico-sidebar-next-session)
+            (should (eq agent-shell-test-displayed-buffer alpha))
+            (agent-shell-vertico-sidebar-previous-session)
+            (should (eq agent-shell-test-displayed-buffer beta)))
+        (kill-buffer elsewhere)))))
+
+(ert-deftest agent-shell-vertico-sidebar-next-session-marks-it-seen ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready))))
+      (agent-shell-vertico-tests--with-jump-history
+        (puthash alpha 100.0 agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar-next-session)
+        (should (eq agent-shell-test-displayed-buffer alpha))
+        (should-not (agent-shell-vertico-sidebar--unread-p alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-next-session-other-window ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          other-window-buffer)
+      (agent-shell-vertico-tests--with-jump-history
+        (cl-letf (((symbol-function 'switch-to-buffer-other-window)
+                   (lambda (buffer &rest _) (setq other-window-buffer buffer))))
+          (agent-shell-vertico-sidebar-previous-session t))
+        (should (eq other-window-buffer alpha))
+        (should-not agent-shell-test-displayed-buffer)))))
+
+(ert-deftest agent-shell-vertico-sidebar-next-session-reports-no-sessions ()
+  (let ((agent-shell-test-buffers nil))
+    (should (equal (should-error (agent-shell-vertico-sidebar-next-session)
+                                 :type 'user-error)
+                   '(user-error "No agent-shell sessions")))
+    (should (equal (should-error (agent-shell-vertico-sidebar-previous-session)
+                                 :type 'user-error)
+                   '(user-error "No agent-shell sessions")))))
+
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-labels-rows-in-order ()
   "Keys follow the flat row order, and the chosen key's session is shown."
   (agent-shell-vertico-tests--with-session-buffers

@@ -275,6 +275,15 @@ bindable without a lambda and reachable through `M-x`.  A position is not
 a name for a session: under `priority` sorting a finished turn moves its
 session up, and jumping to a session reads it, which moves it too.
 
+`agent-shell-vertico-sidebar-next-session` and
+`agent-shell-vertico-sidebar-previous-session` step one row down or up
+the sidebar from the session you are in, wrapping at either end; from a
+buffer that is no session they start at the top or the bottom row.  The
+order is the one the sidebar draws, project groups and side
+conversations nested under their parents included, and a folded project
+still counts.  Like the numbered jumps, they open no sidebar, and under
+`priority` sorting the session you step to can move once it is read.
+
 Each of these jumps is recorded in the jump history above, so
 `agent-shell-vertico-jump-back` undoes whichever one you took.
 
@@ -832,7 +841,9 @@ without Consult.
 
 (use-package agent-shell-vertico-sidebar
   :after agent-shell-vertico
-  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)))
+  :bind (("C-c a S" . agent-shell-vertico-sidebar-toggle)
+         ("C-c a {" . agent-shell-vertico-sidebar-previous-session)
+         ("C-c a }" . agent-shell-vertico-sidebar-next-session)))
 
 (use-package agent-shell-vertico-transcript
   :after agent-shell-vertico
