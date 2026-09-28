@@ -4000,8 +4000,9 @@ Show it without selecting its window, or close it when it is visible."
 
 Point lands on the row of the session the selected window showed, a
 viewport counting as its session, and stays where it was when that
-window showed none or its row is folded away.  Called from the sidebar,
-select the window used before it instead, leaving the sidebar open."
+window showed none.  A folded project group holding that row is
+unfolded.  Called from the sidebar, select the window used most
+recently before it instead, leaving the sidebar open."
   (interactive)
   (let ((buffer (get-buffer "*Agent Shell Sessions*")))
     (if (and buffer (eq (window-buffer (selected-window)) buffer))
@@ -4020,7 +4021,24 @@ select the window used before it instead, leaving the sidebar open."
         ;; After selecting, so the move is the window's point and not
         ;; only the buffer's.
         (when session
-          (agent-shell-vertico-sidebar--goto-node (cons 'session session)))))))
+          (agent-shell-vertico-sidebar--reveal-session session))))))
+
+(defun agent-shell-vertico-sidebar--reveal-session (session)
+  "Move point to SESSION's row, unfolding its project group if needed.
+
+A child is drawn under its topmost live ancestor, whatever its own
+directory, so the group to unfold is that ancestor's."
+  (let ((node (cons 'session session)))
+    (unless (agent-shell-vertico-sidebar--goto-node node)
+      (when (and agent-shell-vertico-sidebar-group-by
+                 (hash-table-p agent-shell-vertico-sidebar--expanded-projects))
+        (let ((top session))
+          (while-let ((parent (agent-shell-vertico-sidebar--parent-of top)))
+            (setq top parent))
+          (puthash (agent-shell-vertico-sidebar--project-root top) t
+                   agent-shell-vertico-sidebar--expanded-projects)
+          (agent-shell-vertico-sidebar--render)
+          (agent-shell-vertico-sidebar--goto-node node))))))
 
 (defun agent-shell-vertico-sidebar--window-configuration-change
     (&optional _frame)

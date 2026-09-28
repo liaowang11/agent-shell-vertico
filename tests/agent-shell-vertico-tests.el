@@ -1412,6 +1412,38 @@ a session outside its own family."
         (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
+(ert-deftest agent-shell-vertico-sidebar-focus-unfolds-shown-session ()
+  "Focusing unfolds the group holding the session left, parent's for a child.
+The child's own directory is another project, so unfolding by its own
+root would open the wrong group and leave its row hidden."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (side "Codex Agent @ side" "/work/side/"
+             '((:session . ((:id . "s") (:title . "Side question"))))))
+    (let* ((links (list (cons side alpha)))
+           (agent-shell-test-buffers (list alpha side))
+           (agent-shell-vertico-sidebar-group-by 'project)
+           (agent-shell-vertico-sidebar-expand-by-default nil)
+           (original (selected-window))
+           (original-buffer (window-buffer original)))
+      (agent-shell-vertico-tests--with-side-links links
+        (unwind-protect
+            (progn
+              (set-window-buffer original side)
+              (agent-shell-vertico-sidebar-focus)
+              (should (eq (agent-shell-vertico-sidebar--node-at-point) side))
+              (should (agent-shell-vertico-sidebar--project-expanded-p
+                       "/work/alpha/"))
+              (should-not (gethash "/work/side/"
+                                   agent-shell-vertico-sidebar--expanded-projects))
+              (should (= (window-point) (point))))
+          (when (window-live-p original)
+            (select-window original)
+            (set-window-buffer original original-buffer))
+          (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+            (kill-buffer sidebar)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-focus-from-sidebar-returns ()
   "Focusing while in the sidebar selects the window it was entered from."
   (agent-shell-vertico-tests--with-session-buffers
@@ -1428,6 +1460,29 @@ a session outside its own family."
               (should (eq (selected-window) original))
               ;; Leaving keeps the sidebar open.
               (should (window-live-p sidebar))))
+        (when (window-live-p original)
+          (select-window original))
+        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focus-returns-past-deleted-window ()
+  "With the window it was entered from deleted, leaving picks the next one."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (original (selected-window))
+          entered)
+      (unwind-protect
+          (progn
+            (setq entered (split-window original))
+            (select-window entered)
+            (agent-shell-vertico-sidebar-focus)
+            (delete-window entered)
+            (agent-shell-vertico-sidebar-focus)
+            (should (eq (selected-window) original)))
+        (when (window-live-p entered)
+          (delete-window entered))
         (when (window-live-p original)
           (select-window original))
         (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
