@@ -218,16 +218,17 @@ derived from its live status rather than recorded: it cannot proceed until
 you answer it.  New output marks the session again, whether a turn finishes
 or a background stream goes quiet.
 
-`z` snoozes a session you mean to come back to, which neither `u` nor `!`
-can say: `!` loses the reminder, and leaving it unread keeps it at the head
-of the list.  A snoozed session is drawn grey, sorts below the working
-sessions and above the ready ones under `priority`, and is passed over by
+`z` snoozes a session you mean to come back to, which neither `u` nor `!` can
+say: `!` loses the reminder, and leaving it unread keeps it at the head of the
+list.  A snoozed session's mark turns purple and its title grey, and the header
+counts snoozed sessions once.  It sorts below the working sessions and above the
+ready ones under `priority`, and is passed over by
 `agent-shell-vertico-sidebar-jump` and the notification function.  Its mark
 still shows its status and whether it holds unread output.  Looking at it,
 marking it read and new output leave it snoozed; sending it a prompt, a new
-permission request, an error, `u`, or `z` again wakes it, with whatever it
-held back at the age it had.  A working session is refused.  Like `u` and
-`!`, `agent-shell-vertico-sidebar-snooze` works from the session buffer too.
+permission request, an error, `u`, or `z` again wakes it, with whatever it held
+back at the age it had.  A working session is refused.  Like `u` and `!`,
+`agent-shell-vertico-sidebar-snooze` works from the session buffer too.
 
 `agent-shell-vertico-sidebar-jump-by-key` picks a session the way
 `ace-window` picks a window.  The sessions are listed flat in the sidebar,

@@ -430,12 +430,22 @@ nobody has started again."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-snoozed
-  '((t :inherit shadow))
-  "Face for a session the reader has snoozed.
+  '((t :inherit link-visited :underline nil :weight normal))
+  "Face for the mark of a session the reader has snoozed.
 
-Every other colour here names a status or asks for the reader, and a
-snoozed session asks for nobody, so it takes the colour of what is
-present and not the answer.  The glyph still names the status."
+Every other colour on a mark names a status or asks for the reader, and
+grey is already a session starting, so a snooze takes the one hue left:
+the purple a visited link is drawn in, without the link's underline or
+weight.  The glyph still names the status, and is filled when the
+session holds output nobody has read."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-snoozed-title
+  '((t :inherit shadow))
+  "Face for the title of a session the reader has snoozed.
+
+The row recedes so the sessions still asking for the reader stand out,
+while the mark beside it says what the session is."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-working
@@ -1183,6 +1193,7 @@ same glyph as their outline ones.")
   '((project   "nf-cod-root_folder"       "⌂")
     (message   "nf-cod-arrow_small_right" "↳")
     (sessions  "nf-cod-layers"            "⧉")
+    (snoozed   "nf-md-sleep"              "z")
     (expanded  nil                        "▼")
     (collapsed nil                        "▶"))
   "Slot, nerd-icons name, and plain character for each mark that is not
@@ -1458,18 +1469,17 @@ Everything else is drawn in its status colour."
   "Return an alist of mark to count for MARKS, in display order.
 
 Unread marks come first, so a header reads what wants the reader before
-what does not, and snoozed marks come last, since the reader has put
-them off.  Marks with no sessions are left out."
+what does not.  Marks with no sessions are left out, and so are snoozed
+ones: the reader has put those off, so how they are made up is not
+what a count is for, and `agent-shell-vertico-sidebar--header-line-for'
+counts them once."
   (let (counts)
-    (dolist (snoozed '(nil t))
-      (dolist (unread '(t nil))
-        (dolist (status agent-shell-vertico-sidebar--status-order)
-          (let* ((mark (agent-shell-vertico-sidebar--mark-for
-                        status unread snoozed))
-                 (count (seq-count (lambda (other) (equal other mark))
-                                   marks)))
-            (when (> count 0)
-              (push (cons mark count) counts))))))
+    (dolist (unread '(t nil))
+      (dolist (status agent-shell-vertico-sidebar--status-order)
+        (let* ((mark (agent-shell-vertico-sidebar--mark-for status unread))
+               (count (seq-count (lambda (other) (equal other mark)) marks)))
+          (when (> count 0)
+            (push (cons mark count) counts)))))
     (nreverse counts)))
 
 (defun agent-shell-vertico-sidebar--icon (buffer)
@@ -1793,6 +1803,12 @@ parent-child relationship."
           (when details-visible
             (agent-shell-vertico-sidebar--extra-info-lines
              buffer root content-width (not nested)))))
+    (when (agent-shell-vertico-sidebar--snoozed-p buffer)
+      ;; Prepended, so it wins over whatever face the title carries.
+      (dolist (line title-lines)
+        (add-face-text-property 0 (length line)
+                                'agent-shell-vertico-sidebar-snoozed-title
+                                nil line)))
     (setq title-lines
           (cons (concat (agent-shell-vertico-sidebar--mark-field icon)
                         (car title-lines))
@@ -1936,8 +1952,7 @@ asks for a reply."
               (seq-find
                (lambda (entry)
                  (let ((mark (car entry)))
-                   (and (not (nth 2 mark))
-                        (or (nth 1 mark) (eq (car mark) 'blocked)))))
+                   (or (nth 1 mark) (eq (car mark) 'blocked))))
                (agent-shell-vertico-sidebar--mark-counts
                 (mapcar #'agent-shell-vertico-sidebar--mark buffers)))))
     (agent-shell-vertico-sidebar--count-text
@@ -3217,13 +3232,12 @@ The marks replace the words, so the wording moves to the tooltip.")
 (defun agent-shell-vertico-sidebar--mark-label (mark)
   "Return the tooltip wording for MARK.
 
-Several counts can share a glyph, unread or read and snoozed or not, so
-the wording says which this one is."
+Two counts can share a glyph, one unread and one read, so the wording
+says which this one is."
   (concat (or (alist-get (car mark)
                          agent-shell-vertico-sidebar--status-labels)
               "unknown")
-          (and (nth 1 mark) ", unread")
-          (and (nth 2 mark) ", snoozed")))
+          (and (nth 1 mark) ", unread")))
 
 (defun agent-shell-vertico-sidebar--header-stat (count mark)
   "Return compact COUNT text for MARK, drawn and named as MARK."
@@ -3238,17 +3252,25 @@ the wording says which this one is."
 A colon separates the total from the marks it breaks down into; the
 marks themselves are separated by the lighter middle dot.  A status with
 both read and unread sessions is counted twice, since read and unread
-are what the reader is looking for."
+are what the reader is looking for.  Snoozed sessions are one count,
+last, whatever their statuses."
   (let ((total (propertize
                 (agent-shell-vertico-sidebar--count-text
                  'sessions (length marks))
                 'help-echo "sessions"))
+        (snoozed (seq-count (lambda (mark) (nth 2 mark)) marks))
         parts)
     (dolist (entry (agent-shell-vertico-sidebar--mark-counts marks))
       (pcase-let ((`(,mark . ,count) entry))
         (when-let ((text (agent-shell-vertico-sidebar--header-stat
                           count mark)))
           (push text parts))))
+    (when (> snoozed 0)
+      (push (propertize (agent-shell-vertico-sidebar--count-text
+                         'snoozed snoozed
+                         'agent-shell-vertico-sidebar-snoozed)
+                        'help-echo "snoozed")
+            parts))
     (concat " " total
             (when parts
               (concat " : " (string-join (nreverse parts) " · "))))))

@@ -551,30 +551,34 @@ by `--mark-for` and cached in the render snapshot as `:mark`. The status picks
 the glyph from `--status-icons`, which lists a filled and an outline nerd-icons
 name plus one plain character per status, and unread picks between the two. A
 `busy` mark is never unread and a `starting` one has nothing to have missed, so
-their filled names are never drawn. `--mark-face` colours it: grey (`-snoozed`)
-for a snoozed session whatever else it says, red (`-attention`) for unread,
-yellow (`-unresolved`) for a `blocked` or `failed` session already read, then
-the status colours. Red therefore means exactly `--needs-attention-p` minus the
-sessions the reader has already seen; a snoozed session still fills its glyph
-when it holds unread output, so what arrived while it was put off is visible in
-grey. The plain characters have no filled twin for a check or a question mark,
-so in a terminal the colour alone carries unread; that is a deliberate limit,
-not an oversight. `--mark-counts` groups the header and project-header counts by
-mark, unread first and snoozed last, so one status can be counted twice and
-`--mark-label` says which is which in the tooltip. Slots that are not statuses
-(`project`, `message`, `sessions`, the fold triangles) stay in `--icons` and are
-drawn by `--slot-icon`; both go through `--draw-icon`. The fringe marker for the
-sessions on screen is derived, not stored: `--current-sessions` lists every
-session, or viewport, a window of the selected frame shows, and nothing else.
-The selected window alone would be too narrow, because moving to the sidebar, a
-file or magit beside a session does not leave it; a session absent from the
-frame, or on another one, is unmarked. This is only the marker: unread still
-needs the selected window (`--session-focused-p`), because seeing a session in a
-side window is not reading it. The render caches what it drew in
-`--rendered-current-sessions`, and the selection and buffer-change hooks compare
-against that cache as a set, so a window rearrangement showing the same sessions
-redraws nothing and the cache can never disagree with the windows for longer
-than one idle refresh.
+their filled names are never drawn. `--mark-face` colours it: purple
+(`-snoozed`) for a snoozed session whatever else it says, red (`-attention`) for
+unread, yellow (`-unresolved`) for a `blocked` or `failed` session already read,
+then the status colours. Red therefore means exactly `--needs-attention-p` minus
+the sessions the reader has already seen; a snoozed session still fills its
+glyph when it holds unread output, so what arrived while it was put off is
+visible in purple. Purple because grey is already `starting`: `-snoozed`
+inherits `link-visited` for its colour alone, and the row's title recedes into
+`-snoozed-title` (`shadow`) so the rows still asking stand out. The plain
+characters have no filled twin for a check or a question mark, so in a terminal
+the colour alone carries unread; that is a deliberate limit, not an oversight.
+`--mark-counts` groups the header and project-header counts by mark, unread
+first, so one status can be counted twice and `--mark-label` says which is which
+in the tooltip. Snoozed marks are left out of it: the header counts them once,
+as the `snoozed` slot, whatever their statuses. Slots that are not statuses
+(`project`, `message`, `sessions`, `snoozed`, the fold triangles) stay in
+`--icons` and are drawn by `--slot-icon`; both go through `--draw-icon`. The
+fringe marker for the sessions on screen is derived, not stored:
+`--current-sessions` lists every session, or viewport, a window of the selected
+frame shows, and nothing else. The selected window alone would be too narrow,
+because moving to the sidebar, a file or magit beside a session does not leave
+it; a session absent from the frame, or on another one, is unmarked. This is
+only the marker: unread still needs the selected window (`--session-focused-p`),
+because seeing a session in a side window is not reading it. The render caches
+what it drew in `--rendered-current-sessions`, and the selection and
+buffer-change hooks compare against that cache as a set, so a window
+rearrangement showing the same sessions redraws nothing and the cache can never
+disagree with the windows for longer than one idle refresh.
 
 **Which of them you are in.** A frame showing several sessions leaves the
 marker unable to say which one the reader is typing into, so the marker has

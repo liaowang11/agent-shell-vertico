@@ -13733,6 +13733,49 @@ The output is still recorded, and nobody is told about it."
     (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
     (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))
 
+(ert-deftest agent-shell-vertico-sidebar-snooze-header-counts-once ()
+  "Snoozed sessions share one count in the header, whatever their status."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--with-session-buffers
+        ((gamma "Codex Agent @ gamma" "/work/gamma/"
+                '((:session . ((:id . "g") (:title . "Gamma"))))))
+      (let ((agent-shell-test-buffers (list alpha beta gamma))
+            (agent-shell-test-statuses (list (cons alpha 'ready)
+                                             (cons beta 'blocked)
+                                             (cons gamma 'ready))))
+        (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+        (agent-shell-vertico-tests--snooze alpha)
+        (agent-shell-vertico-tests--snooze beta)
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (let* ((header (agent-shell-vertico-sidebar--header-line))
+                 (position (string-match "z" header)))
+            (should (equal (substring-no-properties header)
+                           " ⧉ 3 : ✓ 1 · z 2"))
+            (should (equal (get-text-property position 'help-echo header)
+                           "snoozed"))
+            (should (memq 'agent-shell-vertico-sidebar-snoozed
+                          (ensure-list
+                           (get-text-property position 'face header))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-dims-the-title ()
+  "A snoozed row's title is drawn dim; its mark keeps the snoozed colour."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-vertico-sidebar-group-by nil))
+      (agent-shell-vertico-tests--snooze alpha)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((faces-at (lambda (text)
+                          (goto-char (point-min))
+                          (search-forward text)
+                          (ensure-list (get-text-property
+                                        (match-beginning 0) 'face)))))
+          (should (memq 'agent-shell-vertico-sidebar-snoozed-title
+                        (funcall faces-at "Alpha")))
+          (should-not (memq 'agent-shell-vertico-sidebar-snoozed-title
+                            (funcall faces-at "Beta"))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-snooze-keys ()
   "Snooze is `z' in the sidebar, its action map, Evil, and a jump."
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "z"))
