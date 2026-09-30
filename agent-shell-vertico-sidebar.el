@@ -3957,8 +3957,8 @@ A snoozed session stops asking for the reader without being marked
 read: it sinks below every session that is not snoozed, whatever the
 sort, under a rule drawn where the snoozed sessions begin, and
 `agent-shell-vertico-sidebar-jump' passes it over.  Its mark turns
-grey, and still says what the session is and whether it holds output
-nobody has read.  Nothing is reported to
+purple and its title dims; the mark still says what the session is and
+whether it holds output nobody has read.  Nothing is reported to
 `agent-shell-vertico-sidebar-notify-function' while it is snoozed.
 
 Looking at a snoozed session, marking it read and new output all leave
