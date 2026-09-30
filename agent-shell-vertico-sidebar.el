@@ -483,6 +483,15 @@ The row recedes so the sessions still asking for the reader stand out,
 while the mark beside it says what the session is."
   :group 'agent-shell-vertico-sidebar)
 
+(defface agent-shell-vertico-sidebar-snoozed-rule
+  '((t :inherit shadow))
+  "Face whose colour draws the rule over the first snoozed session.
+
+Only the foreground is read: it becomes the colour of the overline
+`agent-shell-vertico-sidebar--insert-sessions' draws, which would
+otherwise take each glyph's own colour and change hue along the row."
+  :group 'agent-shell-vertico-sidebar)
+
 (defface agent-shell-vertico-sidebar-working
   '((t :inherit ansi-color-magenta :background "unspecified-bg"))
   "Face for working sessions."
@@ -891,9 +900,10 @@ ones is also what `agent-shell-vertico-sidebar--mark-face' draws.
 A session in the background ranks just below the working ones: it is
 working too, though it takes a prompt, and it asks for nobody.
 
-A snoozed session ranks below the background ones and above the ready
-ones, whatever it holds: the reader still owes it something, which a
-ready session is not owed, but has said it can wait.  SNOOZED is the
+A snoozed session has its own rank, whatever it holds, so the snoozed
+sessions run as one queue.  Where the queue sits is not the rank's
+business: `agent-shell-vertico-sidebar--compare-buffers' puts every
+snoozed session after every other one, whatever the sort.  SNOOZED is the
 answer of `agent-shell-vertico-sidebar--snoozed-for', which is already
 nil for a working session, so a burst ranks as work.
 
@@ -1634,8 +1644,14 @@ the sidebar's first session is the one
 `agent-shell-vertico-sidebar-jump' visits; the remaining tiers order
 newest first so a session that was read or finished recently stays near
 the top of its tier.  See
-`agent-shell-vertico-sidebar--oldest-first-rank-p' for which is which."
-  (let* ((left-title (agent-shell-vertico-sidebar--title left))
+`agent-shell-vertico-sidebar--oldest-first-rank-p' for which is which.
+
+Whatever SORT-BY is, a snoozed session sorts after every session that
+is not, and each party keeps SORT-BY's order among itself: the reader
+has said the snoozed ones can wait, so they wait below the rest."
+  (let* ((left-snoozed (agent-shell-vertico-sidebar--snoozed-p left))
+         (right-snoozed (agent-shell-vertico-sidebar--snoozed-p right))
+         (left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
          (left-rank (when (memq sort-by '(status priority))
                       (if (eq sort-by 'status)
@@ -1670,6 +1686,7 @@ the top of its tier.  See
                                      0.0))
                        (_ 0.0))))
     (cond
+     ((not (eq left-snoozed right-snoozed)) right-snoozed)
      ((eq sort-by 'name)
       (agent-shell-vertico-sidebar--text-lessp left-title right-title))
      ((and (eq sort-by 'status) (/= left-rank right-rank))
@@ -2140,11 +2157,38 @@ parent, so nesting never reorders the top level."
     buffer (agent-shell-vertico-sidebar--project-root buffer)
     width nested depth)
    'session buffer depth)
-  (dolist (child (agent-shell-vertico-sidebar--sort-buffers
-                  (agent-shell-vertico-sidebar--children-of buffer)
-                  agent-shell-vertico-sidebar-sort-by))
-    (agent-shell-vertico-sidebar--insert-session-and-children
-     child width nested (1+ depth))))
+  (agent-shell-vertico-sidebar--insert-sessions
+   (agent-shell-vertico-sidebar--sort-buffers
+    (agent-shell-vertico-sidebar--children-of buffer)
+    agent-shell-vertico-sidebar-sort-by)
+   width nested (1+ depth)))
+
+(defun agent-shell-vertico-sidebar--insert-sessions
+    (buffers width nested depth)
+  "Insert sorted sibling BUFFERS, with a rule over the first snoozed one.
+
+`agent-shell-vertico-sidebar--compare-buffers' puts the snoozed
+siblings last, so the rule is drawn once, where they begin, and only
+when some sibling above them is not snoozed.  It is an overline on the
+row's first line rather than a line of its own, because a line with no
+session on it is one every motion and every count of rows would have
+to step over.  The newline carries it too, with `:extend', since rows
+are not padded and the rule has to reach the window's edge.  A terminal
+draws no overline, so there the split is the order alone."
+  (let ((above nil))
+    (dolist (buffer buffers)
+      (let ((start (point))
+            (snoozed (agent-shell-vertico-sidebar--snoozed-p buffer)))
+        (agent-shell-vertico-sidebar--insert-session-and-children
+         buffer width nested depth)
+        (when (and snoozed above (not (eq above 'snoozed)))
+          (add-face-text-property
+           start (save-excursion (goto-char start) (1+ (line-end-position)))
+           `(:overline ,(or (face-foreground
+                             'agent-shell-vertico-sidebar-snoozed-rule nil t)
+                            t)
+                       :extend t)))
+        (setq above (if snoozed 'snoozed 'awake))))))
 
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
   "Insert project header ROOT and its BUFFERS at WIDTH."
@@ -2175,9 +2219,7 @@ parent, so nesting never reorders the top level."
            'help-echo "TAB/RET/mouse-1: toggle project"
            'kbd-help "TAB/RET/mouse-1: toggle project"))
     (when expanded
-      (dolist (buffer buffers)
-        (agent-shell-vertico-sidebar--insert-session-and-children
-         buffer width t 1)))))
+      (agent-shell-vertico-sidebar--insert-sessions buffers width t 1))))
 
 (cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
@@ -2265,11 +2307,10 @@ parent, so nesting never reorders the top level."
                           agent-shell-vertico-sidebar-sort-by))
                   (agent-shell-vertico-sidebar--insert-project
                    (car group) (cdr group) width))
-              (dolist (buffer
-                       (agent-shell-vertico-sidebar--sort-buffers
-                        roots agent-shell-vertico-sidebar-sort-by))
-                (agent-shell-vertico-sidebar--insert-session-and-children
-                 buffer width nil 0))))
+              (agent-shell-vertico-sidebar--insert-sessions
+               (agent-shell-vertico-sidebar--sort-buffers
+                roots agent-shell-vertico-sidebar-sort-by)
+               width nil 0)))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -3913,8 +3954,8 @@ jumping to where it started, and stopping a task."
   "Snooze the session at point, or the current session, or wake it.
 
 A snoozed session stops asking for the reader without being marked
-read: it leaves the head of the sidebar's `priority' order for a tier
-of its own, below the working sessions and above the ready ones, and
+read: it sinks below every session that is not snoozed, whatever the
+sort, under a rule drawn where the snoozed sessions begin, and
 `agent-shell-vertico-sidebar-jump' passes it over.  Its mark turns
 grey, and still says what the session is and whether it holds output
 nobody has read.  Nothing is reported to

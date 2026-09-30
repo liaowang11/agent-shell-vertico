@@ -13747,7 +13747,7 @@ visited before GAMMA; snoozed, neither is visited at all."
     (should (= (agent-shell-vertico-sidebar--status-rank alpha) 4))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-ranks-below-working ()
-  "Snoozed sessions sit between working and ready, oldest snooze first."
+  "Snoozed sessions sit below every other session, oldest snooze first."
   (agent-shell-vertico-tests--with-session-buffers
       ((unread "Codex Agent @ unread" "/work/unread/"
                '((:session . ((:id . "u") (:title . "Unread")))))
@@ -13775,9 +13775,87 @@ visited before GAMMA; snoozed, neither is visited at all."
         (agent-shell-vertico-tests--snooze latest))
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       agent-shell-test-buffers 'priority)
-                     (list unread working later latest idle)))
+                     (list unread working idle later latest)))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
                      [1 1 1 0 2 0])))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-sinks-under-every-sort ()
+  "Whatever the sort, snoozed sessions follow the others, each in order."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((able "Codex Agent @ able" "/work/able/"
+             '((:session . ((:id . "a") (:title . "Able")))))
+       (baker "Codex Agent @ baker" "/work/baker/"
+              '((:session . ((:id . "b") (:title . "Baker")))))
+       (charlie "Codex Agent @ charlie" "/work/charlie/"
+                '((:session . ((:id . "c") (:title . "Charlie")))))
+       (dog "Codex Agent @ dog" "/work/dog/"
+            '((:session . ((:id . "d") (:title . "Dog"))))))
+    (let ((agent-shell-test-buffers (list dog charlie baker able))
+          (agent-shell-test-statuses (list (cons able 'ready)
+                                           (cons baker 'ready)
+                                           (cons charlie 'ready)
+                                           (cons dog 'ready))))
+      (agent-shell-vertico-tests--snooze able)
+      (agent-shell-vertico-tests--snooze charlie)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      agent-shell-test-buffers 'name)
+                     (list baker dog able charlie))))))
+
+(defun agent-shell-vertico-tests--snooze-separator-p (text)
+  "Return non-nil when the row line holding TEXT carries the snooze rule.
+Both the line's first character and the newline ending it are checked,
+because the rule reaches the window edge only from the newline."
+  (goto-char (point-min))
+  (search-forward text)
+  (let ((rule-p (lambda (position)
+                  (let ((face (get-text-property position 'face)))
+                    ;; One face may be the anonymous plist itself.
+                    (seq-some (lambda (face)
+                                (and (consp face)
+                                     (plist-get face :overline)))
+                              (if (keywordp (car-safe face))
+                                  (list face)
+                                (ensure-list face)))))))
+    (and (funcall rule-p (line-beginning-position))
+         (funcall rule-p (line-end-position)))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-rule-tops-the-snoozed ()
+  "A rule is drawn over the first snoozed row, and over nothing else."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-vertico-sidebar-group-by nil))
+      (agent-shell-vertico-tests--snooze alpha)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (should (< (search-forward "Beta") (search-forward "Alpha")))
+        (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
+        (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))
+        ;; With every session snoozed there is nothing to split off.
+        (agent-shell-vertico-tests--snooze beta)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
+        (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-rule-inside-a-project ()
+  "Grouped, the rule splits a project's own sessions."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ shared" "/work/shared/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ shared<2>" "/work/shared/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t))
+      (agent-shell-vertico-tests--snooze alpha)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
+        (should-not (agent-shell-vertico-tests--snooze-separator-p
+                     "Beta"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-survives-reading-and-output ()
   "Looking at a snoozed session, or its next turn, leaves it snoozed.
@@ -13977,7 +14055,7 @@ BETA is live and idle beside it."
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-ranks-below-working ()
-  "Background sits between working and snoozed, and asks for nobody."
+  "Background sits below working, above snoozed, and asks for nobody."
   (agent-shell-vertico-tests--with-background
       `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
     (agent-shell-vertico-tests--with-session-buffers
@@ -13994,7 +14072,7 @@ BETA is live and idle beside it."
         (should (= (agent-shell-vertico-sidebar--status-rank alpha) 3))
         (should (equal (agent-shell-vertico-sidebar--sort-buffers
                         agent-shell-test-buffers 'priority)
-                       (list working alpha later beta)))
+                       (list working alpha beta later)))
         (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
         (should (equal (agent-shell-vertico-sidebar--session-statistics)
                        [0 1 1 0 1 1]))

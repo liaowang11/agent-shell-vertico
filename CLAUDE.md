@@ -344,10 +344,21 @@ unread kept it at the head of the list. It is not a value of `--unread`, so
 snoozing leaves that record alone, and waking a session hands back whatever it
 held at the age it had. `--needs-attention-p` answers nil for a snoozed session,
 which is the one change that takes it out of the jump, `--attention-sessions`
-and a project header's count; `--notify` skips it too. `--status-rank-for` gives
-it its own rank, 4, below working and background and above ready — it is still
-owed something, which a ready session is not — and it runs oldest-snoozed first,
-`--priority-time` asking the snooze time before the unread one. What ends a
+and a project header's count; `--notify` skips it too. The snoozed sessions
+are a second party below the rest, whatever the sort: `--compare-buffers` asks
+whether a session is snoozed before anything else, and each party keeps the
+sort's own order. `--status-rank-for` still gives it a rank of its own, 4, so
+the snoozed party runs oldest-snoozed first under `priority`, `--priority-time`
+asking the snooze time before the unread one. `--insert-sessions` marks where
+the party begins, in every sibling list (the flat list, a project's sessions, a
+parent's children), with an overline on the first snoozed row's first line
+rather than a line of its own, because a line with no session on it is one
+every motion and row count would have to step over. The newline carries it with
+`:extend`, since rows are not padded; its colour is the foreground of
+`-snoozed-rule`, because a plain overline takes each glyph's colour. A terminal
+draws no overline, so there the split is the order alone. A project whose
+sessions are all snoozed sorts below the others, since `--sort-groups` compares
+groups by their first session. What ends a
 snooze is dealing with the session or a new ask: `input-submitted`, a
 `permission-request` or an `error` (the agent cannot go on without the reader),
 `mark-unread`, or the command again. Looking at it, `mark-read`, a finished turn
