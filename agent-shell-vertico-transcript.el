@@ -172,32 +172,81 @@ creating the directory."
                   project-root))
     (expand-file-name directory default-directory)))
 
+(defconst agent-shell-vertico-transcript--frontmatter-keys
+  '(("Agent" . "agent")
+    ("Started" . "started")
+    ("Working Directory" . "working_directory")
+    ("Session ID" . "session_id")
+    ("Model" . "model")
+    ("Title" . "title"))
+  "Markdown header labels and the frontmatter keys holding the same field.")
+
+(defun agent-shell-vertico-transcript--frontmatter-end ()
+  "Return where the current buffer's YAML frontmatter closes, or nil.
+
+agent-shell heads newer transcripts with frontmatter, opened by a `---'
+line at the very start and closed by the next one.  Returns the start of
+that closing line, or nil when the buffer has no frontmatter."
+  (save-excursion
+    (goto-char (point-min))
+    (when (looking-at "---[ \t]*$")
+      (forward-line 1)
+      (when (re-search-forward "^---[ \t]*$" nil t)
+        (match-beginning 0)))))
+
 (defun agent-shell-vertico-transcript--header-end ()
   "Return where the current buffer's transcript header ends.
 
-The header ends at the `---' separator, or at the first speaker heading
-when a transcript has none.  Bodies quote header fields verbatim
-whenever an agent echoes a file or an older transcript, so a search for
-a field has to stop here rather than pick a quoted line up."
-  (save-excursion
-    (let (separator speaker)
-      (goto-char (point-min))
-      (when (re-search-forward "^---[ \t]*$" nil t)
-        (setq separator (match-beginning 0)))
-      (goto-char (point-min))
-      (when (re-search-forward "^## " nil t)
-        (setq speaker (match-beginning 0)))
-      (min (or separator (point-max))
-           (or speaker (point-max))))))
+A frontmatter header ends at its closing `---'.  A Markdown header ends
+at the `---' separator, or at the first speaker heading when a
+transcript has none.  Bodies quote header fields verbatim whenever an
+agent echoes a file or an older transcript, so a search for a field has
+to stop here rather than pick a quoted line up."
+  (or (agent-shell-vertico-transcript--frontmatter-end)
+      (save-excursion
+        (let (separator speaker)
+          (goto-char (point-min))
+          (when (re-search-forward "^---[ \t]*$" nil t)
+            (setq separator (match-beginning 0)))
+          (goto-char (point-min))
+          (when (re-search-forward "^## " nil t)
+            (setq speaker (match-beginning 0)))
+          (min (or separator (point-max))
+               (or speaker (point-max)))))))
+
+(defun agent-shell-vertico-transcript--frontmatter-value (key frontmatter-end)
+  "Return KEY's value from frontmatter ending at FRONTMATTER-END, or nil.
+
+agent-shell writes each value as a JSON string, so a quoted value is
+decoded as one; an unquoted value is taken as written."
+  (goto-char (point-min))
+  (when (re-search-forward
+         (format "^%s:[ \t]*\\(.*?\\)[ \t]*$" (regexp-quote key))
+         frontmatter-end t)
+    (let ((value (match-string-no-properties 1)))
+      (unless (string-empty-p value)
+        (if (string-prefix-p "\"" value)
+            (condition-case nil
+                (json-parse-string value)
+              (json-error value))
+          value)))))
 
 (defun agent-shell-vertico-transcript--header-value (label)
-  "Return the current buffer's Markdown header value for LABEL."
-  (let ((header-end (agent-shell-vertico-transcript--header-end)))
-    (goto-char (point-min))
-    (when (re-search-forward
-           (format "^\\*\\*%s:\\*\\*[ \t]+\\(.+\\)$" (regexp-quote label))
-           header-end t)
-      (string-trim (match-string-no-properties 1)))))
+  "Return the current buffer's header value for LABEL.
+
+LABEL names a Markdown header field, such as \"Session ID\".  In a
+transcript headed by frontmatter, the matching key is read instead (see
+`agent-shell-vertico-transcript--frontmatter-keys')."
+  (if-let* ((frontmatter-end (agent-shell-vertico-transcript--frontmatter-end)))
+      (when-let* ((key (map-elt agent-shell-vertico-transcript--frontmatter-keys
+                                label)))
+        (agent-shell-vertico-transcript--frontmatter-value key frontmatter-end))
+    (let ((header-end (agent-shell-vertico-transcript--header-end)))
+      (goto-char (point-min))
+      (when (re-search-forward
+             (format "^\\*\\*%s:\\*\\*[ \t]+\\(.+\\)$" (regexp-quote label))
+             header-end t)
+        (string-trim (match-string-no-properties 1))))))
 
 (defun agent-shell-vertico-transcript--first-user-message ()
   "Return the first nonblank line of the first user message."
@@ -894,10 +943,16 @@ Only what the row cannot say for itself: see
      0 'agent-shell-vertico-transcript-record candidate)))
 
 (defun agent-shell-vertico-transcript--record-created (record)
-  "Return RECORD's creation time for display."
+  "Return RECORD's creation time for display.
+
+Shown to the minute in the time zone the transcript was written in,
+whether the header recorded it as \"2026-10-03 12:34:56\" or, as
+frontmatter does, \"2026-10-03T12:34:56+08:00\"."
   (let ((started (agent-shell-vertico-transcript-record-started record)))
     (cond
-     ((and started (>= (length started) 16)) (substring started 0 16))
+     ((and started (>= (length started) 16))
+      (replace-regexp-in-string
+       "\\`\\([0-9-]\\{10\\}\\)T" "\\1 " (substring started 0 16)))
      (started started)
      (t
       (format-time-string
@@ -1820,21 +1875,29 @@ changing the buffer's text."
 Both the search and the insertion stop at `--header-end', as reading a
 header field does.  A body quotes header fields verbatim whenever an
 agent echoes a file or an older transcript, and a field written past the
-header is one the parser can never read back."
+header is one the parser can never read back.
+
+A frontmatter header gets a `session_id' key, its value quoted as
+agent-shell quotes the rest; a Markdown header gets a `**Session ID:**'
+field."
   (with-temp-buffer
     (insert text)
-    (let ((header-end (agent-shell-vertico-transcript--header-end)))
+    (let* ((frontmatter-p (agent-shell-vertico-transcript--frontmatter-end))
+           (header-end (agent-shell-vertico-transcript--header-end))
+           (field (if frontmatter-p
+                      (format "session_id: %s" (json-encode-string session-id))
+                    (format "**Session ID:** %s" session-id))))
       (goto-char (point-min))
       (if (re-search-forward
-           "^\\*\\*Session\\(?: ID\\)?:\\*\\*[ \t]+.*$"
+           (if frontmatter-p
+               "^session_id:.*$"
+             "^\\*\\*Session\\(?: ID\\)?:\\*\\*[ \t]+.*$")
            header-end t)
-          (replace-match
-           (format "**Session ID:** %s" session-id)
-           t t)
+          (replace-match field t t)
         (goto-char header-end)
         (unless (bolp)
           (insert "\n"))
-        (insert (format "**Session ID:** %s\n" session-id))))
+        (insert field "\n")))
     (buffer-string)))
 
 ;;;###autoload

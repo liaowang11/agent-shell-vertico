@@ -5653,6 +5653,66 @@ order to the reader, which sorts by history and then by length."
               "In agent-shell-vertico-transcript.el"))))
       (delete-file file))))
 
+(ert-deftest agent-shell-vertico-transcript-parse-frontmatter-header ()
+  "Transcripts headed by YAML frontmatter yield the same fields.
+
+agent-shell writes its header as frontmatter opening with a `---' line,
+the same line the Markdown header closes with, and quotes each value as
+a JSON string."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript-" nil ".md")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "---\n"
+                    "agent: \"Claude\"\n"
+                    "started: \"2026-10-03T12:34:56+08:00\"\n"
+                    "working_directory: \"/work/project\"\n"
+                    "session_id: \"abc-123\"\n"
+                    "model: \"opus\"\n"
+                    "title: \"Fix \\\"quoted\\\" 中文 \\u00e9\"\n"
+                    "---\n\n"
+                    "# Agent Shell Transcript\n\n"
+                    "## User (2026-10-03 12:34:57)\n\n"
+                    "Find the viewport history implementation\n\n"
+                    ;; Quoted fields in the body are not this header's.
+                    "session_id: \"quoted-id\"\n"
+                    "**Session ID:** quoted-id\n"))
+          (let ((record
+                 (agent-shell-vertico-transcript--parse-file
+                  file "/work/project/")))
+            (should (equal (agent-shell-vertico-transcript-record-agent record)
+                           "Claude"))
+            (should (equal (agent-shell-vertico-transcript-record-started record)
+                           "2026-10-03T12:34:56+08:00"))
+            (should (equal (agent-shell-vertico-transcript-record-working-directory
+                            record)
+                           "/work/project/"))
+            (should (equal (agent-shell-vertico-transcript-record-session-id
+                            record)
+                           "abc-123"))
+            (should (equal (agent-shell-vertico-transcript-record-model record)
+                           "opus"))
+            (should (equal (agent-shell-vertico-transcript-record-title record)
+                           "Fix \"quoted\" 中文 é"))
+            (should (equal (agent-shell-vertico-transcript-record-preview record)
+                           "Find the viewport history implementation"))))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-record-created-from-rfc3339 ()
+  "An RFC 3339 start time shows as date and minute, like a legacy one."
+  (should
+   (equal
+    (agent-shell-vertico-transcript--record-created
+     (agent-shell-vertico-transcript-record-create
+      :file "/tmp/t.md" :started "2026-10-03T12:34:56+08:00"))
+    "2026-10-03 12:34"))
+  (should
+   (equal
+    (agent-shell-vertico-transcript--record-created
+     (agent-shell-vertico-transcript-record-create
+      :file "/tmp/t.md" :started "2026-08-04 10:43:15"))
+    "2026-08-04 10:43")))
+
 (ert-deftest agent-shell-vertico-transcript-parse-ignores-quoted-headers ()
   "Header fields are read from the header only.
 
@@ -8408,6 +8468,45 @@ would then say nothing the annotation does not already say."
   (with-temp-buffer
     (insert text)
     (agent-shell-vertico-transcript--header-value label)))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-updates-frontmatter ()
+  "A frontmatter header has its `session_id' replaced in place."
+  (should
+   (equal
+    (agent-shell-vertico-transcript--set-session-id-in-text
+     (concat "---\n"
+             "agent: \"Codex\"\n"
+             "session_id: \"old-id\"\n"
+             "---\n\n"
+             "# Agent Shell Transcript\n\n"
+             "session_id: \"quoted-id\"\n")
+     "new\"id")
+    (concat "---\n"
+            "agent: \"Codex\"\n"
+            "session_id: \"new\\\"id\"\n"
+            "---\n\n"
+            "# Agent Shell Transcript\n\n"
+            "session_id: \"quoted-id\"\n"))))
+
+(ert-deftest agent-shell-vertico-transcript-set-session-id-inserts-frontmatter ()
+  "A frontmatter header without `session_id' gains one before its fence."
+  (let ((result (agent-shell-vertico-transcript--set-session-id-in-text
+                 (concat "---\n"
+                         "agent: \"Codex\"\n"
+                         "---\n\n"
+                         "# Agent Shell Transcript\n\n"
+                         "**Session ID:** quoted-id\n")
+                 "new-id")))
+    (should
+     (equal result
+            (concat "---\n"
+                    "agent: \"Codex\"\n"
+                    "session_id: \"new-id\"\n"
+                    "---\n\n"
+                    "# Agent Shell Transcript\n\n"
+                    "**Session ID:** quoted-id\n")))
+    (should (equal (agent-shell-vertico-tests--header-value result "Session ID")
+                   "new-id"))))
 
 (ert-deftest agent-shell-vertico-transcript-set-session-id-ignores-quoted-header ()
   "A body that quotes a session header must not be rewritten.
