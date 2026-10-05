@@ -669,7 +669,12 @@ grey while another with the same layout showed the accent; the accent meant
 history, not state. Deriving it from the selected window makes the same
 layout always draw the same way, and a session off the frame is not marked
 at all, so the stronger marker never outlives the weaker one it
-strengthens.
+strengthens. It is the same question as `--session-focused-p` asks about
+what has been *read*, without that one's insistence on a focused frame. The
+render caches it in `--rendered-focused-session` and the hooks compare it
+separately from the set, because moving between two sessions already on the
+frame, or from a session to a file beside it, changes the drawing without
+changing the set.
 
 `agent-shell-vertico-sidebar-marker-method` says *where* the bar is drawn,
 mirroring `gptel-highlight-methods` for the same reason gptel offers the
@@ -678,22 +683,22 @@ choice: a terminal frame has no fringes, so under `-nw` the default
 `▎` in the left display margin instead, at the cost of the column the
 window reserves for it. Both are a `display` spec on one space used as a
 `line-prefix`, so neither costs a column of the text area itself.
-`--apply-marker-space` reserves the margin column or at least eight pixels
-of left fringe in graphical sidebar windows. It runs before the render
-measures `window-body-width`, which excludes both areas. Margin changes
-re-show the buffer, because that is when a window reads `left-margin-width`;
-an unchanged width leaves point and window-start alone. Fringe repair uses
-`set-window-fringes` instead, preserving wider left fringes, the right
-fringe's settings, point and window-start. The window-configuration hook
-also applies it to restored windows and schedules the existing resize
-callback when the text width changes, so a workspace saved with no fringe
-cannot hide the marker indefinitely.
-It is the same question as `--session-focused-p` asks about
-what has been *read*, without that one's insistence on a focused frame. The
-render caches it in `--rendered-focused-session` and the hooks compare it
-separately from the set, because moving between two sessions already on the
-frame, or from a session to a file beside it, changes the drawing without
-changing the set.
+`--apply-marker-space` reserves the margin column, or a left fringe at least
+as wide as the bitmap (`--fringe-bitmap-width`) in graphical sidebar
+windows. It runs before the render measures `window-body-width`, which
+excludes both areas. Margin changes re-show the buffer, because that is
+when a window reads `left-margin-width`; an unchanged width leaves point and
+window-start alone. Fringe repair uses `set-window-fringes` instead,
+preserving wider left fringes, the right fringe's width, point and
+window-start; what to set is decided by `--marker-fringes`, a plain function
+of `window-fringes`'s answer, because batch Emacs has no graphical frame and
+the tests that drive real fringes skip there. The window-configuration hook
+also applies it to restored windows and offers every frame showing the
+sidebar to the resize callback when a width changed (the hook names no
+frame). That offer is required, not redundant: Emacs records window sizes
+after the configuration hook runs, so `window-size-change-functions` never
+sees a width the hook changed. Together they keep a workspace saved with no
+fringe from hiding the marker indefinitely.
 
 **Spinning a working mark.** A working session's mark is animated by an
 overlay over the still glyph, one per working row, placed at the end of

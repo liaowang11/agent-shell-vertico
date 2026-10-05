@@ -3089,10 +3089,33 @@ have set it before it measures the body width the rows are laid out to."
         (delete-other-windows)
         (let ((window (agent-shell-vertico-sidebar--display-buffer)))
           (should (eql (car (window-margins window)) 1))
+          ;; Already applied: nil is what keeps the configuration hook
+          ;; from offering the sidebar to the resize callback every time.
+          (should-not (agent-shell-vertico-sidebar--apply-marker-space))
           (dolist (method '(fringe nil))
             (let ((agent-shell-vertico-sidebar-marker-method method))
               (agent-shell-vertico-sidebar--render)
               (should-not (car (window-margins window))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-fringes-widens-only-narrow ()
+  "Only a left fringe narrower than the bitmap is widened.
+
+The batch suite has no graphical frame, so this is where the decision is
+tested; the graphical tests below exercise it against real windows."
+  (let ((bitmap agent-shell-vertico-sidebar--fringe-bitmap-width))
+    (should (equal (agent-shell-vertico-sidebar--marker-fringes '(0 3 t nil))
+                   (list bitmap 3 t nil)))
+    (should (equal (agent-shell-vertico-sidebar--marker-fringes
+                    (list (1- bitmap) 0 nil t))
+                   (list bitmap 0 nil t)))
+    ;; Wide enough already: nothing to set.
+    (should-not (agent-shell-vertico-sidebar--marker-fringes
+                 (list bitmap 3 t nil)))
+    (should-not (agent-shell-vertico-sidebar--marker-fringes '(14 3 t t)))
+    ;; Re-showing the buffer reset them, so they are written back as they
+    ;; were even when wide enough.
+    (should (equal (agent-shell-vertico-sidebar--marker-fringes '(14 3 t t) t)
+                   '(14 3 t t)))))
 
 (ert-deftest agent-shell-vertico-sidebar-render-restores-hidden-fringe ()
   "Rendering reserves the bitmap's width without changing other fringes."
@@ -3113,12 +3136,13 @@ have set it before it measures the body width the rows are laid out to."
           (set-window-fringes window 14 3 t t)
           (agent-shell-vertico-sidebar--render)
           (should (equal (window-fringes window) '(14 3 t t)))
-          ;; Re-showing the buffer for a margin change must not discard
-          ;; non-persistent custom fringes when returning to this method.
+          ;; Returning from `margin' re-shows the buffer, which resets
+          ;; non-persistent fringes; they must come back as they were.
           (let ((agent-shell-vertico-sidebar-marker-method 'margin))
-            (agent-shell-vertico-sidebar--render))
-          (set-window-fringes window 14 3 t nil)
+            (agent-shell-vertico-sidebar--render)
+            (set-window-fringes window 14 3 t nil))
           (agent-shell-vertico-sidebar--render)
+          (should-not (car (window-margins window)))
           (should (equal (window-fringes window) '(14 3 t nil))))))))
 
 (ert-deftest
@@ -3142,6 +3166,7 @@ have set it before it measures the body width the rows are laid out to."
             (set-window-fringes window 8 3 nil nil)
             (window-state-put state (frame-root-window) 'safe))
           (setq window (get-buffer-window sidebar))
+          (should (eql (car (window-fringes window)) 0))
           (let ((start (window-start window))
                 (point (window-point window)))
             ;; The isolated graphical frame can be invisible.  Keep the

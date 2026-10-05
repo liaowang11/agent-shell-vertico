@@ -187,7 +187,7 @@ session's own window is selected.
 `margin`, or nil to disable markers.  The fringe method reserves at least
 eight pixels of the left fringe in graphical sidebar windows, including
 when a workspace restores a layout with fringes hidden.  It preserves wider
-left fringes and the right fringe's settings.  Terminal frames need `margin`,
+left fringes and the right fringe's width.  Terminal frames need `margin`,
 which reserves one text column instead.
 
 A jump taken from inside a session that is waiting for a permission decision
