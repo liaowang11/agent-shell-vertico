@@ -172,9 +172,11 @@ only in colour whichever is used: the accent face
 `agent-shell-vertico-sidebar-focused-session' for the session being
 worked in, `agent-shell-vertico-sidebar-current-session' for the rest.
 
-`fringe' is the default because it costs the sidebar no width, but a
-terminal frame has no fringes, so a terminal needs `margin', which
-spends one column of the sidebar on the bar.  The choice mirrors
+`fringe' is the default.  Graphical sidebar windows reserve at least
+eight pixels for it, including after workspace layout restoration.
+Wider left fringes and the right fringe's settings are left alone.
+A terminal frame has no fringes, so it needs `margin', which spends one
+column of the sidebar on the bar.  The choice mirrors
 `gptel-highlight-methods', which marks its responses the same way and
 for the same reason; unlike that one this is a single method rather than
 a set, because there is no face tier here to combine with."
@@ -2018,25 +2020,44 @@ uses for both of its own methods."
                                   'face face))))
       (_ nil))))
 
-(defun agent-shell-vertico-sidebar--apply-marker-margin ()
-  "Give the sidebar buffer the left margin its marker method needs.
+(defun agent-shell-vertico-sidebar--apply-marker-space ()
+  "Reserve the display space the sidebar's marker method needs.
+Return non-nil when a margin or fringe width changed.
 
-A margin marker is drawn in a column the window has to have reserved for
-it, and a window reads `left-margin-width' from the buffer when the
-buffer is put there, so a change only reaches a window already showing
-the sidebar by putting it there again.  `gptel-highlight-mode' calls
-`set-window-buffer' for the same reason.  Doing nothing when the width
-already agrees is what keeps that out of the ordinary render, which runs
-on every event: re-showing a buffer resets what the render is careful to
-restore."
-  (let ((width (if (eq agent-shell-vertico-sidebar-marker-method 'margin)
-                   1
-                 0)))
-    (unless (eql left-margin-width width)
-      (setq-local left-margin-width width)
+A window reads `left-margin-width' when the buffer is put there, so a
+margin change reaches an existing window by re-showing the buffer.
+Doing nothing when the width already agrees keeps that out of ordinary
+renders: re-showing resets what the render is careful to restore.
+
+A fringe marker needs the bitmap's eight pixels in every graphical
+window showing the sidebar.  A restored layout can carry a zero-width
+fringe even when the frame's default is wide enough.  Repair only a
+narrow left fringe, preserving the right fringe and its other settings;
+`set-window-fringes' leaves point and the window's start alone."
+  (let* ((width (if (eq agent-shell-vertico-sidebar-marker-method 'margin)
+                    1
+                  0))
+         (margin-changed (not (eql left-margin-width width)))
+         (fringe-p (eq agent-shell-vertico-sidebar-marker-method 'fringe))
+         (changed margin-changed))
+    (when margin-changed
+      (setq-local left-margin-width width))
+    (when (or margin-changed fringe-p)
       (dolist (window (get-buffer-window-list nil nil t))
-        (set-window-buffer window (current-buffer)))
-      t)))
+        ;; Re-showing for a margin change can reset non-persistent fringes.
+        ;; Read them first so fringe markers retain the custom settings.
+        (let ((fringes (and fringe-p
+                            (display-graphic-p (window-frame window))
+                            (window-fringes window))))
+          (when margin-changed
+            (set-window-buffer window (current-buffer)))
+          (when (and fringes
+                     (or margin-changed (< (car fringes) 8)))
+            (when (set-window-fringes window (max 8 (car fringes))
+                                     (nth 1 fringes) (nth 2 fringes)
+                                     (nth 3 fringes))
+              (setq changed t))))))
+    changed))
 
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional depth)
   "Insert session LINES with KIND and NODE text properties.
@@ -2230,10 +2251,9 @@ draws no overline, so there the split is the order alone."
     ;; let the jump redraw once its key is read.
     (setq agent-shell-vertico-sidebar--dirty t)
     (cl-return-from agent-shell-vertico-sidebar--render))
-  ;; Before the width is measured below: `window-body-width' excludes the
-  ;; margins, so a marker method that just changed has to have taken its
-  ;; column first or the rows are laid out one column too wide.
-  (agent-shell-vertico-sidebar--apply-marker-margin)
+  ;; Reserve fringes and margins before measuring `window-body-width':
+  ;; neither is part of the text area the rows are laid out to.
+  (agent-shell-vertico-sidebar--apply-marker-space)
   (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          ;; A child with a live parent is inserted under it instead, by
          ;; `--insert-session-and-children'; everything else, including an
@@ -4594,12 +4614,14 @@ directory, so the group to unfold is that ancestor's."
           (agent-shell-vertico-sidebar--goto-node node))))))
 
 (defun agent-shell-vertico-sidebar--window-configuration-change
-    (&optional _frame)
-  "Cancel sidebar timers when its window is no longer visible."
+    (&optional frame)
+  "Repair visible sidebar display settings and stop timers when hidden."
   (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (with-current-buffer sidebar
       (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
           (progn
+            (when (agent-shell-vertico-sidebar--apply-marker-space)
+              (agent-shell-vertico-sidebar--window-size-change frame))
             (agent-shell-vertico-sidebar--ensure-age-refresh)
             (agent-shell-vertico-sidebar--ensure-busy-refresh)
             (agent-shell-vertico-sidebar--ensure-background-refresh))

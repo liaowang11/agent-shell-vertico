@@ -678,14 +678,17 @@ choice: a terminal frame has no fringes, so under `-nw` the default
 `▎` in the left display margin instead, at the cost of the column the
 window reserves for it. Both are a `display` spec on one space used as a
 `line-prefix`, so neither costs a column of the text area itself.
-`--apply-marker-margin` is what reserves the column, and it runs before the
-render measures `window-body-width`, which excludes margins: a method that
-just changed has to have taken its column before the rows are laid out to a
-width. It re-shows the buffer in its windows, because that is when a window
-reads `left-margin-width`, and it does nothing when the width already
-agrees, which is what keeps `set-window-buffer` out of the ordinary render —
-re-showing a buffer resets the point and window-start the render is careful
-to restore. It is the same question as `--session-focused-p` asks about
+`--apply-marker-space` reserves the margin column or at least eight pixels
+of left fringe in graphical sidebar windows. It runs before the render
+measures `window-body-width`, which excludes both areas. Margin changes
+re-show the buffer, because that is when a window reads `left-margin-width`;
+an unchanged width leaves point and window-start alone. Fringe repair uses
+`set-window-fringes` instead, preserving wider left fringes, the right
+fringe's settings, point and window-start. The window-configuration hook
+also applies it to restored windows and schedules the existing resize
+callback when the text width changes, so a workspace saved with no fringe
+cannot hide the marker indefinitely.
+It is the same question as `--session-focused-p` asks about
 what has been *read*, without that one's insistence on a focused frame. The
 render caches it in `--rendered-focused-session` and the hooks compare it
 separately from the set, because moving between two sessions already on the

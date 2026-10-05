@@ -183,6 +183,13 @@ or on another frame, is not marked at all.  This is only the marker,
 not what counts as reading a session: unread still clears only when a
 session's own window is selected.
 
+`agent-shell-vertico-sidebar-marker-method` selects `fringe` (the default),
+`margin`, or nil to disable markers.  The fringe method reserves at least
+eight pixels of the left fringe in graphical sidebar windows, including
+when a workspace restores a layout with fringes hidden.  It preserves wider
+left fringes and the right fringe's settings.  Terminal frames need `margin`,
+which reserves one text column instead.
+
 A jump taken from inside a session that is waiting for a permission decision
 goes to the next session that needs you, since arriving where you already are
 settles nothing; with no other session waiting it reports that instead of not

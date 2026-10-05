@@ -3082,17 +3082,99 @@ session there at all."
 
 A window reads `left-margin-width' from the buffer, so the render has to
 have set it before it measures the body width the rows are laid out to."
-  (with-temp-buffer
-    (agent-shell-vertico-sidebar-mode)
-    (let ((agent-shell-vertico-sidebar-marker-method 'margin))
-      (should (agent-shell-vertico-sidebar--apply-marker-margin))
-      (should (eql left-margin-width 1))
-      ;; Already applied: nothing to re-show, which is what keeps
-      ;; `set-window-buffer' out of the ordinary render.
-      (should-not (agent-shell-vertico-sidebar--apply-marker-margin)))
-    (let ((agent-shell-vertico-sidebar-marker-method 'fringe))
-      (should (agent-shell-vertico-sidebar--apply-marker-margin))
-      (should (eql left-margin-width 0)))))
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-vertico-sidebar-marker-method 'margin))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should (eql (car (window-margins window)) 1))
+          (dolist (method '(fringe nil))
+            (let ((agent-shell-vertico-sidebar-marker-method method))
+              (agent-shell-vertico-sidebar--render)
+              (should-not (car (window-margins window))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-restores-hidden-fringe ()
+  "Rendering reserves the bitmap's width without changing other fringes."
+  (skip-unless (display-graphic-p))
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-vertico-sidebar-marker-method 'fringe))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (delete-other-windows)
+        (let* ((parent (selected-window))
+               (parent-fringes (window-fringes parent))
+               (window (agent-shell-vertico-sidebar--display-buffer)))
+          (set-window-fringes window 0 3 t t)
+          (agent-shell-vertico-sidebar--render)
+          (should (>= (car (window-fringes window)) 8))
+          (should (equal (cdr (window-fringes window)) '(3 t t)))
+          (should (equal (window-fringes parent) parent-fringes))
+          (set-window-fringes window 14 3 t t)
+          (agent-shell-vertico-sidebar--render)
+          (should (equal (window-fringes window) '(14 3 t t)))
+          ;; Re-showing the buffer for a margin change must not discard
+          ;; non-persistent custom fringes when returning to this method.
+          (let ((agent-shell-vertico-sidebar-marker-method 'margin))
+            (agent-shell-vertico-sidebar--render))
+          (set-window-fringes window 14 3 t nil)
+          (agent-shell-vertico-sidebar--render)
+          (should (equal (window-fringes window) '(14 3 t nil))))))))
+
+(ert-deftest
+    agent-shell-vertico-sidebar-configuration-change-restores-saved-fringe ()
+  "Restoring a hidden fringe repairs it without moving the reader."
+  (skip-unless (display-graphic-p))
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-vertico-sidebar-marker-method 'fringe))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (agent-shell-vertico-sidebar--display-buffer))
+              (inhibit-read-only t))
+          (erase-buffer)
+          (dotimes (index 100)
+            (insert (format "Session %03d\n" index)))
+          (set-window-fringes window 0 3 nil nil)
+          (set-window-start window 121 t)
+          (set-window-point window 361)
+          (let ((state (window-state-get (frame-root-window) t)))
+            (set-window-fringes window 8 3 nil nil)
+            (window-state-put state (frame-root-window) 'safe))
+          (setq window (get-buffer-window sidebar))
+          (let ((start (window-start window))
+                (point (window-point window)))
+            ;; The isolated graphical frame can be invisible.  Keep the
+            ;; real window lookup while including that frame in the check.
+            (cl-letf (((symbol-function
+                        'agent-shell-vertico-sidebar--sidebar-visible-p)
+                       (lambda (&optional buffer)
+                         (get-buffer-window buffer t))))
+              (agent-shell-vertico-sidebar--window-configuration-change)
+              (should (>= (car (window-fringes window)) 8))
+              (should (equal (cdr (window-fringes window)) '(3 nil nil)))
+              (should (= (window-start window) start))
+              (should (= (window-point window) point))
+              (agent-shell-vertico-sidebar--window-configuration-change)
+              (should (= (window-start window) start))
+              (should (= (window-point window) point)))))))))
+
+(ert-deftest
+    agent-shell-vertico-sidebar-non-fringe-methods-keep-hidden-fringe ()
+  "Margin and disabled markers do not force a window's fringe open."
+  (skip-unless (display-graphic-p))
+  (dolist (method '(margin nil))
+    (let ((agent-shell-test-buffers nil)
+          (agent-shell-vertico-sidebar-marker-method method))
+      (agent-shell-vertico-tests--with-sidebar
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+            (set-window-fringes window 0 3 t nil)
+            (agent-shell-vertico-sidebar--render)
+            (should (equal (window-fringes window) '(0 3 t nil)))
+            (should (equal (car (window-margins window))
+                           (and (eq method 'margin) 1)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-render-marks-row-in-the-margin ()
   "A rendered row carries the margin marker when that method is set."
