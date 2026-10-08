@@ -14,10 +14,10 @@
       "computedHash": "84948dc11068699ab5cf5c1e2541044def9df179c06872e0fe3f1124d010c8f8"
     },
     "emacsclient": {
-      "source": "xenodium/emacs-skills",
+      "source": "liaowang11/agent-skills",
       "sourceType": "github",
       "skillPath": "skills/emacsclient/SKILL.md",
-      "computedHash": "3fdbe03dad76f4146438ef0edb6d3b769f52afa4430a734e61299c4de9f0e387"
+      "computedHash": "e40583a624061693eafc90694c10d2d8e280e8a2a86fdcb4a3e9efe354e39468"
     },
     "file-links": {
       "source": "xenodium/emacs-skills",
