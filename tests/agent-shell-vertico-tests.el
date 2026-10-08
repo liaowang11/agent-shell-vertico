@@ -13685,6 +13685,70 @@ every other row has them."
     (agent-shell-vertico-sidebar--ensure-busy-refresh)
     (should-not (timerp agent-shell-vertico-sidebar--busy-timer))))
 
+(ert-deftest agent-shell-vertico-sidebar-animation-quit-keeps-timer-owned ()
+  "A quit arriving during activation must not orphan the timer."
+  (agent-shell-vertico-tests--with-sidebar
+    (let ((real-run-with-timer (symbol-function 'run-with-timer))
+          created)
+      (unwind-protect
+          (cl-letf (((symbol-function
+                     'agent-shell-vertico-sidebar--sidebar-visible-p)
+                    (lambda (&rest _) t))
+                   ((symbol-function 'run-with-timer)
+                    (lambda (&rest args)
+                      (setq created (apply real-run-with-timer args))
+                      ;; Model C-g at the activation/assignment boundary.
+                      ;; Emacs defers this quit when inhibit-quit is non-nil.
+                      (unless inhibit-quit
+                        (signal 'quit nil))
+                      created)))
+            (setq agent-shell-vertico-sidebar--busy-overlays
+                  (list (make-overlay (point-min) (point-min))))
+            (condition-case nil
+                (agent-shell-vertico-sidebar--ensure-busy-refresh)
+              (quit nil))
+            (should (timerp created))
+            (should (memq created timer-list))
+            (should (eq created agent-shell-vertico-sidebar--busy-timer)))
+        (when created (cancel-timer created))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animation-stale-timer-stops ()
+  "A replaced timer cannot advance frames or cancel its replacement."
+  (agent-shell-vertico-tests--with-sidebar
+    (cl-letf (((symbol-function
+               'agent-shell-vertico-sidebar--sidebar-visible-p)
+              (lambda (&rest _) t)))
+      (setq agent-shell-vertico-sidebar--busy-overlays
+            (list (make-overlay (point-min) (point-min))))
+      (agent-shell-vertico-sidebar--ensure-busy-refresh)
+      (let ((stale agent-shell-vertico-sidebar--busy-timer))
+        (unwind-protect
+            (progn
+              ;; Reproduce a lost handle while its timer remains active.
+              (setq agent-shell-vertico-sidebar--busy-timer nil)
+              (agent-shell-vertico-sidebar--ensure-busy-refresh)
+              (apply (timer--function stale) (timer--args stale))
+              (should (= agent-shell-vertico-sidebar--busy-tick 0))
+              (should-not (memq stale timer-list))
+              (should (memq agent-shell-vertico-sidebar--busy-timer timer-list))
+              (let ((owned agent-shell-vertico-sidebar--busy-timer))
+                (apply (timer--function owned) (timer--args owned))
+                (should (= agent-shell-vertico-sidebar--busy-tick 1))))
+          (cancel-timer stale)
+          (agent-shell-vertico-sidebar--cancel-busy-refresh))))))
+
+(ert-deftest agent-shell-vertico-sidebar-animation-mode-reset-cancels-timer ()
+  "Reinitializing or leaving sidebar mode cancels its animation."
+  (dolist (mode '(agent-shell-vertico-sidebar-mode fundamental-mode))
+    (agent-shell-vertico-tests--with-sidebar
+      (let ((timer (run-with-timer 3600 3600 #'ignore)))
+        (unwind-protect
+            (progn
+              (setq agent-shell-vertico-sidebar--busy-timer timer)
+              (funcall mode)
+              (should-not (memq timer timer-list)))
+          (cancel-timer timer))))))
+
 (defun agent-shell-vertico-tests--busy-circles (svg)
   "Return (CX CY R) for every circle in SVG."
   (let ((start 0) circles)

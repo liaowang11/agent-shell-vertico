@@ -2635,12 +2635,23 @@ killed, and its sessions can settle, between one beat and the next."
       (with-current-buffer sidebar
         (if (agent-shell-vertico-sidebar--busy-animation-wanted-p sidebar)
             (unless (timerp agent-shell-vertico-sidebar--busy-timer)
-              (setq agent-shell-vertico-sidebar--busy-timer
-                    (run-with-timer
-                     agent-shell-vertico-sidebar-busy-frame-interval
-                     agent-shell-vertico-sidebar-busy-frame-interval
-                     (lambda ()
-                       (agent-shell-vertico-sidebar--busy-beat sidebar)))))
+              ;; Activation and ownership must survive C-g together.
+              (let ((inhibit-quit t)
+                    timer)
+                (setq timer
+                      (run-with-timer
+                       agent-shell-vertico-sidebar-busy-frame-interval
+                       agent-shell-vertico-sidebar-busy-frame-interval
+                       (lambda ()
+                         ;; A lost or replaced timer must not keep spinning.
+                         (if (and (buffer-live-p sidebar)
+                                  (eq timer
+                                      (buffer-local-value
+                                       'agent-shell-vertico-sidebar--busy-timer
+                                       sidebar)))
+                             (agent-shell-vertico-sidebar--busy-beat sidebar)
+                           (cancel-timer timer))))
+                      agent-shell-vertico-sidebar--busy-timer timer)))
           (agent-shell-vertico-sidebar--cancel-busy-refresh))))))
 
 (defun agent-shell-vertico-sidebar--ensure-age-refresh
@@ -3823,6 +3834,8 @@ while normal and motion states get the same direct mnemonic commands."
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-resize nil t)
   (add-hook 'kill-buffer-hook
+            #'agent-shell-vertico-sidebar--cancel-busy-refresh nil t)
+  (add-hook 'change-major-mode-hook
             #'agent-shell-vertico-sidebar--cancel-busy-refresh nil t)
   (add-hook 'kill-buffer-hook
             #'agent-shell-vertico-sidebar--cancel-background-refresh nil t)
