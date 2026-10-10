@@ -1687,9 +1687,11 @@ collapsible fragments.")
     (if face (propertize text 'face face) text)))
 
 (defun agent-shell-vertico-sidebar--busy-frame (tick &optional face)
-  "Return what a working mark shows on TICK, drawn in FACE."
-  (let* ((frames agent-shell-vertico-sidebar-busy-frames)
-         (text (nth (mod tick (length frames)) frames)))
+  "Return what a working mark shows on TICK, drawn in FACE.
+Return nil when `agent-shell-vertico-sidebar-busy-frames' is empty,
+which leaves the still glyph in place."
+  (when-let* ((frames agent-shell-vertico-sidebar-busy-frames)
+              (text (nth (mod tick (length frames)) frames)))
     (if face (propertize text 'face face) text)))
 
 (defun agent-shell-vertico-sidebar--count-text (glyph count face)
@@ -2793,11 +2795,12 @@ why this only runs while something is drawn as running."
   "Give each working session in SNAPSHOTS an overlay over its mark.
 
 The row keeps the still glyph underneath, so a sidebar that is never
-animated - the setting off, no timer yet, a beat suppressed - reads
-exactly as it did before.  The overlay only replaces what is drawn,
+animated - the setting off, no frames, no timer yet, a beat suppressed -
+reads exactly as it did before.  The overlay only replaces what is drawn,
 which is why nothing reflows and no row has to be built differently."
   (agent-shell-vertico-sidebar--clear-busy-overlays)
-  (when agent-shell-vertico-sidebar-animate-busy
+  (when (and agent-shell-vertico-sidebar-animate-busy
+             agent-shell-vertico-sidebar-busy-frames)
     (let ((working (seq-keep (lambda (snapshot)
                                (when (eq (plist-get snapshot :tempo) 'active)
                                  (plist-get snapshot :buffer)))

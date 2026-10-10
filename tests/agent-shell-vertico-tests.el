@@ -14518,6 +14518,45 @@ the minibuffer is not the project the reader was asked about."
           (should-not (equal before (overlay-get overlay 'display)))
           (should (= agent-shell-vertico-sidebar--busy-tick 1)))))))
 
+(ert-deftest agent-shell-vertico-sidebar-no-busy-frames-keeps-the-glyph ()
+  "An empty frame list draws a working session with its still glyph."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-animate-busy t)
+          (agent-shell-vertico-sidebar-busy-frames nil))
+      (should-not (agent-shell-vertico-sidebar--busy-frame 3))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should-not agent-shell-vertico-sidebar--busy-overlays)
+        (let ((start (cdr (assq working
+                                (agent-shell-vertico-sidebar--session-rows)))))
+          (should (equal (buffer-substring-no-properties start (1+ start))
+                         "✻")))
+        (agent-shell-vertico-sidebar--animate-busy)))))
+
+(ert-deftest agent-shell-vertico-sidebar-emptied-busy-frames-stop-a-beat ()
+  "Frames emptied while the overlays are drawn leave the still glyph."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((working "Codex Agent @ working" "/work/working/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list working))
+          (agent-shell-test-statuses (list (cons working 'busy)))
+          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-animate-busy t))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((overlay (car agent-shell-vertico-sidebar--busy-overlays))
+              (agent-shell-vertico-sidebar-busy-frames nil))
+          (should overlay)
+          (agent-shell-vertico-sidebar--animate-busy)
+          (should-not (overlay-get overlay 'display)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-animation-waits-for-a-jump ()
   "A jump draws its keys on the same cells, so a beat leaves them alone."
   (agent-shell-vertico-tests--with-session-buffers
