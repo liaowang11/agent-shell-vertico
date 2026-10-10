@@ -425,7 +425,7 @@ next redisplay.
 The spin is an overlay over the still star, so a sidebar that is not
 animating reads exactly as it did before.
 `agent-shell-vertico-sidebar-busy-frames` takes the one-column strings to spin
-through, and `agent-shell-vertico-sidebar-busy-frame-interval` sets the rate,
+through (an empty list keeps the still star), and `agent-shell-vertico-sidebar-busy-frame-interval` sets the rate,
 which defaults to `agent-shell`'s own 0.1s so a session spins at the same rate
 here as in its shell.  The animation runs only while the sidebar is visible and
 something is working.

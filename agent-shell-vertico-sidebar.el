@@ -177,8 +177,8 @@ levels and sets this default to the level it reaches."
   "Ordered extra information shown for expanded sessions.
 
 Each selected symbol contributes one value, and values are packed two per
-compact row.  In flat mode, `project' is also shown as the session's compact
-working-directory context line.  Available symbols are `agent', `status',
+compact row.  In the state and flat views, `project' is also shown as the
+session's compact working-directory context line.  Available symbols are `agent', `status',
 `activity', `project', `model', `mode', and `last-user-message'.
 
 The agent value names the configuration the session runs; activating it
@@ -232,7 +232,8 @@ holds rather than a report on any one session."
   "The one-column characters a working session's mark cycles through.
 
 The default is Claude Code's own spinner, which grows a dot into the
-star every other session is drawn with."
+star every other session is drawn with.  An empty list keeps the still
+star, as `agent-shell-vertico-sidebar-animate-busy' set to nil does."
   :type '(repeat string)
   :group 'agent-shell-vertico-sidebar)
 
@@ -1497,7 +1498,8 @@ stays total and deterministic."
 
   Values follow `agent-shell-vertico-sidebar-extra-info' and are packed two
   per row to keep the sidebar compact.  When OMIT-PROJECT is non-nil, the
-  project value is omitted because flat rows render it as a context line."
+  project value is omitted because state and flat rows render it as a
+  context line."
   (let* ((last-message
           (when (memq 'last-user-message
                       agent-shell-vertico-sidebar-extra-info)

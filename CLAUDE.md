@@ -331,7 +331,8 @@ pinned. `--job-fields` computes all of it once per snapshot as `:state :tempo
 :needs :in-flight :band :pinned :section`, and `--band` and `--section` read
 one field back for a buffer outside a render. Counting asks `--band` (the
 header, the mode line, a project's count), so a pinned session still counts
-where its state puts it; only the drawing asks `--section`.
+where its state puts it; placing a top-level row asks `--family-section`:
+Pinned when the root is pinned, else the most urgent `--band` in its family.
 
 **The state view.** `agent-shell-vertico-sidebar-group-by` defaults to
 `state`, and `=` cycles flat, project and state. `--render` draws
@@ -362,7 +363,8 @@ job; an idle session whose turn the sidebar never saw finish has none. The state
 and flat views add a third, the `⌂ project` line: `--insert-section` passes
 `nested` nil to `--insert-sessions`, so `--session-lines` draws it there as in
 the flat view, because a section header does not name the project; only a
-project header suppresses it. `--detail-for` picks the line as Claude Code does:
+project header suppresses it, and so does leaving `project` out of
+`agent-shell-vertico-sidebar-extra-info` (`--flat-project-line`). `--detail-for` picks the line as Claude Code does:
 NEEDS while blocked, the newest entry while active, `Failed: REASON` or
 `Stopped` for a turn that ended that way, and otherwise NEEDS, then the result,
 then the newest entry. The newest entry is the `detail` slot: `> PROMPT` from
