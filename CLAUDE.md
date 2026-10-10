@@ -288,16 +288,16 @@ whatever outlives a turn is the sidebar's own: `starting` is a session with no
 ACP session id yet, recorded nowhere because the id's absence is the whole
 answer; `new` is the `fresh` slot, a session the sidebar saw start that nobody
 has prompted; the `state` slot is how the last turn ended (see below), set by
-the `turn-complete` and `error` events and dropped when a new turn starts,
-because agent-shell reports what a session is doing and not how its last turn
-ended; `busy` covers an out-of-turn burst; and `blocked` covers a permission
-request from a task that outlived its turn, which `agent-shell-status` calls
-ready because it asks for a turn in flight as well (`--permission-pending-p`
-puts agent-shell's own question rather than repeating it, so the two cannot
-disagree about what is pending). The overlays only apply to an otherwise idle
-session, so a live `busy` or `blocked` always wins, and the pending decision
-is asked first among them: a burst streaming beside it is work the session
-does while it waits, not an answer to it.
+the `turn-complete` and `error` events and set to `working`, a value no
+overlay reads, by `input-submitted`, because agent-shell reports what a session
+is doing and not how its last turn ended; `busy` covers an out-of-turn burst;
+and `blocked` covers a permission request from a task that outlived its turn,
+which `agent-shell-status` calls ready because it asks for a turn in flight as
+well (`--permission-pending-p` puts agent-shell's own question rather than
+repeating it, so the two cannot disagree about what is pending). The overlays
+only apply to an otherwise idle session, so a live `busy` or `blocked` always
+wins, and the pending decision is asked first among them: a burst streaming
+beside it is work the session does while it waits, not an answer to it.
 
 **How a turn ended.** A cancelled turn is `stopped`, and a stop reason other
 than `end_turn` (a refusal, a limit) is `failed` in agent-shell's own words.
@@ -356,29 +356,33 @@ relies on `--compare-buffers` sorting pinned sessions first.
 each have a state arm, and each asks `--family-section` of a root, so
 stepping, revealing and `S-TAB` see the sections the render draws.
 
-**The detail line and the age.** Every row is a title line and a detail line,
-as the agent view draws a job. `--detail-for` picks the line as Claude Code
-does: NEEDS while blocked, the newest entry while active, `Failed: REASON` or
-`Stopped` for a turn that ended that way, and otherwise NEEDS, then the
-result, then the newest entry. The newest entry is the `detail` slot: `>
-PROMPT` from `input-submitted`, the symbol `message` while chunks stream, or
-`✗ TITLE` for a failed tool call (`--record-tool-call`); subagent events
-never touch it. `message` is resolved when drawn by `--message-last-line`,
-which joins only as many of the newest chunks as hold a whole last line, so a
-long message costs no more than its end. In the project and flat views
-`--detail-line` starts with the status word in the mark's face, because no
-section header says it there. The title line ends in `--age-text`: time in
-the current band (`--state-since`), not the session's age, drawn yellow when
-`--stuck-p` says an active session has been silent for
-`agent-shell-vertico-sidebar-stuck-after` seconds. A wait on a permission
-request ages from the `waiting-since` slot, stamped by each
+**The detail line and the age.** Every row is a title line and, when
+`--detail-for` has something to say, a detail line, as the agent view draws a
+job; an idle session whose turn the sidebar never saw finish has none. The state
+and flat views add a third, the `⌂ project` line: `--insert-section` passes
+`nested` nil to `--insert-sessions`, so `--session-lines` draws it there as in
+the flat view, because a section header does not name the project; only a
+project header suppresses it. `--detail-for` picks the line as Claude Code does:
+NEEDS while blocked, the newest entry while active, `Failed: REASON` or
+`Stopped` for a turn that ended that way, and otherwise NEEDS, then the result,
+then the newest entry. The newest entry is the `detail` slot: `> PROMPT` from
+`input-submitted`, the symbol `message` while chunks stream, or `✗ TITLE` for a
+failed tool call (`--record-tool-call`); subagent events never touch it.
+`message` is resolved when drawn by `--message-last-line`, which joins only as
+many of the newest chunks as hold a whole last line, so a long message costs no
+more than its end. In the project and flat views `--detail-line` starts with the
+status word in the mark's face, because no section header says it there. The
+title line ends in `--age-text`: time in the current band (`--state-since`), not
+the session's age, drawn yellow when `--stuck-p` says an active session has been
+silent for `agent-shell-vertico-sidebar-stuck-after` seconds. A wait on a
+permission request ages from the `waiting-since` slot, stamped by each
 `permission-request` and cleared by `input-submitted` and the turn's end
 (`--stamp-terminal`), because reading the request drops `unread` while the
 session still waits; a turn that ends on `needs input:` ages from its end.
 Titles stay one line, cut with `…`, unless
 `agent-shell-vertico-sidebar-wrap-titles` is set, so every row has one height.
-Since every row carries an age, `--ensure-age-refresh` runs whenever the
-sidebar is visible and has sessions.
+Since every row carries an age, `--ensure-age-refresh` runs whenever the sidebar
+is visible and has sessions.
 
 **The header and the mode line.** `--header-line-for` counts the snapshots by
 `:band`, each session in its own band, children included. The state view
@@ -453,21 +457,22 @@ working and snoozed ones do (`--oldest-first-rank-p`), so
 'priority'` and nothing else has to rank them again. The jump passes over a
 session the reader is already in, which after the split only a blocked one can
 be, and says so rather than not moving (`--attention-here-message`);
-`--statistics-slots` folds the two ranks back into the one attention count a
-header shows. `agent-shell-vertico-sidebar-mark-unread` is the only mark the
-reader sets by hand, and it writes the same record the events write, so status
-names, bold titles, ranks, counters and the jump order need no case for it. It stamps
-the session's last activity time, not the current time, so the oldest-first tier
+`--statistics-slots` folds the two ranks back into one attention count for the
+jump's message when nothing needs attention.
+`agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets by
+hand, and it writes the same record the events write, so status names, bold
+titles, ranks, counters and the jump order need no case for it. It stamps the
+session's last activity time, not the current time, so the oldest-first tier
 stays truthful; it refuses a `busy` session, whose turn has produced nothing to
 miss; and it leaves an existing mark at its own time. It deliberately does not
 fight the clear paths: marking a session unread while sitting in it holds only
 until the reader is next seen looking at it, which is a decision, not an
-oversight. `--mark-read` is the same record in reverse and refuses nothing,
-because the unread mark is now the only thing it can drop: a blocked session
-keeps its place through its status and a failed one stays failed. Both commands
-resolve their session through `--attention-target`, which reads the sidebar row
-at point when called there and the current buffer's session, viewport included,
-anywhere else.
+oversight. `agent-shell-vertico-sidebar-mark-read` is the same record in reverse
+and refuses nothing, because the unread mark is now the only thing it can drop:
+a blocked session keeps its place through its status and a failed one stays
+failed. Both commands resolve their session through `--attention-target`, which
+reads the sidebar row at point when called there and the current buffer's
+session, viewport included, anywhere else.
 
 **Putting a session off.** Snoozing is a third record, `--snoozed`, beside
 unread and failed, because the reader saying "later" is neither reading a
@@ -520,7 +525,9 @@ that follows, since a burst on an unread mark announces nothing; so the first
 burst to settle once nothing runs is announced anyway, once, and the mark keeps
 its own time. A server that never ends never releases it, which leaves the
 report silent as it would be without this, and blocks nothing. `--raw-status`
-overlays it after `failed` (a failure says more) and `starting`, and stamps
+overlays it after every other idle overlay, in the order its docstring gives:
+a pending permission, an out-of-turn burst, `failed` (a failure says more),
+`starting`, `stopped`, the `blocked` state and `new`. It stamps
 `--background-since` through `--track-background`, since async tasks carry no
 spawn time of their own; the tier (rank 3, between working and snoozed) runs
 oldest-first from that stamp. Polling was chosen over an `:after` advice on

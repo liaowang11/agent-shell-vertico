@@ -118,9 +118,10 @@ current sidebar buffer."
 (defcustom agent-shell-vertico-sidebar-group-by 'state
   "Grouping used by the agent-shell sidebar.
 
-`state' renders a foldable section for each state: Needs you, Working,
-Idle and Snoozed, the buckets Claude Code's agent view uses.  `project'
-renders foldable project headers.  Nil renders one flat list."
+`state' renders a foldable section for each state: Pinned, Needs you,
+Working, Idle and Snoozed, the buckets Claude Code's agent view uses.
+`project' renders foldable project headers below a Pinned section.  Nil
+renders one flat list."
   :type '(choice (const :tag "State" state)
                  (const :tag "Project" project)
                  (const :tag "Flat" nil))
@@ -219,9 +220,10 @@ a set, because there is no face tier here to combine with."
 (defcustom agent-shell-vertico-sidebar-animate-busy t
   "Whether a working session's mark spins while it works.
 
-The mark is the only place it spins.  Header counts are a census of what
-the sidebar holds rather than a report on any one session, so they keep
-the still glyph."
+The mark is the only place it spins.  The sidebar's header counts in
+words or digits, with no glyph to turn, and a project header's `✻ N'
+count keeps the still star: a count is a census of what the sidebar
+holds rather than a report on any one session."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
@@ -1172,8 +1174,7 @@ what settles it.  A blocked session the reader has already seen ranks
 below it, because the decision is owed wherever the reader stands and
 reading the session again does not make it; ranking the two together
 by age pinned every jump to the blocked session, whose wait always
-began before any turn that has finished since.  Red rows above yellow
-ones is also what `agent-shell-vertico-sidebar--mark-face' draws.
+began before any turn that has finished since.
 
 A session in the background ranks just below the working ones: it is
 working too, though it takes a prompt, and it asks for nobody.
@@ -1578,8 +1579,9 @@ stays total and deterministic."
   "Return the line saying what runs in BUFFER's background, at WIDTH.
 
 It is drawn whenever something runs, details shown or not, because the
-clock alone cannot say what the session is waiting on.  Each kind gets
-its own icon, so a subagent reads apart from a shell at a glance."
+mark alone, a blue star that does not spin, cannot say what the session
+is waiting on.  Each kind gets its own icon, so a subagent reads apart
+from a shell at a glance."
   (when-let* ((work (agent-shell-vertico-sidebar--background-work buffer)))
     (let (parts)
       (pcase-dolist (`(,slot ,count ,noun)
@@ -4516,11 +4518,14 @@ jumping to where it started, and stopping a task."
   "Snooze the session at point, or the current session, or wake it.
 
 A snoozed session stops asking for the reader without being marked
-read: it sinks below every session that is not snoozed, whatever the
-sort, under a rule drawn where the snoozed sessions begin, and
-`agent-shell-vertico-sidebar-jump' passes it over.  Its mark turns
-purple and its title dims; the mark still says what the session is and
-whether it holds output nobody has read.  Nothing is reported to
+read.  The state view moves it to the Snoozed section, folded by
+default; the other views sort it below every session that is not
+snoozed, whatever the sort, under a rule drawn where the snoozed
+sessions begin.  `agent-shell-vertico-sidebar-jump' passes it over.
+Its mark turns purple whatever its state and its title dims, still
+bold while it holds output nobody has read; only a burst of output
+draws it as working until the burst goes quiet.  Snoozing unpins the
+session.  Nothing is reported to
 `agent-shell-vertico-sidebar-notify-function' while it is snoozed.
 
 Looking at a snoozed session, marking it read and new output all leave

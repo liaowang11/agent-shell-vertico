@@ -120,34 +120,43 @@ Code's agent view, and it has three views; `=` cycles them:
   left out.  Snoozed starts folded
   (`agent-shell-vertico-sidebar-folded-sections`), and Idle shows its first
   three sessions (`agent-shell-vertico-sidebar-idle-rows`) and then a
-  `… N more` row that `RET` opens.
+  `… N more` row that `RET` opens; when only one session is left over, it is
+  shown instead of a `… 1 more` row.
 - **project** puts each session under a foldable project header, with a
   Pinned section above the projects.
-- **flat** is one list.  The default `project` metadata entry is promoted to a
-  compact context line below each title (for example,
-  `⌂ agent-shell-vertico`).
+- **flat** is one list.
+
+In the state and flat views the default `project` metadata entry is promoted
+to a compact context line below each row (for example,
+`⌂ agent-shell-vertico`), since no header above the row names the project.
 
 Project labels prefer agent-shell's configured project name and fall back to
 the directory basename.  Hover shows the full working directory.
 
 ### What a row says
 
-Each session is one title line and one detail line:
+Each session is a title line, a detail line, and in the state and flat views
+a project line:
 
 ```
 ✻ Fix the login redirect                 3m
   Allow: Run make check
+  ⌂ agent-shell-vertico
 ```
+
+The detail line appears only when there is something to say: an idle session
+whose turn the sidebar never saw finish, for example, has none.
 
 The mark is Claude Code's star, and its colour is the session's state: blue
 while it works, yellow while it waits for you, red when its last turn failed,
-green when its last turn finished, grey when it stopped or nobody has prompted
-it yet, and purple when you snoozed it.  A working star spins through Claude
-Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
+green when its last turn finished, grey when it stopped or has started and
+nobody has prompted it yet, and purple when you snoozed it.  A shell still
+starting its agent session counts as working: its star is blue and spins.  A
+working star spins through Claude Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
 `agent-shell-vertico-sidebar-animate-busy` off it is a still `●`.  A session
 whose agent process has exited is a dot, `∙`.  Output you have not read makes
-the title bold; it does not change the colour or the section, so a finished
-turn nobody has read is Idle, exactly as in the agent view.
+the title bold; it does not change the colour or the section, so a finished turn
+nobody has read is Idle, exactly as in the agent view.
 
 The detail line is the one line that matters for the state.  A waiting session
 says what it waits for (`Allow: Run make check`), a working one shows its
@@ -206,23 +215,23 @@ which expanded-session values are shown: `agent`, `status`, `activity`,
 `project`, `model`, `mode`, and `last-user-message`.  Values are packed two
 per row.  `status` and `last-user-message` are off by default: the row icon
 and the detail line already carry the status, and the detail line shows the
-prompt while the session works on it.  Removing `project` also removes the flat context line.
+prompt while the session works on it.  Removing `project` also removes the
+project line under each row in the state and flat views.
 Activating an agent value starts a new session with that agent in the same
 project.
 The default `priority` sort puts sessions waiting for attention first, followed
-by working and ready sessions.  Within the waiting group, sessions holding
-output nobody has read come before a session whose permission decision you
-have already seen: answering that decision is the only thing that settles it,
-so it does not hold the head of the list in the meantime.  Attention and
-working sessions order oldest
-first, so the same session `agent-shell-attention-jump` visits leads the
-list, and streamed chunks do not reorder working sessions; idle sessions
-order by their latest activity, newest first, so reading a finished session
-does not drop it below stale idle ones.  In the state view each section keeps
-this order among its own sessions.  In the project view, projects follow the
-highest-priority session they contain.  `s` switches between priority,
-activity, recency, status, and name sorting.  Whatever the sort, pinned
-sessions come first and snoozed ones last.
+by working, idle and starting sessions.  Within the waiting group, sessions
+holding output nobody has read come before a session whose permission decision
+you have already seen: answering that decision is the only thing that settles
+it, so it does not hold the head of the list in the meantime.  Attention and
+working sessions order oldest first, so the same session
+`agent-shell-vertico-sidebar-jump` visits leads the list, and streamed chunks do
+not reorder working sessions; idle sessions order by their latest activity,
+newest first, so reading a finished session does not drop it below stale idle
+ones.  In the state view each section keeps this order among its own sessions.
+In the project view, projects follow the highest-priority session they contain.
+`s` switches between priority, activity, recency, status, and name sorting.
+Whatever the sort, pinned sessions come first and snoozed ones last.
 
 A fringe marker runs down the rows of the sessions the selected frame is
 showing, so the list says where you already are.  The session you are
@@ -397,7 +406,7 @@ transcript operations as the Vertico Embark map.
 
 Every mark is a plain character, so the sidebar needs no icon font and reads
 the same in a terminal.  Section and project folds use `▼` and `▶`, the same
-triangles `agent-shell` uses for its own collapsible fragments; a flat row's
+triangles `agent-shell` uses for its own collapsible fragments; a row's
 project line starts with `⌂` and a message line with `↳`.
 
 Sessions under a project header are indented by a `line-prefix` display
@@ -521,7 +530,8 @@ toggles the current row, and `S-TAB` cycles every row through the fold levels.
 read, `z` snoozes it, `P` pins it, `p` peeks at it, and `S` lists its
 subagents; `!`, `z` and `S` take
 precedence over Evil's `evil-shell-command`, `z` prefix (scrolling and folds)
-and `evil-change-whole-line` in this read-only list.  `q` closes the sidebar,
+and `evil-change-whole-line` in this read-only list, and `P` and `p` replace
+`evil-paste-before` and `evil-paste-after`.  `q` closes the sidebar,
 while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
 `v` remains Evil's visual-state key.  `?` shows the same key reference.  The
 local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
