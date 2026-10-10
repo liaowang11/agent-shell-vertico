@@ -13,8 +13,9 @@
 
 ;; A compact, foldable sidebar for live `agent-shell' sessions.  Session
 ;; blocks use a vertical layout so the sidebar remains useful at a narrow
-;; side-window width.  The sidebar can show a flat list or sessions grouped
-;; by their agent-shell working directory.
+;; side-window width.  The sidebar groups sessions by their state, as
+;; Claude Code's agent view does, or by their agent-shell working
+;; directory.
 
 ;;; Code:
 
@@ -123,11 +124,10 @@ current sidebar buffer."
 `state' renders a foldable section for each state: Pinned, Needs input,
 Working, Completed and Snoozed, the buckets Claude Code's agent view
 uses.
-`project' renders foldable project headers below a Pinned section.  Nil
-renders one flat list."
+`project' renders foldable project headers below a Pinned section.  Any
+other value, nil included, is read as `state'."
   :type '(choice (const :tag "State" state)
-                 (const :tag "Project" project)
-                 (const :tag "Flat" nil))
+                 (const :tag "Project" project))
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-folded-sections '(snoozed)
@@ -172,7 +172,7 @@ levels and sets this default to the level it reaches."
   "Ordered extra information shown for expanded sessions.
 
 Each selected symbol contributes one value, and values are packed two per
-compact row.  In the state and flat views, `project' is also shown as the
+compact row.  In the state view, `project' is also shown as the
 session's compact working-directory context line.  Available symbols are
 `agent', `status', `activity', `project', `model', `mode', and
 `last-user-message'.
@@ -1094,6 +1094,12 @@ keep the order they had in ROOTS."
                   (cons section members)))
               agent-shell-vertico-sidebar--sections)))
 
+(defun agent-shell-vertico-sidebar--view ()
+  "Return the view the sidebar draws: `state' or `project'.
+`agent-shell-vertico-sidebar-group-by' names it, and any value other
+than `project', nil included, is the state view."
+  (if (eq agent-shell-vertico-sidebar-group-by 'project) 'project 'state))
+
 (defun agent-shell-vertico-sidebar--unread-for (status time)
   "Return TIME when a session in STATUS owes the reader that output.
 
@@ -1392,14 +1398,14 @@ See `agent-shell-vertico-sidebar--detail-text-line' for what it says."
   "Return the whole detail line of SNAPSHOT, before it is fitted, or nil.
 
 The state view names the state in its section header, so the line is
-the detail alone there.  The project and flat views start it with the
-status word, drawn in the mark's colour, as Claude Code's directory
-mode does."
+the detail alone there.  The project view starts it with the status
+word, drawn in the mark's colour, as Claude Code's directory mode
+does."
   (let* ((detail (agent-shell-vertico-sidebar--detail-for snapshot))
          (detail (and detail
                       (propertize detail
                                   'face 'agent-shell-vertico-sidebar-detail)))
-         (line (if (eq agent-shell-vertico-sidebar-group-by 'state)
+         (line (if (eq (agent-shell-vertico-sidebar--view) 'state)
                    detail
                  (concat (propertize
                           (agent-shell-vertico-sidebar--status-name-for
@@ -1528,7 +1534,7 @@ stays total and deterministic."
 
   Values follow `agent-shell-vertico-sidebar-extra-info' and are packed two
   per row to keep the sidebar compact.  When OMIT-PROJECT is non-nil, the
-  project value is omitted because state and flat rows render it as a
+  project value is omitted because state-view rows render it as a
   context line."
   (let* ((last-message
           (when (memq 'last-user-message
@@ -1593,7 +1599,8 @@ stays total and deterministic."
       (nreverse lines))))
 
 (defun agent-shell-vertico-sidebar--flat-project-line (buffer root width)
-  "Return the compact flat-row context line for ROOT at WIDTH."
+  "Return the compact project context line for ROOT at WIDTH.
+A state-view row draws it, since no header above it names the project."
   (when (memq 'project agent-shell-vertico-sidebar-extra-info)
     (cons (agent-shell-vertico-sidebar--field-text
            'project
@@ -2133,7 +2140,7 @@ left, and leaving the row takes its text back out of the echo area."
     (buffer root width &optional nested depth)
   "Return rendered session lines for BUFFER at WIDTH under ROOT.
 
-NESTED suppresses the row's own flat project-context line, for a
+NESTED suppresses the row's own project-context line, for a
 session already named by a project header above it.  DEPTH is the
 indent level and defaults to 1 when NESTED, 0 otherwise; a child
 session passes a DEPTH one deeper than its parent's, independently of
@@ -2307,9 +2314,8 @@ narrow left fringe, keeping the right fringe's width and the rest;
 
 DEPTH reserves two columns per level, the same two a project header
 spends on its fold triangle, so a session icon lines up under whatever
-is above it: a project name at depth 1, a parent session's icon at
-depth 1 or, nested inside a grouped project, at depth 2.  A flat,
-parentless row at depth 0 keeps its status icon at column zero.
+is above it: a section label or project name at depth 1, a parent
+session's icon at depth 2.
 
 Indentation is a `line-prefix' display property rather than inserted
 spaces, as `agent-shell' does for its own fragments: the columns are
@@ -2690,7 +2696,7 @@ every session it holds."
           (if (null buffers)
               (insert (propertize "  No agent-shell sessions\n"
                                   'face 'agent-shell-vertico-sidebar-detail))
-            (pcase agent-shell-vertico-sidebar-group-by
+            (pcase (agent-shell-vertico-sidebar--view)
               ('state
                (pcase-dolist (`(,section . ,members)
                               (agent-shell-vertico-sidebar--group-by-section
@@ -2712,12 +2718,7 @@ every session it holds."
                            (agent-shell-vertico-sidebar--group-buffers rest)
                            agent-shell-vertico-sidebar-sort-by))
                    (agent-shell-vertico-sidebar--insert-project
-                    (car group) (cdr group) width))))
-              (_
-               (agent-shell-vertico-sidebar--insert-sessions
-                (agent-shell-vertico-sidebar--sort-buffers
-                 roots agent-shell-vertico-sidebar-sort-by)
-                width nil 0))))
+                    (car group) (cdr group) width))))))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -3978,13 +3979,10 @@ configuration, so it runs alongside it rather than replacing it."
     (agent-shell-vertico-sidebar-refresh)))
 
 (defun agent-shell-vertico-sidebar-toggle-grouping ()
-  "Cycle the sidebar through the flat, project and state views."
+  "Switch the sidebar between the state and project views."
   (interactive)
   (setq agent-shell-vertico-sidebar-group-by
-        (pcase agent-shell-vertico-sidebar-group-by
-          ('nil 'project)
-          ('project 'state)
-          (_ nil)))
+        (if (eq (agent-shell-vertico-sidebar--view) 'state) 'project 'state))
   (agent-shell-vertico-sidebar-refresh))
 
 (defun agent-shell-vertico-sidebar-toggle-details ()
@@ -4011,10 +4009,9 @@ default."
   "Return the fold level the whole sidebar currently shows.
 
 `projects' shows project or section headers only, `sessions' adds their
-session rows, and `details' adds each session's metadata lines.  A flat
-list has no header level, so it never returns `projects'."
+session rows, and `details' adds each session's metadata lines."
   (cond
-   ((pcase agent-shell-vertico-sidebar-group-by
+   ((pcase (agent-shell-vertico-sidebar--view)
       ('project (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
       ('state (not (agent-shell-vertico-sidebar--any-section-unfolded-p))))
     'projects)
@@ -4031,7 +4028,7 @@ sessions all sit in a section that starts folded showing headers alone
 at every level.  The project view folds or unfolds its Pinned section
 with the projects, for the same reason."
   (let ((folded (eq level 'projects)))
-    (pcase agent-shell-vertico-sidebar-group-by
+    (pcase (agent-shell-vertico-sidebar--view)
       ('project
        (setq agent-shell-vertico-sidebar-expand-by-default (not folded))
        (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
@@ -4048,11 +4045,8 @@ with the projects, for the same reason."
 (defun agent-shell-vertico-sidebar-cycle-global-view ()
   "Cycle the whole sidebar to its next fold level.
 
-With project or state grouping the levels are the headers alone, then
-their session rows, then each session's metadata lines, then back to the
-headers.
-A flat list has no project level, so it alternates between hiding and
-showing the metadata lines.
+In both views the levels are the headers alone, then their session
+rows, then each session's metadata lines, then back to the headers.
 
 Every per-project and per-session fold made with `TAB' is discarded, so the
 sidebar reaches the chosen level as a whole.
@@ -4072,7 +4066,7 @@ the whole command runs there however it was called."
        (pcase (agent-shell-vertico-sidebar--view-level)
          ('projects 'sessions)
          ('sessions 'details)
-         (_ (if agent-shell-vertico-sidebar-group-by 'projects 'sessions))))
+         (_ 'projects)))
       (agent-shell-vertico-sidebar--render))))
 
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
@@ -4208,7 +4202,7 @@ a permission decision or a reply.  Nothing is shown when none does."
    "  S-TAB       Cycle all rows: headers, sessions, details\n\n"
    "Actions\n"
    "  o / O       Open here / open in another window\n"
-   "  =           Cycle the flat, project and state views\n"
+   "  =           Switch between the state and project views\n"
    "  s           Choose the sort criterion\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"
@@ -4916,8 +4910,8 @@ With OTHER-WINDOW, display the session in another window."
   "Return every live session in the order the sidebar draws its rows.
 
 This is the walk `--render' makes, without drawing: the sessions with no
-live parent, grouped by state section or project when
-`agent-shell-vertico-sidebar-group-by' says so, each followed depth-first
+live parent, grouped by state section or by project as
+`agent-shell-vertico-sidebar-group-by' says, each followed depth-first
 by its children.  A folded project or section still lists its
 sessions, because nothing is drawn for the reader to look at and a step
 should not depend on how the sidebar was left."
@@ -4925,7 +4919,7 @@ should not depend on how the sidebar was left."
          (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers)))
     (named-let walk ((buffers
-                      (pcase agent-shell-vertico-sidebar-group-by
+                      (pcase (agent-shell-vertico-sidebar--view)
                         ('state
                          (seq-mapcat
                           #'cdr
@@ -4944,9 +4938,7 @@ should not depend on how the sidebar was left."
                              (agent-shell-vertico-sidebar--sort-groups
                               (agent-shell-vertico-sidebar--group-buffers
                                rest)
-                              sort-by)))))
-                        (_ (agent-shell-vertico-sidebar--sort-buffers
-                            roots sort-by)))))
+                              sort-by))))))))
       (seq-mapcat (lambda (buffer)
                     (cons buffer
                           (walk (agent-shell-vertico-sidebar--sort-buffers
@@ -5200,21 +5192,21 @@ cleanup list."
           overlays)))
 
 (defun agent-shell-vertico-sidebar--read-jump-target ()
-  "Key the top-level sessions listed flat in the sidebar and read which.
+  "Key the top-level sessions drawn in the sidebar and read which.
 
-A hidden sidebar is shown for the read and closed again after it.  A
-grouped sidebar is drawn flat for the read, so a folded session has a
-row too.  Every exit path renders again under the real grouping, which
-is also what puts a sidebar shown on another frame back: the buffer is
-shared, so the flat render reached that frame too.  The folds
-themselves are never touched.
+A hidden sidebar is shown for the read and closed again after it.  The
+sidebar is drawn in the state view with every section open for the
+read, so a folded session has a row too.  Every exit path renders again
+under the real view and folds, which is also what puts a sidebar shown
+on another frame back: the buffer is shared, so the read's render
+reached that frame too.  The folds themselves are never touched.
 
 A session with live children is not enough to end the read: nesting
-already puts a child's row right after its parent's in the flat
-render, so `labels' only keys the rows with no parent \(see
-`--parent-of'\), leaving every child dimmed like any other unlabelled
-row.  Choosing a parent this way starts a second read, scoped to just
-its own rows, via `--read-child-jump-target'.
+already puts a child's row right after its parent's, so `labels' only
+keys the rows with no parent \(see `--parent-of'\), leaving every
+child dimmed like any other unlabelled row.  Choosing a parent this way
+starts a second read, scoped to just its own rows, via
+`--read-child-jump-target'.
 
 Return (BUFFER . ACTION) from
 `agent-shell-vertico-sidebar--read-jump-keys'.  The action is returned
@@ -5235,7 +5227,11 @@ window free for a prompt of its own."
          (overlays nil))
     (unwind-protect
         (with-current-buffer sidebar
-          (let ((agent-shell-vertico-sidebar-group-by nil))
+          ;; Every section open, without touching the folds: an empty
+          ;; table and no default folds leave each section open.
+          (let ((agent-shell-vertico-sidebar-group-by 'state)
+                (agent-shell-vertico-sidebar--section-folds nil)
+                (agent-shell-vertico-sidebar-folded-sections nil))
             (agent-shell-vertico-sidebar--render))
           ;; The keys are drawn over the marks, so the animation gives
           ;; the cells up for the read; the render below restores them.
@@ -5284,11 +5280,12 @@ window free for a prompt of its own."
 (defun agent-shell-vertico-sidebar-jump-by-key (&optional other-window)
   "Jump to a session by the key drawn beside it, `ace-window' style.
 
-The sessions are listed flat in the sidebar, each row's mark replaced
-by one of `agent-shell-vertico-sidebar-jump-keys' in row order, and one
-key is read: press a session's key and that session is displayed.  A
-hidden sidebar is shown for the read and closed again after it; a
-grouped one is grouped again after, its folds as they were.  The keys
+The sessions are drawn in the sidebar's state view with every section
+open, each row's mark replaced by one of
+`agent-shell-vertico-sidebar-jump-keys' in row order, and one key is
+read: press a session's key and that session is displayed.  A hidden
+sidebar is shown for the read and closed again after it; a shown one is
+drawn again after in its own view, its folds as they were.  The keys
 follow the rows, so they are assigned afresh each time and read off the
 sidebar rather than remembered.
 
@@ -5382,7 +5379,7 @@ state view that means its family's section (`--family-section')."
       (let ((top session))
         (while-let ((parent (agent-shell-vertico-sidebar--parent-of top)))
           (setq top parent))
-        (pcase agent-shell-vertico-sidebar-group-by
+        (pcase (agent-shell-vertico-sidebar--view)
           ('project
            (if (agent-shell-vertico-sidebar--pinned-p top)
                (agent-shell-vertico-sidebar--set-section-folded 'pinned nil)

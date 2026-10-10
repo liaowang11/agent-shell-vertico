@@ -180,10 +180,10 @@ Each element in BINDINGS is of the form:
                       'agent-shell-vertico-read-session-function)
                      #'agent-shell-vertico--completing-read-session)
                     ((symbol-value 'agent-shell-agent-configs) nil)
-                    ;; Tests that render name their view; the rest were
-                    ;; written against the flat list.
+                    ;; The state view is the default; a test that wants
+                    ;; the project view names it.
                     ((symbol-value 'agent-shell-vertico-sidebar-group-by)
-                     nil)
+                     'state)
                     ((symbol-value 'agent-shell-mode-hook) nil))
            (let ,(mapcar
                   (lambda (binding)
@@ -267,18 +267,21 @@ own, keeps its place rather than landing between parent and child."
               '((:session . ((:id . "o") (:title . "Zeta Other"))))))
     (agent-shell-vertico-tests--with-side-links (list (cons child parent))
       (let ((agent-shell-test-buffers (list parent child other))
-            (agent-shell-vertico-sidebar-group-by nil)
+            (agent-shell-vertico-sidebar-group-by 'state)
             (agent-shell-vertico-sidebar-sort-by 'name))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
           (agent-shell-vertico-sidebar--render)
           (let ((rows (agent-shell-vertico-sidebar--session-rows)))
             (should (equal (mapcar #'car rows) (list parent child other)))
-            (should-not (get-text-property (cdr (nth 0 rows)) 'line-prefix))
-            (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
+            ;; Under their section header, roots indent once and the
+            ;; child once more.
+            (should (equal (get-text-property (cdr (nth 0 rows)) 'line-prefix)
                            "  "))
-            (should-not
-             (get-text-property (cdr (nth 2 rows)) 'line-prefix))))))))
+            (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
+                           "    "))
+            (should (equal (get-text-property (cdr (nth 2 rows)) 'line-prefix)
+                           "  "))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-nests-a-child-two-deep-inside-a-project ()
   "Grouped by project, a child indents once past its already-nested parent."
@@ -320,7 +323,7 @@ a session outside its own family."
     (agent-shell-vertico-tests--with-side-links
         (list (cons zeta parent) (cons alpha parent))
       (let ((agent-shell-test-buffers (list parent zeta alpha))
-            (agent-shell-vertico-sidebar-group-by nil)
+            (agent-shell-vertico-sidebar-group-by 'state)
             (agent-shell-vertico-sidebar-sort-by 'name))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
@@ -339,7 +342,7 @@ a session outside its own family."
     (let ((links (list (cons child parent))))
       (agent-shell-vertico-tests--with-side-links links
         (let ((agent-shell-test-buffers (list parent child))
-              (agent-shell-vertico-sidebar-group-by nil)
+              (agent-shell-vertico-sidebar-group-by 'state)
               (agent-shell-vertico-sidebar-sort-by 'name))
           (with-temp-buffer
             (agent-shell-vertico-sidebar-mode)
@@ -348,10 +351,13 @@ a session outside its own family."
             ;; parent buffer is dead, without actually killing it here.
             (setq links nil)
             (agent-shell-vertico-sidebar--render)
-            (should-not
-             (get-text-property
-              (cdr (assq child (agent-shell-vertico-sidebar--session-rows)))
-              'line-prefix))))))))
+            ;; Indented once, under its section header, as any root is.
+            (should
+             (equal (get-text-property
+                     (cdr (assq child
+                                (agent-shell-vertico-sidebar--session-rows)))
+                     'line-prefix)
+                    "  "))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-uses-agent-shell-project-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -359,7 +365,7 @@ a session outside its own family."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-project-names (list (cons alpha "Alpha Workspace")))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-extra-info '(project)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -600,30 +606,30 @@ a session outside its own family."
                                        'agent-shell-vertico-sidebar-node)
                     alpha))))))
 
-(ert-deftest agent-shell-vertico-sidebar-renders-flat-compact-rows ()
+(ert-deftest agent-shell-vertico-sidebar-renders-compact-state-rows ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should (string-match-p "Review alpha" (buffer-string)))
         (should (string-match-p "⌂ alpha" (buffer-string)))
-        ;; The title, the status line and the project line.
+        ;; The section header, the title and the project line.
         (should (= (count-lines (point-min) (point-max)) 3))
         (should-not (eq (get-text-property
                          (point-min) 'agent-shell-vertico-sidebar-node-kind)
                         'project))))))
 
-(ert-deftest agent-shell-vertico-sidebar-flat-project-context-is-actionable ()
+(ert-deftest agent-shell-vertico-sidebar-project-context-line-is-actionable ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -727,7 +733,7 @@ a session outside its own family."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -780,7 +786,7 @@ a session outside its own family."
                              (:models . [((:model-id . "gpt-5")
                                           (:name . "GPT-5"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(agent model)))
       (with-temp-buffer
@@ -788,7 +794,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Done" "Codex · GPT-5")))))))
+                 '("▼ Completed · 1" "✻ Review alpha" "Codex · GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-agent-value-is-identifiable ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -796,7 +802,7 @@ a session outside its own family."
               '((:agent-config . ((:buffer-name . "Codex")))
                 (:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(agent)))
       (with-temp-buffer
@@ -816,7 +822,7 @@ a session outside its own family."
       ((alpha "Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(agent model)))
       (with-temp-buffer
@@ -824,7 +830,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Done" "-")))))))
+                 '("▼ Completed · 1" "✻ Review alpha" "-")))))))
 
 (ert-deftest agent-shell-vertico-agent-name-prefers-mode-line-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -847,7 +853,7 @@ a session outside its own family."
               '((:agent-config . ((:buffer-name . "Codex")))
                 (:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(agent)))
       (with-temp-buffer
@@ -882,7 +888,8 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Done" "↳ Find the failing test")))))))
+                 '("▼ Completed · 1" "✻ Review alpha"
+                   "↳ Find the failing test")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -896,7 +903,7 @@ a session outside its own family."
                              (:modes . [((:id . "plan")
                                          (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(mode status model)))
       (with-temp-buffer
@@ -904,7 +911,8 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Done" "Plan · Done" "GPT-5")))))))
+                 '("▼ Completed · 1" "✻ Review alpha" "Plan · Done"
+                   "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -918,16 +926,16 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Done")))))))
+                 '("▼ Completed · 1" "✻ Review alpha")))))))
 
-(ert-deftest agent-shell-vertico-sidebar-flat-rows-have-no-project-indent ()
+(ert-deftest agent-shell-vertico-sidebar-rows-have-no-inserted-indent ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -1102,7 +1110,7 @@ a row's dot, in the section's colour."
         (agent-shell-vertico-sidebar--render)
         (should (string-match-p "Plan" (buffer-string)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-tab-toggles-only-current-flat-session ()
+(ert-deftest agent-shell-vertico-sidebar-tab-toggles-only-current-session ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")
@@ -1113,7 +1121,7 @@ a row's dot, in the section's colour."
                             (:mode-id . "plan")
                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-extra-info '(mode project)))
       (with-temp-buffer
@@ -1177,29 +1185,6 @@ a row's dot, in the section's colour."
         (should (string-match-p "Review beta" (buffer-string)))
         (should-not (string-match-p "Codex" (buffer-string)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-cycles-details-in-flat-view ()
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha")
-                             (:mode-id . "plan")
-                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
-    (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
-          (agent-shell-vertico-sidebar-expand-by-default nil)
-          (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(mode)))
-      (with-temp-buffer
-        (agent-shell-vertico-sidebar-mode)
-        (should-not (string-match-p "Plan" (buffer-string)))
-        (agent-shell-vertico-sidebar-cycle-global-view)
-        (should (string-match-p "Review alpha" (buffer-string)))
-        (should (string-match-p "Plan" (buffer-string)))
-        (agent-shell-vertico-sidebar-cycle-global-view)
-        (should (string-match-p "Review alpha" (buffer-string)))
-        (should-not (string-match-p "Plan" (buffer-string)))
-        ;; A flat list has no project level, so the default never changes.
-        (should-not agent-shell-vertico-sidebar-expand-by-default)))))
-
 (ert-deftest agent-shell-vertico-sidebar-binds-both-tab-events ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB"))
               #'agent-shell-vertico-sidebar-toggle-at-point))
@@ -1233,7 +1218,11 @@ a row's dot, in the section's colour."
   (should (string-match-p "TAB.*toggle"
                           (agent-shell-vertico-sidebar--help-text)))
   (should (string-match-p "RET.*activate"
-                          (agent-shell-vertico-sidebar--help-text))))
+                          (agent-shell-vertico-sidebar--help-text)))
+  (should (string-match-p "=  +Switch between the state and project views"
+                          (agent-shell-vertico-sidebar--help-text)))
+  (should-not (string-match-p "flat\\|more"
+                              (agent-shell-vertico-sidebar--help-text))))
 
 (ert-deftest agent-shell-vertico-sidebar-help-opens-help-buffer ()
   (let ((buffer-name agent-shell-vertico-sidebar--help-buffer))
@@ -1341,7 +1330,7 @@ a row's dot, in the section's colour."
               '((:session . ((:id . "a")
                              (:title . "A title that is deliberately long"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-title-max-length 18)
           (agent-shell-vertico-sidebar-width 16))
@@ -1471,7 +1460,7 @@ a row's dot, in the section's colour."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (original (selected-window))
           (original-buffer (window-buffer (selected-window))))
       (unwind-protect
@@ -1681,7 +1670,7 @@ a session that is blocked again asking for a reply."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (subscribe (symbol-function 'agent-shell-subscribe-to)))
       (cl-letf (((symbol-function 'agent-shell-subscribe-to)
                  (lambda (&rest args)
@@ -1741,14 +1730,13 @@ a session that is blocked again asking for a reply."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(status))
           (agent-shell-vertico-sidebar-sort-by 'name))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
-        (goto-char (point-min))
-        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
         ;; From alpha's detail line, the next stop is still beta's own row.
         (forward-line 1)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
@@ -1774,7 +1762,7 @@ that row\'s own first line; only a second key leaves for the row above."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(status))
           (agent-shell-vertico-sidebar-sort-by 'name))
@@ -1795,6 +1783,10 @@ that row\'s own first line; only a second key leaves for the row above."
                                 (buffer-substring-no-properties
                                  (line-beginning-position)
                                  (line-end-position))))
+        ;; The section header above is a row too, and the top of the list.
+        (agent-shell-vertico-sidebar-previous-row)
+        (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                    'section))
         (let ((position (point)))
           (agent-shell-vertico-sidebar-previous-row)
           (should (= (point) position)))))))
@@ -1802,25 +1794,29 @@ that row\'s own first line; only a second key leaves for the row above."
 (ert-deftest agent-shell-vertico-sidebar-row-motion-with-one-session ()
   "A lone session is still a row both keys can reach and rest on.
 
-Neither key has anywhere to go from the only row in the list, so point
-stays put and nothing is reported: a sidebar showing one session must not
-answer that it has none.  From that session\='s own detail lines, backing
-up still lands on its first line."
+Moving down from the only session row has nowhere to go, so point stays
+put and nothing is reported: a sidebar showing one session must not
+answer that it has none.  Moving up reaches its section header and down
+again returns.  From that session\='s own detail lines, backing up still
+lands on its first line."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
-        (goto-char (point-min))
+        (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
         (let ((row (point)))
           (agent-shell-vertico-sidebar-next-row)
           (should (= (point) row))
           (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
           (agent-shell-vertico-sidebar-previous-row)
+          (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                      'section))
+          (agent-shell-vertico-sidebar-next-row)
           (should (= (point) row))
           (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
           ;; The detail line under the title belongs to the same row.
@@ -1899,7 +1895,7 @@ point left there reports no session at point for the next key pressed."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -1922,7 +1918,7 @@ point, and a refresh would send it to the top of the list."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(status model mode))
           (agent-shell-vertico-sidebar-sort-by 'name))
@@ -1943,11 +1939,11 @@ point, and a refresh would send it to the top of the list."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
-        (goto-char (point-min))
+        (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
         (let ((last (1- (line-end-position))))
           (should (eq (get-text-property last 'mouse-face) 'highlight))
           (should (equal (get-text-property last 'help-echo)
@@ -1979,7 +1975,7 @@ sidebar buffer rather than whatever buffer the user called it from."
             (insert "draft content"))
           (with-current-buffer other
             (let ((agent-shell-vertico-sidebar-show-details nil)
-                  (agent-shell-vertico-sidebar-group-by nil))
+                  (agent-shell-vertico-sidebar-group-by 'state))
               (should-error (agent-shell-vertico-sidebar-cycle-global-view)
                             :type 'user-error)
               ;; Refused before it changed anything.
@@ -2001,7 +1997,7 @@ sidebar buffer rather than whatever buffer the user called it from."
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
       (unwind-protect
           (agent-shell-vertico-tests--with-sidebar
-            (let ((agent-shell-vertico-sidebar-group-by nil)
+            (let ((agent-shell-vertico-sidebar-group-by 'state)
                   (agent-shell-vertico-sidebar-show-details nil))
               (with-current-buffer other
                 (insert "user content")
@@ -2022,7 +2018,7 @@ sidebar buffer rather than whatever buffer the user called it from."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
       (unwind-protect
@@ -2057,7 +2053,7 @@ sidebar buffer rather than whatever buffer the user called it from."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-sort-by 'name)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
@@ -2069,10 +2065,16 @@ sidebar buffer rather than whatever buffer the user called it from."
               (agent-shell-vertico-tests--with-sidebar
                 (agent-shell-vertico-sidebar--render)
                 (set-window-buffer sidebar-window (current-buffer))
+                ;; The window starts at the first session, as the
+                ;; reader's would below its section header, so the one
+                ;; sorting above it lands out of sight.
+                (should
+                 (agent-shell-vertico-sidebar--goto-node
+                  (cons 'session alpha)))
+                (set-window-start sidebar-window (line-beginning-position) t)
                 (should
                  (agent-shell-vertico-sidebar--goto-node
                   (cons 'session beta)))
-                (set-window-start sidebar-window (point-min) t)
                 (set-window-point sidebar-window (point))
                 (let ((screen-row
                        (count-screen-lines
@@ -2108,7 +2110,7 @@ fill clamp must leave alone."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-sort-by 'name)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
@@ -2164,7 +2166,7 @@ rows once the collapsed list fits the window."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(status model mode))
           (agent-shell-vertico-sidebar-sort-by 'name)
@@ -2185,7 +2187,8 @@ rows once the collapsed list fits the window."
                  (agent-shell-vertico-sidebar--goto-node
                   (cons 'session gamma)))
                 (set-window-point sidebar-window (point))
-                (agent-shell-vertico-sidebar-cycle-global-view)
+                (setq agent-shell-vertico-sidebar-show-details nil)
+                (agent-shell-vertico-sidebar--render)
                 (should
                  (eq (with-selected-window sidebar-window
                        (agent-shell-vertico-sidebar--node-at-point))
@@ -2207,7 +2210,7 @@ top sessions stay hidden."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-sort-by 'name)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
@@ -2246,7 +2249,7 @@ top sessions stay hidden."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-extra-info '(status project))
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
@@ -2306,7 +2309,7 @@ top sessions stay hidden."
                              (:mode-id . "plan")
                              (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
@@ -2328,7 +2331,7 @@ top sessions stay hidden."
        (gamma "Codex Agent @ gamma" "/work/gamma/"
               '((:session . ((:id . "g") (:title . "Gamma"))))))
     (let ((agent-shell-test-buffers (list alpha beta gamma))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil)
           (agent-shell-vertico-sidebar-sort-by 'name)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
@@ -2559,7 +2562,7 @@ and `window-state-put', which only carry parameters marked writable in
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (agent-shell-vertico-tests--with-sidebar
         (should (= agent-shell-test-buffer-query-count 1))
@@ -3005,7 +3008,7 @@ that leaves the answer alone schedules nothing."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-tests--with-sidebar
         (with-temp-buffer
           (let ((other (current-buffer)))
@@ -3050,7 +3053,7 @@ answer: which session the reader is working in."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-tests--with-sidebar
         (with-temp-buffer
           (let ((other (current-buffer)))
@@ -3260,7 +3263,7 @@ tested; the graphical tests below exercise it against real windows."
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-marker-method 'margin)
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (selected-window) alpha)
@@ -3279,8 +3282,10 @@ tested; the graphical tests below exercise it against real windows."
                            'agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
-          (should-not (get-text-property (line-beginning-position)
-                                         'line-prefix)))))))
+          ;; Only the indent under the section header, no marker.
+          (should (equal (get-text-property (line-beginning-position)
+                                            'line-prefix)
+                         "  ")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-render-marks-current-session-row ()
   "A session on screen carries the fringe marker; an unseen one does not."
@@ -3291,7 +3296,7 @@ tested; the graphical tests below exercise it against real windows."
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-marker-method 'fringe)
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (selected-window) alpha)
@@ -3309,8 +3314,10 @@ tested; the graphical tests below exercise it against real windows."
                            agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
-          (should-not (get-text-property (line-beginning-position)
-                                         'line-prefix)))))))
+          ;; Only the indent under the section header, no marker.
+          (should (equal (get-text-property (line-beginning-position)
+                                            'line-prefix)
+                         "  ")))))))
 
 (ert-deftest
     agent-shell-vertico-sidebar-render-marks-current-session-in-project-group
@@ -3410,7 +3417,7 @@ give way to the thin one."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-tests--with-sidebar
         (with-temp-buffer
           (let ((other (current-buffer)))
@@ -3461,7 +3468,7 @@ the reader is in."
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-marker-method 'fringe)
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (save-window-excursion
         (delete-other-windows)
         (set-window-buffer (selected-window) alpha)
@@ -3499,7 +3506,7 @@ can tell the sidebar that what it drew is out of date."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-tests--with-sidebar
         (save-window-excursion
           (delete-other-windows)
@@ -3908,6 +3915,15 @@ that order."
   (split-string (buffer-substring-no-properties (point-min) (point-max))
                 "\n"))
 
+(defun agent-shell-vertico-tests--row-lines ()
+  "Return the current sidebar's lines but its section and project headers."
+  (seq-remove (lambda (line) (string-match-p "\\`[▼▶] " line))
+              (agent-shell-vertico-tests--lines)))
+
+(defun agent-shell-vertico-tests--goto-first-row ()
+  "Move point to the start of the current sidebar's first session row."
+  (goto-char (cdar (agent-shell-vertico-sidebar--session-rows))))
+
 (ert-deftest agent-shell-vertico-sidebar-state-view-draws-sections ()
   "Sessions sit under one header for each band, in Claude Code's order.
 
@@ -4264,8 +4280,9 @@ showing a session, so folding it leaves nothing but headers."
   (should (eq (cdr (assoc "p" agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-peek)))
 
-(ert-deftest agent-shell-vertico-sidebar-grouping-cycles-three-views ()
-  "The grouping toggle cycles flat, project and state views."
+(ert-deftest agent-shell-vertico-sidebar-grouping-toggles-two-views ()
+  "The grouping toggle switches between the state and project views.
+Nil, the flat view this option once offered, is read as the state view."
   (let ((agent-shell-vertico-sidebar-group-by nil))
     (cl-letf (((symbol-function 'agent-shell-vertico-sidebar-refresh)
                #'ignore))
@@ -4274,7 +4291,27 @@ showing a session, so folding it leaves nothing but headers."
       (agent-shell-vertico-sidebar-toggle-grouping)
       (should (eq agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-sidebar-toggle-grouping)
-      (should-not agent-shell-vertico-sidebar-group-by))))
+      (should (eq agent-shell-vertico-sidebar-group-by 'project)))))
+
+(ert-deftest agent-shell-vertico-sidebar-nil-grouping-draws-the-state-view ()
+  "A nil grouping draws, steps and folds as the state view does."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((state (agent-shell-vertico-tests--lines))
+          (order (agent-shell-vertico-sidebar--display-order)))
+      (let ((agent-shell-vertico-sidebar-group-by nil))
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (agent-shell-vertico-tests--lines) state))
+        (should (equal (agent-shell-vertico-sidebar--display-order) order))
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))))))
+
+(ert-deftest agent-shell-vertico-sidebar-group-by-offers-two-views ()
+  "The option's type lists the state and project views and nothing else."
+  (should (equal (get 'agent-shell-vertico-sidebar-group-by 'custom-type)
+                 '(choice (const :tag "State" state)
+                          (const :tag "Project" project)))))
 
 (ert-deftest agent-shell-vertico-sidebar-projects-start-open ()
   "The project view opens with every project's sessions showing."
@@ -4367,7 +4404,7 @@ is a still disc, so a working mark still differs in shape."
         (search-forward "Review alpha")
         (should (memq 'agent-shell-vertico-sidebar-unread-title
                       (ensure-list (get-text-property (1- (point)) 'face))))
-        (goto-char (point-min))
+        (agent-shell-vertico-tests--goto-first-row)
         (should (looking-at-p "✻ Review alpha"))
         (agent-shell-vertico-sidebar--mark-seen alpha)
         (agent-shell-vertico-sidebar--render)
@@ -4381,14 +4418,14 @@ is a still disc, so a working mark still differs in shape."
   "An unread row ends in a dot before its age, in the mark's colour."
   (agent-shell-vertico-tests--with-alpha
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (let ((title (car (agent-shell-vertico-tests--lines))))
+        (let ((title (car (agent-shell-vertico-tests--row-lines))))
           (should (string-match-p "\\`✻ Review alpha +• [0-9a-z]+\\'" title)))
-        (goto-char (point-min))
+        (agent-shell-vertico-tests--goto-first-row)
         (search-forward "•")
         (let ((face (ensure-list (get-text-property (1- (point)) 'face))))
           (should (memq 'agent-shell-vertico-sidebar-unread-dot face))
@@ -4396,7 +4433,7 @@ is a still disc, so a working mark still differs in shape."
         (agent-shell-vertico-sidebar--mark-seen alpha)
         (agent-shell-vertico-sidebar--render)
         (should-not (string-match-p
-                     "•" (car (agent-shell-vertico-tests--lines))))))))
+                     "•" (car (agent-shell-vertico-tests--row-lines))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-busy-frames-are-claude-codes ()
   "A working mark cycles through Claude Code's spinner, in its colour."
@@ -4539,7 +4576,7 @@ question ages from its end, whatever an earlier request said."
   "A row is its title with an age at the right edge, then its detail.
 
 The state view names the state in the section header, so the detail
-line is the detail alone; the flat view starts it with the status."
+line is the detail alone; the project view starts it with the status."
   (agent-shell-vertico-tests--with-alpha
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'state)
@@ -4559,9 +4596,9 @@ line is the detail alone; the flat view starts it with the status."
                          (list (concat "✻ Review alpha"
                                        (make-string 10 ?\s) "• 5m")
                                "Fixed the quit"))))
-        (let ((agent-shell-vertico-sidebar-group-by nil))
+        (let ((agent-shell-vertico-sidebar-group-by 'project))
           (agent-shell-vertico-sidebar--render)
-          (should (equal (cadr (agent-shell-vertico-tests--lines))
+          (should (equal (cadr (agent-shell-vertico-tests--row-lines))
                          "Done · Fixed the quit"))
           (goto-char (point-min))
           (search-forward "Done")
@@ -4572,7 +4609,7 @@ line is the detail alone; the flat view starts it with the status."
   "A working session silent for fifteen minutes draws its age in yellow."
   (agent-shell-vertico-tests--with-alpha
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (setq agent-shell-test-statuses (list (cons alpha 'busy)))
       (agent-shell-vertico-sidebar--set alpha 'busy-since
                                         (- (float-time) 1200))
@@ -4601,11 +4638,12 @@ line is the detail alone; the flat view starts it with the status."
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)))
           (agent-shell-vertico-sidebar-extra-info nil)
-          (agent-shell-vertico-sidebar-width 20))
+          ;; Two of the columns go to the indent under the section header.
+          (agent-shell-vertico-sidebar-width 22))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (let ((title (car (agent-shell-vertico-tests--lines))))
+        (let ((title (car (agent-shell-vertico-tests--row-lines))))
           (should (string-prefix-p "✻ A title that" title))
           (should (string-match-p "…" title)))
         (let ((agent-shell-vertico-sidebar-wrap-titles t))
@@ -4617,7 +4655,7 @@ line is the detail alone; the flat view starts it with the status."
 ;; Long titles: whole when expanded, echoed when cut
 
 (defmacro agent-shell-vertico-tests--with-long-title (&rest body)
-  "Evaluate BODY in a 20-column sidebar showing ALPHA, whose title is long.
+  "Evaluate BODY in a 22-column sidebar showing ALPHA, whose title is long.
 ALPHA is working on a long prompt, so its detail line is cut too."
   (declare (indent 0) (debug t))
   `(agent-shell-vertico-tests--with-session-buffers
@@ -4627,11 +4665,12 @@ ALPHA is working on a long prompt, so its detail line is cut too."
                                . "A title that is deliberately long"))))))
      (let ((agent-shell-test-buffers (list alpha))
            (agent-shell-test-statuses (list (cons alpha 'busy)))
-           (agent-shell-vertico-sidebar-group-by nil)
+           (agent-shell-vertico-sidebar-group-by 'state)
            (agent-shell-vertico-sidebar-extra-info nil)
            (agent-shell-vertico-sidebar-animate-busy nil)
            (agent-shell-vertico-sidebar-title-max-length 24)
-           (agent-shell-vertico-sidebar-width 20))
+           ;; Two of the columns go to the indent under the section header.
+           (agent-shell-vertico-sidebar-width 22))
        (agent-shell-vertico-sidebar--handle-event
         alpha '((:event . input-submitted)
                 (:data . ((:prompt . "please review every changed file")))))
@@ -4645,23 +4684,24 @@ ALPHA is working on a long prompt, so its detail line is cut too."
     (should-not (string-match-p "deliberately long"
                                 (string-join
                                  (agent-shell-vertico-tests--lines) " ")))
-    (goto-char (point-min))
+    (agent-shell-vertico-tests--goto-first-row)
     (agent-shell-vertico-sidebar-toggle-at-point)
     (let ((text (string-join (mapcar #'string-trim
                                      (agent-shell-vertico-tests--lines))
                              " ")))
       ;; The age keeps the end of the first line.
       (should (string-match-p
-               "A title that +now is deliberately long Working" text)))
+               "A title that +now is deliberately long > please" text)))
     (agent-shell-vertico-sidebar-toggle-at-point)
-    (should (string-match-p "…" (car (agent-shell-vertico-tests--lines))))))
+    (should (string-match-p "…"
+                            (car (agent-shell-vertico-tests--row-lines))))))
 
 (ert-deftest agent-shell-vertico-sidebar-cut-row-shows-whole-text ()
   "A cut row's title tooltip and echo give the whole title and detail."
   (agent-shell-vertico-tests--with-long-title
     (let ((whole (concat "A title that is deliberately long\n"
                          "> please review every changed file")))
-      (goto-char (point-min))
+      (agent-shell-vertico-tests--goto-first-row)
       (should (equal (get-text-property (point) 'help-echo) whole))
       (let (echoed)
         (cl-letf (((symbol-function 'message)
@@ -4685,7 +4725,7 @@ ALPHA is working on a long prompt, so its detail line is cut too."
                    (setq echoed (and format (apply #'format format args)))))
                 ((symbol-function 'current-message)
                  (lambda () "Session snoozed")))
-        (goto-char (point-min))
+        (agent-shell-vertico-tests--goto-first-row)
         (agent-shell-vertico-sidebar--echo-row)
         (should-not echoed)))
     (let ((agent-shell-vertico-sidebar-width 80)
@@ -4699,7 +4739,7 @@ ALPHA is working on a long prompt, so its detail line is cut too."
                 ((symbol-function 'current-message) (lambda () nil))
                 ((symbol-function 'window-body-width) (lambda (&rest _) 80)))
         (agent-shell-vertico-sidebar--render)
-        (goto-char (point-min))
+        (agent-shell-vertico-tests--goto-first-row)
         (agent-shell-vertico-sidebar--echo-row)
         (should-not echoed)))))
 
@@ -4876,7 +4916,7 @@ the command to refuse."
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (goto-char (point-min))
+        (agent-shell-vertico-tests--goto-first-row)
         (should (looking-at-p "✻ Failed run"))
         (should (eq (get-text-property (point) 'face)
                     'agent-shell-vertico-sidebar-failed))))))
@@ -4936,20 +4976,22 @@ the command to refuse."
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(project)))
-      ;; Flat rows own column zero; their detail lines are indented for
+      ;; A section header owns column zero; its rows are indented for
       ;; display only, so copied text carries no leading spaces.
-      (let ((agent-shell-vertico-sidebar-group-by nil))
+      (let ((agent-shell-vertico-sidebar-group-by 'state))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
           (goto-char (point-min))
+          (should (string-prefix-p "▼ " (buffer-substring-no-properties
+                                         (point) (line-end-position))))
           (should-not (get-text-property (point) 'line-prefix))
           (forward-line 1)
           (should (equal (get-text-property (point) 'line-prefix) "  "))
-          (should (equal (buffer-substring-no-properties
-                          (point) (line-end-position))
-                         "Done"))
+          (should (string-prefix-p "✻ Review alpha"
+                                   (buffer-substring-no-properties
+                                    (point) (line-end-position))))
           (forward-line 1)
-          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (should (equal (get-text-property (point) 'line-prefix) "    "))
           (should (string-prefix-p "⌂" (buffer-substring-no-properties
                                         (point) (line-end-position))))))
       ;; Sessions under a project header reserve the fold columns.
@@ -5135,7 +5177,7 @@ count at all."
        (beta "Codex Agent @ beta" "/work/beta/"
              '((:session . ((:id . "b") (:title . "Review beta"))))))
     (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details nil))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -12492,7 +12534,7 @@ still counts, since the step opens no sidebar and draws nothing."
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'ready)
                                            (cons gamma 'ready)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-sort-by 'name))
       (agent-shell-vertico-tests--with-jump-history
         (agent-shell-vertico-tests--look-at beta)
@@ -12519,7 +12561,7 @@ still counts, since the step opens no sidebar and draws nothing."
     (let ((agent-shell-test-buffers (list beta alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'ready)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-sort-by 'name)
           (elsewhere (generate-new-buffer " *notes*")))
       (unwind-protect
@@ -12567,7 +12609,7 @@ still counts, since the step opens no sidebar and draws nothing."
                    '(user-error "No agent-shell sessions")))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-labels-rows-in-order ()
-  "Keys follow the flat row order, and the chosen key's session is shown."
+  "Keys follow the row order, and the chosen key's session is shown."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -12708,8 +12750,8 @@ fall back to a plain jump instead of running the action."
         (should-not (get-buffer-window "*Agent Shell Sessions*"))
         (should-not (agent-shell-vertico-tests--jump-labels-shown))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-by-key-flattens-grouped-sidebar-then-restores-it ()
-  "A grouped, folded sidebar shows every session flat for the read only."
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-reads-a-project-sidebar ()
+  "A folded project sidebar shows the open state view for the read only."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -12740,11 +12782,11 @@ fall back to a plain jump instead of running the action."
                      (buffer-string))))
           (agent-shell-vertico-sidebar-jump-by-key)
           ;; Both sessions had a row and a key, though their projects
-          ;; are folded, and no project header was drawn.
+          ;; are folded: the read drew their section, not their projects.
           (should (= (length seen) 2))
           (should (member (cons ?1 alpha) seen))
           (should (member (cons ?2 beta) seen))
-          (should (equal kinds-during '(session session)))
+          (should (equal kinds-during '(section session session)))
           ;; The sidebar stays open, grouped and folded again.
           (should (window-live-p window))
           (with-current-buffer "*Agent Shell Sessions*"
@@ -12753,6 +12795,47 @@ fall back to a plain jump instead of running the action."
                             (agent-shell-vertico-sidebar--node-positions))
                            '(project project)))
             (should-not (agent-shell-vertico-tests--jump-labels-shown))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-opens-folded-sections ()
+  "Folded state sections open for the read, and fold again after it.
+The reader's own fold and the default one both give way to the read,
+and neither is changed by it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-test-statuses (list (cons alpha 'ready)
+                                           (cons beta 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-folded-sections '(snoozed))
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          seen kinds-during)
+      (agent-shell-vertico-sidebar--set beta 'snoozed 100.0)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown)
+                       kinds-during
+                       (with-current-buffer "*Agent Shell Sessions*"
+                         (mapcar
+                          #'caar
+                          (agent-shell-vertico-sidebar--node-positions))))
+                 ?2)
+        (save-selected-window (agent-shell-vertico-sidebar--display-buffer))
+        (with-current-buffer "*Agent Shell Sessions*"
+          (agent-shell-vertico-sidebar--set-section-folded 'idle t)
+          (agent-shell-vertico-sidebar--render))
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (equal seen (list (cons ?1 alpha) (cons ?2 beta))))
+        (should (equal kinds-during '(section session section session)))
+        (with-current-buffer "*Agent Shell Sessions*"
+          (should (equal (mapcar
+                          #'caar
+                          (agent-shell-vertico-sidebar--node-positions))
+                         '(section section)))
+          (should (agent-shell-vertico-sidebar--section-folded-p 'idle))
+          (should (agent-shell-vertico-sidebar--section-folded-p
+                   'snoozed)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-dispatch-help-lists-every-action ()
   "The help gives each action its own line, keyed and faced like ace-window."
@@ -13055,7 +13138,7 @@ without the reader being told why."
         (should-not (get-buffer-window "*Agent Shell Sessions*"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-regroups-a-hidden-sidebar-after-an-abort ()
-  "An abort leaves the sidebar buffer grouped, not flat, even when hidden."
+  "An abort leaves the sidebar buffer in its own view, even when hidden."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
@@ -13072,7 +13155,7 @@ without the reader being told why."
         (should-error (agent-shell-vertico-sidebar-jump-by-key)
                       :type 'user-error)
         ;; The window the read borrowed is gone, and the buffer it left
-        ;; behind is grouped again rather than flat.
+        ;; behind is grouped by project again.
         (should-not (get-buffer-window "*Agent Shell Sessions*"))
         (with-current-buffer "*Agent Shell Sessions*"
           (should (equal (mapcar
@@ -13375,7 +13458,7 @@ icon font of the mark it is drawn over."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (inhibit-message t))
       (agent-shell-vertico-tests--with-sidebar
         (agent-shell-vertico-sidebar--set alpha 'updated-at 100.0)
@@ -13473,7 +13556,7 @@ move it behind the ones that have waited less."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (inhibit-message t))
       (agent-shell-vertico-tests--with-sidebar
         (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
@@ -14587,7 +14670,7 @@ the minibuffer is not the project the reader was asked about."
     (let ((agent-shell-test-buffers (list working idle))
           (agent-shell-test-statuses (list (cons working 'busy)
                                            (cons idle 'ready)))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14613,7 +14696,7 @@ the minibuffer is not the project the reader was asked about."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14630,7 +14713,7 @@ the minibuffer is not the project the reader was asked about."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-animate-busy t)
           (agent-shell-vertico-sidebar-busy-frames nil))
       (should-not (agent-shell-vertico-sidebar--busy-frame 3))
@@ -14651,7 +14734,7 @@ the minibuffer is not the project the reader was asked about."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-animate-busy t))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -14669,7 +14752,7 @@ the minibuffer is not the project the reader was asked about."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14687,7 +14770,7 @@ the minibuffer is not the project the reader was asked about."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14705,7 +14788,7 @@ the minibuffer is not the project the reader was asked about."
     (let ((agent-shell-test-buffers (list working))
           (agent-shell-test-statuses (list (cons working 'busy)))
           (agent-shell-vertico-sidebar-animate-busy nil)
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14816,7 +14899,7 @@ no cursor to say where point is."
       ((session "Codex Agent @ session" "/work/session/"
                 '((:session . ((:id . "s") (:title . "Session"))))))
     (let ((agent-shell-test-buffers (list session))
-          (agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -14869,14 +14952,14 @@ above answer for the row it moved to."
        (second "Claude Agent @ second" "/work/second/"
                '((:session . ((:id . "2") (:title . "Second"))))))
     (let ((agent-shell-test-buffers (list first second))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-sort-by 'creation))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (let ((rows (agent-shell-vertico-sidebar--session-rows))
               (field 2))
-          (goto-char (point-min))
+          (agent-shell-vertico-tests--goto-first-row)
           (agent-shell-vertico-sidebar-next-row)
           (should-not (agent-shell-vertico-sidebar--mark-field-p (point)))
           (should (= (point) (+ field (cdr (nth 1 rows)))))
@@ -14888,12 +14971,12 @@ above answer for the row it moved to."
                       (car (nth 0 rows)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-point-skips-a-project-line-icon ()
-  "The home on a flat row's project line is a mark like any other."
+  "The home on a row's project line is a mark like any other."
   (agent-shell-vertico-tests--with-session-buffers
       ((session "Codex Agent @ session" "/work/session/"
                 '((:session . ((:id . "s") (:title . "Session"))))))
     (let ((agent-shell-test-buffers (list session))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-extra-info '(project)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -14914,7 +14997,7 @@ above answer for the row it moved to."
       ((session "Codex Agent @ session" "/work/session/"
                 '((:session . ((:id . "s") (:title . "Session"))))))
     (let ((agent-shell-test-buffers (list session))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(last-user-message)))
       (cl-letf (((symbol-function
@@ -14944,7 +15027,7 @@ under its point."
       ((session "Codex Agent @ session" "/work/session/"
                 '((:session . ((:id . "s") (:title . "Session"))))))
     (let ((agent-shell-test-buffers (list session))
-          (agent-shell-vertico-sidebar-group-by nil)
+          (agent-shell-vertico-sidebar-group-by 'state)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
       (unwind-protect
           (save-window-excursion
@@ -15116,21 +15199,18 @@ last line has no newline, since the render drops the final one."
          (or (= (line-end-position) (point-max))
              (funcall rule-p (line-end-position))))))
 
-(ert-deftest agent-shell-vertico-sidebar-snooze-rule-tops-the-snoozed ()
-  "A rule is drawn over the first snoozed row, and over nothing else."
+(ert-deftest agent-shell-vertico-sidebar-snooze-rule-skips-the-state-view ()
+  "The state view draws no rule: the Snoozed header already splits them."
   (agent-shell-vertico-tests--with-two-sessions
-    (let ((agent-shell-vertico-sidebar-group-by nil))
+    (let ((agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-folded-sections nil))
       (agent-shell-vertico-tests--snooze alpha)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (goto-char (point-min))
-        (should (< (search-forward "Beta") (search-forward "Alpha")))
-        (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
-        (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))
-        ;; With every session snoozed there is nothing to split off.
-        (agent-shell-vertico-tests--snooze beta)
-        (agent-shell-vertico-sidebar--render)
+        (should (< (search-forward "Beta") (search-forward "Snoozed")
+                   (search-forward "Alpha")))
         (should-not (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
         (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))))))
 
@@ -15151,6 +15231,12 @@ last line has no newline, since the render drops the final one."
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
+        (should-not (agent-shell-vertico-tests--snooze-separator-p
+                     "Beta"))
+        ;; With every session snoozed there is nothing to split off.
+        (agent-shell-vertico-tests--snooze beta)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
         (should-not (agent-shell-vertico-tests--snooze-separator-p
                      "Beta"))))))
 
@@ -15261,7 +15347,8 @@ The output is still recorded, and nobody is told about it."
 (ert-deftest agent-shell-vertico-sidebar-snooze-dims-the-title ()
   "A snoozed row's title is drawn dim; its mark keeps the snoozed colour."
   (agent-shell-vertico-tests--with-two-sessions
-    (let ((agent-shell-vertico-sidebar-group-by nil))
+    (let ((agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-folded-sections nil))
       (agent-shell-vertico-tests--snooze alpha)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -15445,7 +15532,7 @@ BETA is live and idle beside it."
       `((:native-subagents
          . (("one" . ((:name . "A"))) ("two" . ((:name . "B")))))
         (:async-tasks . (("t1" . (:name "npm" :state "running")))))
-    (let ((agent-shell-vertico-sidebar-group-by nil))
+    (let ((agent-shell-vertico-sidebar-group-by 'state))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
