@@ -175,7 +175,10 @@ The age at the right edge is how long the session has been in its current
 state, not how old it is.  A working session that has said nothing for
 `agent-shell-vertico-sidebar-stuck-after` seconds (15 minutes by default) has
 its age drawn yellow.  Titles are cut with `…` to keep every row one line high;
-set `agent-shell-vertico-sidebar-wrap-titles` to wrap them instead.
+set `agent-shell-vertico-sidebar-wrap-titles` to wrap them instead.  A cut row
+can still be read whole: `TAB` on it wraps its whole title (with the session's
+metadata), moving point onto it shows the whole title and detail line in the
+echo area, and hovering the title shows them in its tooltip.
 
 `p` peeks at the session at point: a window opens below the sidebar with what
 the session asks and the last message it wrote, and `r` there sends it a reply

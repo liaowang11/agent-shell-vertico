@@ -95,7 +95,9 @@ can wrap over multiple sidebar lines."
   "Whether a long session title wraps over several lines.
 
 Nil keeps every title on one line and cuts it with an ellipsis, as
-Claude Code's agent view does, so each row has the same height."
+Claude Code's agent view does, so each row has the same height.  An
+expanded row wraps its whole title either way, and a cut row's whole
+title and detail line show in the echo area when point reaches it."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
@@ -572,6 +574,17 @@ An absent entry follows `agent-shell-vertico-sidebar-folded-sections'.")
   "Hash table of session detail overrides in the current sidebar buffer.
 
 An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
+
+(defvar-local agent-shell-vertico-sidebar--whole-texts nil
+  "Hash table of each cut row's session to its whole title and detail.
+Filled by `agent-shell-vertico-sidebar--record-whole-text' during a
+render, for the row's tooltip and `--echo-row'.")
+
+(defvar-local agent-shell-vertico-sidebar--echoed-node nil
+  "The session whose row point was last seen on by `--echo-row'.")
+
+(defvar-local agent-shell-vertico-sidebar--echoed-text nil
+  "What `--echo-row' last put in the echo area, or nil.")
 
 (defface agent-shell-vertico-sidebar-project
   '((t :inherit font-lock-keyword-face :weight bold))
@@ -1360,6 +1373,12 @@ nobody has prompted says what it needs."
 
 (defun agent-shell-vertico-sidebar--detail-line (snapshot width)
   "Return the detail line of SNAPSHOT at WIDTH, or nil.
+See `agent-shell-vertico-sidebar--detail-text-line' for what it says."
+  (when-let* ((line (agent-shell-vertico-sidebar--detail-text-line snapshot)))
+    (cons (agent-shell-vertico-sidebar--fit line width) t)))
+
+(defun agent-shell-vertico-sidebar--detail-text-line (snapshot)
+  "Return the whole detail line of SNAPSHOT, before it is fitted, or nil.
 
 The state view names the state in its section header, so the line is
 the detail alone there.  The project and flat views start it with the
@@ -1380,8 +1399,7 @@ mode does."
                               (propertize
                                " · " 'face 'agent-shell-vertico-sidebar-detail))
                          detail))))
-    (when line
-      (cons (agent-shell-vertico-sidebar--fit line width) t))))
+    line))
 
 (defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
   "Return FIELD from BUFFER's current render snapshot, when available."
@@ -1639,9 +1657,7 @@ default in `agent-shell-vertico-sidebar-show-details'."
 (defun agent-shell-vertico-sidebar--title-display-text (title)
   "Truncate TITLE to the configured display character limit."
   (let* ((limit (max 1 agent-shell-vertico-sidebar-title-max-length))
-         (title (string-trim
-                 (replace-regexp-in-string "[[:space:]]+" " "
-                                           (or title "")))))
+         (title (agent-shell-vertico-sidebar--whole-title title)))
     (if (> (length title) limit)
         (concat (substring title 0 (max 0 (1- limit))) "…")
       title)))
@@ -2044,6 +2060,49 @@ property; nothing else reads it."
   (propertize (concat icon " ")
               'agent-shell-vertico-sidebar-mark-field t))
 
+(defun agent-shell-vertico-sidebar--whole-title (title)
+  "Return TITLE on one line, its runs of whitespace made single spaces."
+  (string-trim (replace-regexp-in-string "[[:space:]]+" " " (or title ""))))
+
+(defun agent-shell-vertico-sidebar--record-whole-text
+    (buffer title title-lines detail detail-cut)
+  "Record the whole TITLE and DETAIL of BUFFER's row when it shows less.
+
+TITLE-LINES are the title as drawn, and DETAIL-CUT says the detail line
+was cut.  The row's tooltip and `--echo-row' read the record from
+`agent-shell-vertico-sidebar--whole-texts', so a row cut to the
+sidebar's width can still be read whole."
+  (when (and (hash-table-p agent-shell-vertico-sidebar--whole-texts)
+             (or detail-cut
+                 (not (equal (string-join title-lines " ") title))))
+    (puthash buffer (concat title (and detail (concat "\n" detail)))
+             agent-shell-vertico-sidebar--whole-texts)))
+
+(defun agent-shell-vertico-sidebar--echo-row ()
+  "Show the whole title and detail of a cut row once point reaches it.
+
+Runs from `post-command-hook' in the sidebar.  Nothing is said again
+while point stays on the row, nothing is said over a message the command
+left, and leaving the row takes its text back out of the echo area."
+  (let ((node (and (eq (get-text-property
+                        (point) 'agent-shell-vertico-sidebar-node-kind)
+                       'session)
+                   (get-text-property (point)
+                                      'agent-shell-vertico-sidebar-node))))
+    (unless (eq node agent-shell-vertico-sidebar--echoed-node)
+      (setq agent-shell-vertico-sidebar--echoed-node node)
+      (let ((text (and node
+                       (hash-table-p agent-shell-vertico-sidebar--whole-texts)
+                       (gethash node agent-shell-vertico-sidebar--whole-texts)))
+            (current (current-message))
+            (message-log-max nil))
+        (when (or (null current)
+                  (equal current agent-shell-vertico-sidebar--echoed-text))
+          (setq agent-shell-vertico-sidebar--echoed-text text)
+          (if text
+              (message "%s" text)
+            (when current (message nil))))))))
+
 (defun agent-shell-vertico-sidebar--session-lines
     (buffer root width &optional nested depth)
   "Return rendered session lines for BUFFER at WIDTH under ROOT.
@@ -2066,13 +2125,25 @@ parent-child relationship."
                         content-width))
          (details-visible
           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
-         (title-text (agent-shell-vertico-sidebar--title-display-text title))
+         (whole-title (agent-shell-vertico-sidebar--whole-title title))
          (title-lines
-          (if agent-shell-vertico-sidebar-wrap-titles
-              (agent-shell-vertico-sidebar--wrap-text title-text title-width)
-            (list (agent-shell-vertico-sidebar--fit title-text title-width))))
+          (cond
+           (details-visible
+            (agent-shell-vertico-sidebar--wrap-text whole-title title-width))
+           (agent-shell-vertico-sidebar-wrap-titles
+            (agent-shell-vertico-sidebar--wrap-text
+             (agent-shell-vertico-sidebar--title-display-text title)
+             title-width))
+           (t (list (agent-shell-vertico-sidebar--fit
+                     (agent-shell-vertico-sidebar--title-display-text title)
+                     title-width)))))
+         (detail-text
+          (agent-shell-vertico-sidebar--detail-text-line snapshot))
          (detail-line
-          (agent-shell-vertico-sidebar--detail-line snapshot content-width))
+          (and detail-text
+               (cons (agent-shell-vertico-sidebar--fit detail-text
+                                                       content-width)
+                     t)))
          (project-line
           (when (not nested)
             (agent-shell-vertico-sidebar--flat-project-line
@@ -2081,6 +2152,10 @@ parent-child relationship."
           (when details-visible
             (agent-shell-vertico-sidebar--extra-info-lines
              buffer root content-width (not nested)))))
+    (agent-shell-vertico-sidebar--record-whole-text
+     buffer whole-title title-lines
+     (agent-shell-vertico-sidebar--detail-for snapshot)
+     (and detail-text (> (string-width detail-text) content-width)))
     (dolist (face (list (and (agent-shell-vertico-sidebar--unread-p buffer)
                              'agent-shell-vertico-sidebar-unread-title)
                         (and (agent-shell-vertico-sidebar--snoozed-p buffer)
@@ -2255,7 +2330,10 @@ already applies, so it adds no columns of its own either."
       (add-text-properties
        start title-end
        (list 'mouse-face 'highlight
-             'help-echo (buffer-name node)
+             'help-echo
+             (or (and (hash-table-p agent-shell-vertico-sidebar--whole-texts)
+                      (gethash node agent-shell-vertico-sidebar--whole-texts))
+                 (buffer-name node))
              'kbd-help "RET/mouse-1: open session")))
     (agent-shell-vertico-sidebar--restore-field-properties
      start (1- (point)))))
@@ -2534,6 +2612,8 @@ same line."
     (dolist (snapshot snapshots)
       (puthash (plist-get snapshot :buffer) snapshot snapshot-table))
     (setq-local agent-shell-vertico-sidebar--render-snapshots snapshot-table)
+    (when (hash-table-p agent-shell-vertico-sidebar--whole-texts)
+      (clrhash agent-shell-vertico-sidebar--whole-texts))
     (unwind-protect
         (progn
           (agent-shell-vertico-sidebar--cancel-refresh)
@@ -3944,7 +4024,8 @@ the whole command runs there however it was called."
       (agent-shell-vertico-sidebar--render))))
 
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
-  "Toggle metadata lines for the session at point."
+  "Toggle metadata lines for the session at point.
+An expanded row also wraps the session's whole title."
   (interactive)
   (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
     (unless (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)
@@ -4347,6 +4428,9 @@ while normal and motion states get the same direct mnemonic commands."
               (make-hash-table :test #'eq))
   (setq-local agent-shell-vertico-sidebar--expanded-sessions
               (make-hash-table :test #'eq))
+  (setq-local agent-shell-vertico-sidebar--whole-texts
+              (make-hash-table :test #'eq))
+  (add-hook 'post-command-hook #'agent-shell-vertico-sidebar--echo-row nil t)
   (add-hook 'pre-redisplay-functions
             #'agent-shell-vertico-sidebar--keep-point-off-marks nil t)
   (add-hook 'kill-buffer-hook

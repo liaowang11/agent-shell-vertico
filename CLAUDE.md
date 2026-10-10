@@ -384,6 +384,12 @@ permission request ages from the `waiting-since` slot, stamped by each
 session still waits; a turn that ends on `needs input:` ages from its end.
 Titles stay one line, cut with `…`, unless
 `agent-shell-vertico-sidebar-wrap-titles` is set, so every row has one height.
+An expanded row (`TAB`) wraps its whole title instead, past
+`title-max-length` too, since expanding is asking for more. A row cut either
+way is recorded whole by `--record-whole-text` in `--whole-texts`, cleared
+each render, and read back by the title's tooltip and by `--echo-row` on
+`post-command-hook`, which says it once when point reaches the row, never
+over a message the command left, and takes it back when point leaves.
 Since every row carries an age, `--ensure-age-refresh` runs whenever the sidebar
 is visible and has sessions.
 

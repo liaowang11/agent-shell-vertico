@@ -4641,6 +4641,95 @@ line is the detail alone; the flat view starts it with the status."
                                   (buffer-substring-no-properties
                                    (point-min) (point-max)))))))))
 
+;; Long titles: whole when expanded, echoed when cut
+
+(defmacro agent-shell-vertico-tests--with-long-title (&rest body)
+  "Evaluate BODY in a 20-column sidebar showing ALPHA, whose title is long.
+ALPHA is working on a long prompt, so its detail line is cut too."
+  (declare (indent 0) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "a")
+                              (:title
+                               . "A title that is deliberately long"))))))
+     (let ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'busy)))
+           (agent-shell-vertico-sidebar-group-by nil)
+           (agent-shell-vertico-sidebar-extra-info nil)
+           (agent-shell-vertico-sidebar-animate-busy nil)
+           (agent-shell-vertico-sidebar-title-max-length 24)
+           (agent-shell-vertico-sidebar-width 20))
+       (agent-shell-vertico-sidebar--handle-event
+        alpha '((:event . input-submitted)
+                (:data . ((:prompt . "please review every changed file")))))
+       (agent-shell-vertico-tests--with-sidebar
+         (agent-shell-vertico-sidebar--render)
+         ,@body))))
+
+(ert-deftest agent-shell-vertico-sidebar-expanded-row-shows-whole-title ()
+  "Expanding a row wraps its whole title, past the character cap too."
+  (agent-shell-vertico-tests--with-long-title
+    (should-not (string-match-p "deliberately long"
+                                (string-join
+                                 (agent-shell-vertico-tests--lines) " ")))
+    (goto-char (point-min))
+    (agent-shell-vertico-sidebar-toggle-at-point)
+    (let ((text (string-join (mapcar #'string-trim
+                                     (agent-shell-vertico-tests--lines))
+                             " ")))
+      ;; The age keeps the end of the first line.
+      (should (string-match-p
+               "A title that +now is deliberately long Working" text)))
+    (agent-shell-vertico-sidebar-toggle-at-point)
+    (should (string-match-p "…" (car (agent-shell-vertico-tests--lines))))))
+
+(ert-deftest agent-shell-vertico-sidebar-cut-row-shows-whole-text ()
+  "A cut row's title tooltip and echo give the whole title and detail."
+  (agent-shell-vertico-tests--with-long-title
+    (let ((whole (concat "A title that is deliberately long\n"
+                         "> please review every changed file")))
+      (goto-char (point-min))
+      (should (equal (get-text-property (point) 'help-echo) whole))
+      (let (echoed)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (setq echoed (and format (apply #'format format args)))))
+                  ((symbol-function 'current-message) (lambda () nil)))
+          (agent-shell-vertico-sidebar--echo-row)
+          (should (equal echoed whole))
+          ;; Point staying on the row says nothing new.
+          (setq echoed 'none)
+          (forward-line 1)
+          (agent-shell-vertico-sidebar--echo-row)
+          (should (eq echoed 'none)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-echo-keeps-other-messages ()
+  "The echo stays quiet for a row that fits and over a command's message."
+  (agent-shell-vertico-tests--with-long-title
+    (let (echoed)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args)
+                   (setq echoed (and format (apply #'format format args)))))
+                ((symbol-function 'current-message)
+                 (lambda () "Session snoozed")))
+        (goto-char (point-min))
+        (agent-shell-vertico-sidebar--echo-row)
+        (should-not echoed)))
+    (let ((agent-shell-vertico-sidebar-width 80)
+          (agent-shell-vertico-sidebar-title-max-length 80)
+          echoed)
+      (agent-shell-vertico-sidebar--render)
+      (setq agent-shell-vertico-sidebar--echoed-node nil)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args)
+                   (setq echoed (and format (apply #'format format args)))))
+                ((symbol-function 'current-message) (lambda () nil))
+                ((symbol-function 'window-body-width) (lambda (&rest _) 80)))
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (agent-shell-vertico-sidebar--echo-row)
+        (should-not echoed)))))
+
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
   (agent-shell-vertico-tests--with-session-buffers
