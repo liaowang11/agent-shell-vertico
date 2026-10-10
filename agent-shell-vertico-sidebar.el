@@ -1140,10 +1140,11 @@ waiting on nobody lead with whoever was read or finished most recently."
   (<= rank 4))
 
 (defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 5 4 2 3]
-  "Which header statistic each status rank is counted in.
+  "Which statistic each status rank is counted in.
 
-The statistics keep one attention count, so both attention ranks land
-in the same slot.  The snoozed and background counts come last, in the
+The jump reports these when nothing needs attention.  The statistics
+keep one attention count, so both attention ranks land in the same
+slot.  The snoozed and background counts come last, in the
 order they were added, so the slots that were there before them kept
 their places.  See
 `agent-shell-vertico-sidebar--status-rank-for' for the ranks and
@@ -1828,23 +1829,6 @@ Everything else is drawn in its status colour."
    ((eq (car mark) 'done) 'agent-shell-vertico-sidebar-ready)
    (t 'agent-shell-vertico-sidebar-detail)))
 
-(defun agent-shell-vertico-sidebar--mark-counts (marks)
-  "Return an alist of mark to count for MARKS, in display order.
-
-Unread marks come first, so a header reads what wants the reader before
-what does not.  Marks with no sessions are left out, and so are snoozed
-ones: the reader has put those off, so how they are made up is not
-what a count is for, and `agent-shell-vertico-sidebar--header-line-for'
-counts them once."
-  (let (counts)
-    (dolist (unread '(t nil))
-      (dolist (status agent-shell-vertico-sidebar--status-order)
-        (let* ((mark (agent-shell-vertico-sidebar--mark-for status unread))
-               (count (seq-count (lambda (other) (equal other mark)) marks)))
-          (when (> count 0)
-            (push (cons mark count) counts)))))
-    (nreverse counts)))
-
 (defun agent-shell-vertico-sidebar--icon (buffer)
   "Return the mark for BUFFER, drawn in its own face."
   (let ((mark (agent-shell-vertico-sidebar--mark buffer)))
@@ -2346,21 +2330,19 @@ already applies, so it adds no columns of its own either."
 (defun agent-shell-vertico-sidebar--project-summary (buffers)
   "Return the count shown at the right of a project header for BUFFERS.
 
-Only the most pressing mark that asks for the reader is counted, and a
-project with nothing waiting on the reader gets no count at all.  The
-session total is the whole sidebar's header, and every other status is
-on the session row that has it, so a project header states only what
-asks for a reply."
-  (when-let ((urgent
-              (seq-find
-               (lambda (entry)
-                 (let ((mark (car entry)))
-                   (or (nth 1 mark) (eq (car mark) 'blocked))))
-               (agent-shell-vertico-sidebar--mark-counts
-                (mapcar #'agent-shell-vertico-sidebar--mark buffers)))))
-    (agent-shell-vertico-sidebar--count-text
-     (car urgent) (cdr urgent)
-     (agent-shell-vertico-sidebar--mark-face (car urgent)))))
+Only the sessions that need the reader are counted, the header's
+attention band, and a project with none gets no count at all.  The
+other bands are the whole sidebar's header, and every status is on the
+session row that has it, so a project header states only what asks for
+a reply."
+  (let ((count (seq-count (lambda (buffer)
+                            (eq (agent-shell-vertico-sidebar--section buffer)
+                                'attention))
+                          buffers)))
+    (when (> count 0)
+      (let ((mark (agent-shell-vertico-sidebar--mark-for 'blocked nil)))
+        (agent-shell-vertico-sidebar--count-text
+         mark count (agent-shell-vertico-sidebar--mark-face mark))))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
     (indicator name summary width)
@@ -2637,8 +2619,8 @@ same line."
                       agent-shell-vertico-sidebar--rendered-current-sessions
                       buffers))
                 header-line-format
-                (agent-shell-vertico-sidebar--header-line-from-snapshots
-                 snapshots))
+                (agent-shell-vertico-sidebar--header-line-for
+                 snapshots width))
           (agent-shell-vertico-sidebar--watch-existing buffers nil t)
           (erase-buffer)
           (if (null buffers)
@@ -4018,75 +4000,154 @@ snoozed and background counts in that order."
                            (agent-shell-vertico-sidebar--status-rank buffer)))))
     counts))
 
-(defconst agent-shell-vertico-sidebar--status-labels
-  '((failed . "failed")
-    (blocked . "waiting")
-    (busy . "working")
-    (background . "in the background")
-    (done . "done")
-    (stopped . "stopped")
-    (new . "new")
-    (starting . "starting"))
-  "Tooltip wording for each status counted in a header.
+(defconst agent-shell-vertico-sidebar--band-words
+  '((attention . "need you") (working . "working") (idle . "idle")
+    (snoozed . "snoozed"))
+  "What the header calls the sessions of each band, in header order.")
 
-The marks replace the words, so the wording moves to the tooltip.")
+(defconst agent-shell-vertico-sidebar--band-faces
+  '((attention . agent-shell-vertico-sidebar-unresolved)
+    (working . agent-shell-vertico-sidebar-working)
+    (idle . agent-shell-vertico-sidebar-ready)
+    (snoozed . agent-shell-vertico-sidebar-snoozed))
+  "The face each band's count is drawn in.")
 
-(defun agent-shell-vertico-sidebar--mark-label (mark)
-  "Return the tooltip wording for MARK.
+(defconst agent-shell-vertico-sidebar--view-names
+  '((state . "state") (project . "project") (nil . "flat"))
+  "The name the header gives each value of the grouping.")
 
-Two counts can share a glyph, one unread and one read, so the wording
-says which this one is."
-  (concat (or (alist-get (car mark)
-                         agent-shell-vertico-sidebar--status-labels)
-              "unknown")
-          (and (nth 1 mark) ", unread")))
+(defun agent-shell-vertico-sidebar--attention-tooltip (titles)
+  "Return the tooltip of a count of the sessions with TITLES."
+  (concat (string-join titles "\n") "\nmouse-1: jump"))
 
-(defun agent-shell-vertico-sidebar--header-stat (count mark)
-  "Return compact COUNT text for MARK, drawn and named as MARK."
-  (when (> count 0)
-    (propertize (agent-shell-vertico-sidebar--count-text
-                 mark count (agent-shell-vertico-sidebar--mark-face mark))
-                'help-echo (agent-shell-vertico-sidebar--mark-label mark))))
+(defun agent-shell-vertico-sidebar--attention-map (event)
+  "Return a keymap running `agent-shell-vertico-sidebar-jump' on EVENT."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (vector event 'mouse-1)
+                #'agent-shell-vertico-sidebar-jump)
+    map))
 
-(defun agent-shell-vertico-sidebar--header-line-for (marks)
-  "Return the header line counting MARKS, one segment per occupied mark.
+(defun agent-shell-vertico-sidebar--band-count-text (band snapshots digits)
+  "Return the header count of BAND's SNAPSHOTS, or nil when there are none.
 
-A colon separates the total from the marks it breaks down into; the
-marks themselves are separated by the lighter middle dot.  A status with
-both read and unread sessions is counted twice, since read and unread
-are what the reader is looking for.  Snoozed sessions are one count,
-last, whatever their statuses."
-  (let ((total (propertize
-                (agent-shell-vertico-sidebar--count-text
-                 'sessions (length marks))
-                'help-echo "sessions"))
-        (snoozed (seq-count (lambda (mark) (nth 2 mark)) marks))
-        parts)
-    (dolist (entry (agent-shell-vertico-sidebar--mark-counts marks))
-      (pcase-let ((`(,mark . ,count) entry))
-        (when-let ((text (agent-shell-vertico-sidebar--header-stat
-                          count mark)))
-          (push text parts))))
-    (when (> snoozed 0)
-      (push (propertize (agent-shell-vertico-sidebar--count-text
-                         'snoozed snoozed
-                         'agent-shell-vertico-sidebar-snoozed)
-                        'help-echo "snoozed")
-            parts))
-    (concat " " total
-            (when parts
-              (concat " : " (string-join (nreverse parts) " · "))))))
+DIGITS drops the words, which move to the tooltip.  The attention
+count names its sessions in the tooltip and jumps to them on a click."
+  (when snapshots
+    (let* ((count (length snapshots))
+           (words (alist-get band agent-shell-vertico-sidebar--band-words))
+           (text (propertize
+                  (if digits
+                      (number-to-string count)
+                    (format "%d %s" count words))
+                  'face (alist-get band
+                                   agent-shell-vertico-sidebar--band-faces))))
+      (if (eq band 'attention)
+          (propertize text
+                      'help-echo
+                      (agent-shell-vertico-sidebar--attention-tooltip
+                       (mapcar (lambda (snapshot) (plist-get snapshot :title))
+                               snapshots))
+                      'mouse-face 'highlight
+                      'local-map (agent-shell-vertico-sidebar--attention-map
+                                  'header-line))
+        (if digits (propertize text 'help-echo words) text)))))
 
-(defun agent-shell-vertico-sidebar--header-line-from-snapshots (snapshots)
-  "Return a cached header string for SNAPSHOTS."
-  (agent-shell-vertico-sidebar--header-line-for
-   (mapcar (lambda (snapshot) (plist-get snapshot :mark)) snapshots)))
+(defun agent-shell-vertico-sidebar--header-line-for (snapshots width)
+  "Return the header counting SNAPSHOTS by band, made to fit WIDTH columns.
 
-(defun agent-shell-vertico-sidebar--header-line ()
-  "Return the sidebar header with live session statistics."
-  (agent-shell-vertico-sidebar--header-line-for
-   (mapcar #'agent-shell-vertico-sidebar--mark
-           (seq-filter #'buffer-live-p (agent-shell-buffers)))))
+The bands are the ones `--band-for' gives, which also places each row
+in the state view, so the header and the sections cannot disagree.  A
+band with no sessions is left out.  The counts are in words when they
+fit with the view's name, and in coloured digits otherwise; the name
+goes last when even the digits do not fit.  It keeps the right edge
+through an `:align-to' space, since the header spans the fringes and
+margins that WIDTH leaves out."
+  (let* ((groups (seq-group-by (lambda (snapshot)
+                                 (plist-get snapshot :band))
+                               snapshots))
+         (counts (lambda (digits)
+                   (concat
+                    " "
+                    (string-join
+                     (delq nil
+                           (mapcar
+                            (pcase-lambda (`(,band . ,_))
+                              (agent-shell-vertico-sidebar--band-count-text
+                               band (alist-get band groups) digits))
+                            agent-shell-vertico-sidebar--band-words))
+                     " · "))))
+         (view (alist-get agent-shell-vertico-sidebar-group-by
+                          agent-shell-vertico-sidebar--view-names))
+         (fits (lambda (text)
+                 (<= (+ (string-width text) 1 (string-width view)) width)))
+         (words (funcall counts nil))
+         (line (if (funcall fits words) words (funcall counts t))))
+    (if (funcall fits line)
+        (concat line
+                (propertize " " 'display
+                            `(space :align-to (- right ,(string-width view))))
+                (propertize view 'face 'agent-shell-vertico-sidebar-detail))
+      line)))
+
+(defun agent-shell-vertico-sidebar--attention-titles ()
+  "Return the titles of the live sessions in the attention band."
+  (delq nil
+        (mapcar (lambda (buffer)
+                  (when (eq (agent-shell-vertico-sidebar--section buffer)
+                            'attention)
+                    (agent-shell-vertico-sidebar--title buffer)))
+                (seq-filter #'buffer-live-p (agent-shell-buffers)))))
+
+(defvar agent-shell-vertico-sidebar--mode-line-cache nil
+  "The last mode line text and when it was counted, as (TIME . TEXT).")
+
+(defun agent-shell-vertico-sidebar--mode-line-text ()
+  "Return how many sessions need the reader, for the mode line, or nil.
+
+The count is the header's attention band, read from the live sessions
+because the sidebar need not be open."
+  (when-let* ((titles (agent-shell-vertico-sidebar--attention-titles)))
+    (propertize (format " %d need you" (length titles))
+                'face 'agent-shell-vertico-sidebar-unresolved
+                'help-echo (agent-shell-vertico-sidebar--attention-tooltip
+                            titles)
+                'mouse-face 'mode-line-highlight
+                'local-map (agent-shell-vertico-sidebar--attention-map
+                            'mode-line))))
+
+(defun agent-shell-vertico-sidebar--mode-line-cached ()
+  "Return `--mode-line-text', counted at most once a second.
+The mode line is redrawn far more often than a session changes."
+  (let ((now (float-time)))
+    (unless (and agent-shell-vertico-sidebar--mode-line-cache
+                 (< (- now (car agent-shell-vertico-sidebar--mode-line-cache))
+                    1))
+      (setq agent-shell-vertico-sidebar--mode-line-cache
+            (cons now (agent-shell-vertico-sidebar--mode-line-text))))
+    (cdr agent-shell-vertico-sidebar--mode-line-cache)))
+
+(defconst agent-shell-vertico-sidebar--mode-line-format
+  '(:eval (agent-shell-vertico-sidebar--mode-line-cached))
+  "The entry `agent-shell-vertico-sidebar-mode-line-mode' adds.")
+
+;;;###autoload
+(define-minor-mode agent-shell-vertico-sidebar-mode-line-mode
+  "Show in the mode line how many agent-shell sessions need you.
+
+The count is the sidebar header's \"need you\": sessions waiting for a
+permission decision or a reply.  Nothing is shown when none does."
+  :global t
+  :group 'agent-shell-vertico-sidebar
+  (setq agent-shell-vertico-sidebar--mode-line-cache nil)
+  (if agent-shell-vertico-sidebar-mode-line-mode
+      (progn
+        (unless global-mode-string
+          (setq global-mode-string '("")))
+        (add-to-list 'global-mode-string
+                     agent-shell-vertico-sidebar--mode-line-format t))
+    (setq global-mode-string
+          (delete agent-shell-vertico-sidebar--mode-line-format
+                  global-mode-string))))
 
 (defconst agent-shell-vertico-sidebar--help-buffer
   "*Agent Shell Sidebar Help*"
