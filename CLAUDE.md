@@ -311,8 +311,8 @@ result. There is no model step, as there is in Claude Code; the markers are
 the whole convention.
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
-the three fields Claude Code keeps for every job: STATE (`working`, `done`,
-`failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
+the three fields Claude Code keeps for every job: STATE (`working`,
+`blocked`, `done`, `failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
 reader is asked: `Allow: TITLE` from the pending tool call, or the `needs
 input:` line). They are derived from the status rather than stored, so the two
 cannot disagree. A session nobody has prompted is working and idle, with NEEDS

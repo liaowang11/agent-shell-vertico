@@ -261,7 +261,7 @@ It is called with the keyword arguments `:buffer', the session buffer;
 shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
 \"Background\", \"Done\", \"Stopped\", \"New\" or \"Starting\";
 `:state', how the work stands in Claude Code's terms, one of `working',
-`done', `failed' or `stopped'; `:needs', what the session asks of the
+`blocked', `done', `failed' or `stopped'; `:needs', what the session asks of the
 reader, such as \"Allow: Run make check\", or nil; `:unread', non-nil
 when the session holds output nobody has read; and `:last-message', the
 agent's newest message as it arrived, or nil.
