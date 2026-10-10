@@ -979,8 +979,9 @@ still running, is working, as Claude Code files it."
      (t 'idle))))
 
 (defun agent-shell-vertico-sidebar--section-for (snapshot)
-  "Return the state section SNAPSHOT is drawn in.
-Its band, unless the reader pinned it."
+  "Return the state section SNAPSHOT's own state puts it in.
+Its band, unless the reader pinned it.  A root is drawn in its family's
+section instead, which `--family-section' answers."
   (if (plist-get snapshot :pinned)
       'pinned
     (plist-get snapshot :band)))
@@ -1015,7 +1016,9 @@ SNOOZED is the session's snooze time as drawn.  The plist holds
                    field))))
 
 (defun agent-shell-vertico-sidebar--section (buffer)
-  "Return the state section BUFFER is drawn in."
+  "Return the state section BUFFER's own state puts it in.
+A root is drawn in its family's section, which `--family-section'
+answers."
   (agent-shell-vertico-sidebar--job-field buffer :section))
 
 (defun agent-shell-vertico-sidebar--band (buffer)
