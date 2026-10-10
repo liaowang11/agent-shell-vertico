@@ -109,7 +109,7 @@ arrived from it for this long."
   :type 'number
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-expand-by-default nil
+(defcustom agent-shell-vertico-sidebar-expand-by-default t
   "Whether project groups start expanded.
 
 An explicit fold or expand action always overrides this default for the
@@ -2367,12 +2367,13 @@ already applies, so it adds no columns of its own either."
 (defun agent-shell-vertico-sidebar--project-summary (buffers)
   "Return the count shown at the right of a project header for BUFFERS.
 
-Only the sessions that need the reader are counted, the header's
-attention band, and a project with none gets no count at all.  The
-other bands are the whole sidebar's header, and every status is on the
-session row that has it, so a project header states only what asks for
-a reply.  BUFFERS are the roots drawn under the header, and each one's
-live descendants are counted too, since they are drawn there as well."
+Only the sessions that need the reader are counted, the attention band,
+and a project with none gets no count at all.  The project's sessions
+and its unread ones are counted after its name (`--header-counts'), and
+every status is on the session row that has it, so the right edge
+states only what asks for a reply.  BUFFERS are the roots drawn under
+the header, and each one's live descendants are counted too, since they
+are drawn there as well."
   (let ((count (seq-count (lambda (buffer)
                             (eq (agent-shell-vertico-sidebar--band buffer)
                                 'attention))
@@ -2472,7 +2473,11 @@ draws no overline, so there the split is the order alone."
         (setq above (if snoozed 'snoozed 'awake))))))
 
 (defun agent-shell-vertico-sidebar--insert-project (root buffers width)
-  "Insert project header ROOT and its BUFFERS at WIDTH."
+  "Insert project header ROOT and its BUFFERS at WIDTH.
+
+The header reads like a section's: the name, how many sessions it holds
+and how many of them hold unread output, and at the right edge how many
+wait on the reader (`--project-summary')."
   (let* ((expanded
           (agent-shell-vertico-sidebar--project-expanded-p root))
          (indicator (agent-shell-vertico-sidebar--slot-icon
@@ -2482,12 +2487,14 @@ draws no overline, so there the split is the order alone."
                 (agent-shell-vertico-sidebar--project-name
                  root (car buffers))
                 (agent-shell-vertico-sidebar--project-summary buffers)
-                width))
+                width
+                (agent-shell-vertico-sidebar--header-counts buffers)))
          (start (point)))
     (insert (agent-shell-vertico-sidebar--fit line width) "\n")
-    ;; Merged, so the summary icons keep the font family in their own face.
+    ;; Appended, so the counts keep the font family and colour of their
+    ;; own faces.
     (add-face-text-property start (1- (point))
-                            'agent-shell-vertico-sidebar-project)
+                            'agent-shell-vertico-sidebar-project t)
     ;; A fold triangle is an icon like any other: point belongs on the
     ;; project name rather than on it.
     (put-text-property start (min (+ start 2) (1- (point)))

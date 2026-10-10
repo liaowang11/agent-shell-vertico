@@ -4085,7 +4085,7 @@ folded, and folds them with the projects at the header level."
         (should (equal (seq-filter
                         (lambda (line) (string-match-p "\\`[▼▶] " line))
                         (agent-shell-vertico-tests--lines))
-                       '("▼ Pinned · 1" "▼ alpha")))
+                       '("▼ Pinned · 1" "▼ alpha · 1")))
         (should (equal (mapcar #'car
                                (agent-shell-vertico-sidebar--session-rows))
                        (list beta alpha)))
@@ -4275,6 +4275,13 @@ showing a session, so folding it leaves nothing but headers."
       (should (eq agent-shell-vertico-sidebar-group-by 'state))
       (agent-shell-vertico-sidebar-toggle-grouping)
       (should-not agent-shell-vertico-sidebar-group-by))))
+
+(ert-deftest agent-shell-vertico-sidebar-projects-start-open ()
+  "The project view opens with every project's sessions showing."
+  (should (eq (eval (car (get 'agent-shell-vertico-sidebar-expand-by-default
+                              'standard-value))
+                    t)
+              t)))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-is-the-default ()
   "The sidebar opens in the state view."
@@ -4984,18 +4991,18 @@ the command to refuse."
         (goto-char (point-min))
         (let ((line (buffer-substring-no-properties
                      (point) (line-end-position))))
-          (should (string-prefix-p "▶ alpha " line))
-          ;; The count holds the right edge of the row.
+          ;; The project's sessions are counted after its name, and
+          ;; projects start open.
+          (should (string-prefix-p "▼ alpha · 2 " line))
+          ;; The attention count holds the right edge of the row.
           (should (string-suffix-p "✻ 1" line))
-          ;; The session total is the whole sidebar's header, not a
-          ;; project's; a project states only what is waiting on the reader.
-          (should-not (string-match-p "⧉" line))
           (should (= (string-width line)
                      agent-shell-vertico-sidebar-width)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-project-header-omits-quiet-counts ()
-  "A project with nothing to report is only its fold mark and name.
-Unread output is not something to report: the session is idle."
+  "A project with nothing waiting has no attention count.
+Unread output is not a wait: the session is finished, and the header
+counts it as unread beside its sessions, the way a section does."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
@@ -5014,7 +5021,11 @@ Unread output is not something to report: the session is idle."
         (goto-char (point-min))
         (should (equal (buffer-substring-no-properties
                         (point) (line-end-position))
-                       "▶ alpha"))))))
+                       "▼ alpha · 2 · • 1"))
+        (search-forward "•")
+        (should (memq 'agent-shell-vertico-sidebar-unread-dot
+                      (ensure-list (get-text-property (1- (point))
+                                                      'face))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-project-header-truncates-name ()
   "A project name too long for its row loses columns, the count does not."
@@ -5034,7 +5045,7 @@ Unread output is not something to report: the session is idle."
         (let ((line (buffer-substring-no-properties
                      (point) (line-end-position))))
           (should (string-suffix-p "✻ 1" line))
-          (should (string-match-p "…" line))
+          (should (string-match-p "… · 1 " line))
           (should (= (string-width line)
                      agent-shell-vertico-sidebar-width)))))))
 
@@ -5091,8 +5102,7 @@ count at all."
           (should (string-suffix-p
                    "✻ 2" (cdr (assoc "/work/alpha/" headers))))
           (let ((beta (cdr (assoc "/work/beta/" headers))))
-            (should beta)
-            (should-not (string-match-p "✻\\|[0-9]" beta))))))))
+            (should (equal beta "▶ beta · 2 · • 2"))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
