@@ -2545,10 +2545,6 @@ the projects."
           (make-hash-table :test #'eq)))
   (puthash section folded agent-shell-vertico-sidebar--section-folds))
 
-(defun agent-shell-vertico-sidebar--family-size (buffer)
-  "Return how many rows BUFFER and its live descendants take."
-  (length (agent-shell-vertico-sidebar--family buffer)))
-
 (defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
   "Insert LINE as the one-line node NODE of KIND, drawn in FACE."
   (let ((start (point)))
