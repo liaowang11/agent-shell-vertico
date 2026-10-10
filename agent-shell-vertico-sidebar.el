@@ -991,6 +991,14 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
 The labels are Claude Code's.  The symbols are the bands `--band-for'
 answers, so the Completed section is the `idle' band.")
 
+(defconst agent-shell-vertico-sidebar--band-faces
+  '((attention . agent-shell-vertico-sidebar-blocked)
+    (working . agent-shell-vertico-sidebar-working)
+    (idle . agent-shell-vertico-sidebar-ready)
+    (snoozed . agent-shell-vertico-sidebar-snoozed))
+  "The face a section's unread dot is drawn in, by the section's band.
+Pinned has none: it is no band, so its dot takes the header's colour.")
+
 (defun agent-shell-vertico-sidebar--band-for (snapshot)
   "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
 
@@ -2375,22 +2383,44 @@ live descendants are counted too, since they are drawn there as well."
        "✻" count 'agent-shell-vertico-sidebar-blocked))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
-    (indicator name summary width)
-  "Return a project header of WIDTH holding INDICATOR, NAME, and SUMMARY.
+    (indicator name summary width &optional counts)
+  "Return a header of WIDTH holding INDICATOR, NAME, COUNTS and SUMMARY.
 
-SUMMARY, when there is one, keeps the right edge of the row, so a NAME too
-long for the remaining columns is the part that gets shortened."
-  (let* ((reserved (if summary (+ 2 (string-width summary)) 0))
+COUNTS follows NAME, and SUMMARY, when there is one, keeps the right
+edge of the row.  Both are kept whole, so a NAME too long for the
+remaining columns is the part that gets shortened."
+  (let* ((counts (or counts ""))
+         (reserved (+ (string-width counts)
+                      (if summary (+ 2 (string-width summary)) 0)))
          (name (agent-shell-vertico-sidebar--fit
                 name
                 (max 1 (- width (string-width indicator) 1 reserved)))))
-    (concat indicator " " name
+    (concat indicator " " name counts
             (when summary
               (concat (make-string
                        (max 2 (- width (string-width indicator) 1
-                                 (string-width name) (string-width summary)))
+                                 (string-width name) (string-width counts)
+                                 (string-width summary)))
                        ?\s)
                       summary)))))
+
+(defun agent-shell-vertico-sidebar--header-counts (buffers &optional face)
+  "Return the counts that follow a header's label, for the roots BUFFERS.
+
+\" · N\" counts the rows drawn under the header, each root with its
+live descendants, open or folded.  \" · • U\" follows when U of them
+hold output nobody has read, the dot drawn as a row's is, over FACE."
+  (let* ((family (seq-mapcat #'agent-shell-vertico-sidebar--family buffers))
+         (unread (seq-count #'agent-shell-vertico-sidebar--unread-p family)))
+    (concat " · " (number-to-string (length family))
+            (when (> unread 0)
+              (concat " · "
+                      (propertize
+                       "•" 'face
+                       (if face
+                           (list 'agent-shell-vertico-sidebar-unread-dot face)
+                         'agent-shell-vertico-sidebar-unread-dot))
+                      " " (number-to-string unread))))))
 
 (defun agent-shell-vertico-sidebar--insert-session-and-children
     (buffer width nested depth)
@@ -2510,8 +2540,9 @@ the projects."
   "Insert LINE as the one-line node NODE of KIND, drawn in FACE."
   (let ((start (point)))
     (insert line "\n")
-    ;; Merged, so an icon keeps the font family in its own face.
-    (add-face-text-property start (1- (point)) face)
+    ;; Appended, so an icon keeps the font family in its own face and a
+    ;; count its own colour.
+    (add-face-text-property start (1- (point)) face t)
     (add-text-properties
      start (1- (point))
      (list 'agent-shell-vertico-sidebar-node node
@@ -2519,23 +2550,48 @@ the projects."
            'mouse-face 'highlight))
     start))
 
+(defun agent-shell-vertico-sidebar--mark-attention-count (start buffers)
+  "Make the count on the header line at START name and reach who waits.
+
+BUFFERS are the roots under the header.  The tooltip lists those of
+their sessions in the attention band, and a click runs
+`agent-shell-vertico-sidebar-jump', as the mode line count does.  Only
+the count carries it, so a click on the label still folds the section."
+  (save-excursion
+    (goto-char start)
+    (when (search-forward " · " (line-end-position) t)
+      (let ((count-start (1+ (match-beginning 0))))
+        (skip-chars-forward "0-9")
+        (add-text-properties
+         count-start (point)
+         (list 'help-echo
+               (agent-shell-vertico-sidebar--attention-tooltip
+                (mapcar #'agent-shell-vertico-sidebar--title
+                        (seq-filter
+                         (lambda (buffer)
+                           (eq (agent-shell-vertico-sidebar--band buffer)
+                               'attention))
+                         (seq-mapcat #'agent-shell-vertico-sidebar--family
+                                     buffers))))
+               'keymap (agent-shell-vertico-sidebar--attention-map)))))))
+
 (defun agent-shell-vertico-sidebar--insert-section (section buffers width)
   "Insert the header of state SECTION and, unless folded, its BUFFERS.
 
-An open header shows no count, since its rows are the count; a folded
-one says how many sessions it hides, children included.  An open
-section draws every session it holds."
+The header counts the sessions it holds, children included, and those
+of them holding unread output (`--header-counts'), folded or not.  The
+Needs input count names the sessions waiting on the reader and jumps to
+them on a click (`--mark-attention-count').  An open section draws
+every session it holds."
   (let* ((folded (agent-shell-vertico-sidebar--section-folded-p section))
          (line (agent-shell-vertico-sidebar--project-header-line
                 (agent-shell-vertico-sidebar--slot-icon
                  (if folded 'collapsed 'expanded))
                 (alist-get section agent-shell-vertico-sidebar--sections)
-                (and folded
-                     (number-to-string
-                      (apply #'+ (mapcar
-                                  #'agent-shell-vertico-sidebar--family-size
-                                  buffers))))
-                width))
+                nil width
+                (agent-shell-vertico-sidebar--header-counts
+                 buffers
+                 (alist-get section agent-shell-vertico-sidebar--band-faces))))
          (start (agent-shell-vertico-sidebar--insert-node-line
                  (agent-shell-vertico-sidebar--fit line width)
                  'section section 'agent-shell-vertico-sidebar-section)))
@@ -2545,6 +2601,8 @@ section draws every session it holds."
     (add-text-properties start (line-end-position 0)
                          (list 'help-echo "TAB/RET/mouse-1: toggle section"
                                'kbd-help "TAB/RET/mouse-1: toggle section"))
+    (when (eq section 'attention)
+      (agent-shell-vertico-sidebar--mark-attention-count start buffers))
     (unless folded
       (agent-shell-vertico-sidebar--insert-sessions buffers width nil 1))))
 
@@ -2619,10 +2677,7 @@ section draws every session it holds."
                 (and agent-shell-vertico-sidebar--rendered-current-sessions
                      (agent-shell-vertico-sidebar--focused-session
                       agent-shell-vertico-sidebar--rendered-current-sessions
-                      buffers))
-                header-line-format
-                (agent-shell-vertico-sidebar--header-line-for
-                 snapshots width))
+                      buffers)))
           (agent-shell-vertico-sidebar--watch-existing buffers nil t)
           (erase-buffer)
           (if (null buffers)
@@ -4055,97 +4110,17 @@ snoozed and background counts in that order."
                            (agent-shell-vertico-sidebar--status-rank buffer)))))
     counts))
 
-(defconst agent-shell-vertico-sidebar--band-words
-  '((attention . "need you") (working . "working") (idle . "idle")
-    (snoozed . "snoozed"))
-  "What the header calls the sessions of each band, in header order.")
-
-(defconst agent-shell-vertico-sidebar--band-faces
-  '((attention . agent-shell-vertico-sidebar-blocked)
-    (working . agent-shell-vertico-sidebar-working)
-    (idle . agent-shell-vertico-sidebar-ready)
-    (snoozed . agent-shell-vertico-sidebar-snoozed))
-  "The face each band's count is drawn in.")
-
-(defconst agent-shell-vertico-sidebar--view-names
-  '((state . "state") (project . "project") (nil . "flat"))
-  "The name the header gives each value of the grouping.")
-
 (defun agent-shell-vertico-sidebar--attention-tooltip (titles)
   "Return the tooltip of a count of the sessions with TITLES."
   (concat (string-join titles "\n") "\nmouse-1: jump"))
 
-(defun agent-shell-vertico-sidebar--attention-map (event)
-  "Return a keymap running `agent-shell-vertico-sidebar-jump' on EVENT."
+(defun agent-shell-vertico-sidebar--attention-map (&optional event)
+  "Return a keymap running `agent-shell-vertico-sidebar-jump' on a click.
+EVENT is the area clicked in, such as `mode-line'; nil is buffer text."
   (let ((map (make-sparse-keymap)))
-    (define-key map (vector event 'mouse-1)
+    (define-key map (if event (vector event 'mouse-1) [mouse-1])
                 #'agent-shell-vertico-sidebar-jump)
     map))
-
-(defun agent-shell-vertico-sidebar--band-count-text (band snapshots digits)
-  "Return the header count of BAND's SNAPSHOTS, or nil when there are none.
-
-DIGITS drops the words, which move to the tooltip.  The attention
-count names its sessions in the tooltip and jumps to them on a click."
-  (when snapshots
-    (let* ((count (length snapshots))
-           (words (alist-get band agent-shell-vertico-sidebar--band-words))
-           (text (propertize
-                  (if digits
-                      (number-to-string count)
-                    (format "%d %s" count words))
-                  'face (alist-get band
-                                   agent-shell-vertico-sidebar--band-faces))))
-      (if (eq band 'attention)
-          (propertize text
-                      'help-echo
-                      (agent-shell-vertico-sidebar--attention-tooltip
-                       (mapcar (lambda (snapshot) (plist-get snapshot :title))
-                               snapshots))
-                      'mouse-face 'highlight
-                      'local-map (agent-shell-vertico-sidebar--attention-map
-                                  'header-line))
-        (if digits (propertize text 'help-echo words) text)))))
-
-(defun agent-shell-vertico-sidebar--header-line-for (snapshots width)
-  "Return the header counting SNAPSHOTS by band, made to fit WIDTH columns.
-
-Each session is counted in its own band, the one `--band-for' gives.
-The state view draws a child under its parent, in the section of the
-family's most urgent band (`--family-section'), so a session counted in
-a band is drawn in that band's section or in an earlier one, never a
-later one: whoever the header says needs the reader sits under Needs
-you, unless the family is pinned.  A band with no sessions is left out.
-The counts are in words when they fit with the view's name, and in
-coloured digits otherwise; the name goes last when even the digits do
-not fit.  It keeps the right edge through an `:align-to' space, since
-the header spans the fringes and margins that WIDTH leaves out."
-  (let* ((groups (seq-group-by (lambda (snapshot)
-                                 (plist-get snapshot :band))
-                               snapshots))
-         (counts (lambda (digits)
-                   (concat
-                    " "
-                    (string-join
-                     (delq nil
-                           (mapcar
-                            (pcase-lambda (`(,band . ,_))
-                              (agent-shell-vertico-sidebar--band-count-text
-                               band (alist-get band groups) digits))
-                            agent-shell-vertico-sidebar--band-words))
-                     " · "))))
-         (view (alist-get agent-shell-vertico-sidebar-group-by
-                          agent-shell-vertico-sidebar--view-names))
-         (fits (lambda (text)
-                 (<= (+ (string-width text) 1 (string-width view)) width)))
-         (words (funcall counts nil))
-         (line (if (funcall fits words) words (funcall counts t))))
-    (if (funcall fits line)
-        (concat line
-                (propertize " " 'display
-                            `(space :align-to (- right ,(string-width view))))
-                (propertize view 'face 'agent-shell-vertico-sidebar-detail))
-      line)))
 
 (defun agent-shell-vertico-sidebar--attention-titles ()
   "Return the titles of the live sessions in the attention band."
@@ -4192,8 +4167,9 @@ The mode line is redrawn far more often than a session changes."
 (define-minor-mode agent-shell-vertico-sidebar-mode-line-mode
   "Show in the mode line how many agent-shell sessions need you.
 
-The count is the sidebar header's \"need you\": sessions waiting for a
-permission decision or a reply.  Nothing is shown when none does."
+The count is the sessions in the attention band, which the sidebar's
+Needs input section holds unless they are pinned: sessions waiting for
+a permission decision or a reply.  Nothing is shown when none does."
   :global t
   :group 'agent-shell-vertico-sidebar
   (setq agent-shell-vertico-sidebar--mode-line-cache nil)
