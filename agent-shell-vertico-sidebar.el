@@ -85,8 +85,25 @@ This means a sidebar resized by hand does not keep that width."
 (defcustom agent-shell-vertico-sidebar-title-max-length 80
   "Maximum number of characters shown for a session title.
 
-Titles up to this limit can wrap over multiple sidebar lines."
+With `agent-shell-vertico-sidebar-wrap-titles', titles up to this limit
+can wrap over multiple sidebar lines."
   :type 'integer
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-wrap-titles nil
+  "Whether a long session title wraps over several lines.
+
+Nil keeps every title on one line and cuts it with an ellipsis, as
+Claude Code's agent view does, so each row has the same height."
+  :type 'boolean
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-stuck-after 900
+  "Seconds a working session can go silent before its age turns yellow.
+
+Claude Code calls such a session stuck: it is working and nothing has
+arrived from it for this long."
+  :type 'number
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-expand-by-default nil
@@ -163,8 +180,9 @@ working-directory context line.  Available symbols are `agent', `status',
 
 The agent value names the configuration the session runs; activating it
 starts a new session with that agent in this session's project.  `status'
-and `last-user-message' are left out of the default: the row's icon already
-carries the status, and a prompt is usually visible in the session itself."
+and `last-user-message' are left out of the default: the mark's colour and
+the detail line already carry the status, and the detail line shows the
+prompt while the session works on it."
   :type '(repeat (choice (const :tag "Agent" agent)
                          (const :tag "Status" status)
                          (const :tag "Activity age" activity)
@@ -356,6 +374,13 @@ and neither ends with `turn-complete', so the burst is tracked here.
 
 A plist with `:timer', the timer that ends the burst after a quiet
 period, and `:time', when the burst's latest update arrived.")
+  (detail nil :documentation "\
+The newest entry in the session's transcript, as Claude Code's tail.
+
+A string, \"> \" before the prompt the reader submitted or \"✗ \" before
+a tool call that failed, or the symbol `message' when the newest entry
+is the agent's message, whose last line is read at render time from
+`message'.")
   (message nil :documentation "\
 The newest agent message streamed into the session.
 
@@ -1215,7 +1240,80 @@ repeating those queries during one redisplay."
            :agent (agent-shell-vertico--agent-name buffer)
            :details-visible
            (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
+     (list :detail (agent-shell-vertico-sidebar--detail-text buffer)
+           :result (agent-shell-vertico-sidebar--get buffer 'result)
+           :error (agent-shell-vertico-sidebar--get buffer 'error)
+           :updated-at (agent-shell-vertico-sidebar--get buffer 'updated-at)
+           :created-at (agent-shell-vertico-sidebar--get buffer 'created-at)
+           :last-terminal-at
+           (agent-shell-vertico-sidebar--get buffer 'last-terminal-at))
      (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
+
+(defun agent-shell-vertico-sidebar--detail-for (snapshot)
+  "Return the one-line detail for SNAPSHOT, as Claude Code picks it.
+
+A waiting session says what it waits for and a working one its newest
+entry.  A failure says why, and a stopped turn only that it stopped.
+Otherwise the turn's `result:' line, else its newest entry; a session
+nobody has prompted says what it needs."
+  (pcase-let (((map :state :tempo :needs :detail :result :error) snapshot))
+    (cond ((eq tempo 'blocked) needs)
+          ((eq tempo 'active) detail)
+          ((eq state 'failed)
+           (if (stringp error) (concat "Failed: " error) "Failed"))
+          ((eq state 'stopped) "Stopped")
+          (t (or needs result detail)))))
+
+(defun agent-shell-vertico-sidebar--state-since (snapshot)
+  "Return when the session in SNAPSHOT entered its band, or nil."
+  (pcase-let (((map :band :snoozed :unread :busy-since-time
+                    :background-since :last-terminal-at :created-at)
+               snapshot))
+    (pcase band
+      ('snoozed snoozed)
+      ('attention (or unread last-terminal-at created-at))
+      ('working (or busy-since-time background-since created-at))
+      (_ (or last-terminal-at created-at)))))
+
+(defun agent-shell-vertico-sidebar--stuck-p (snapshot)
+  "Return non-nil when SNAPSHOT works and has been silent too long."
+  (and (eq (plist-get snapshot :tempo) 'active)
+       (when-let* ((updated (plist-get snapshot :updated-at)))
+         (>= (- (float-time) updated)
+             agent-shell-vertico-sidebar-stuck-after))))
+
+(defun agent-shell-vertico-sidebar--age-text (snapshot)
+  "Return how long SNAPSHOT has been in its band, drawn, or nil."
+  (when-let* ((since (agent-shell-vertico-sidebar--state-since snapshot))
+              (text (agent-shell-vertico-sidebar--relative-time since)))
+    (propertize text 'face (if (agent-shell-vertico-sidebar--stuck-p snapshot)
+                               'agent-shell-vertico-sidebar-blocked
+                             'agent-shell-vertico-sidebar-detail))))
+
+(defun agent-shell-vertico-sidebar--detail-line (snapshot width)
+  "Return the detail line of SNAPSHOT at WIDTH, or nil.
+
+The state view names the state in its section header, so the line is
+the detail alone there.  The project and flat views start it with the
+status word, drawn in the mark's colour, as Claude Code's directory
+mode does."
+  (let* ((detail (agent-shell-vertico-sidebar--detail-for snapshot))
+         (detail (and detail
+                      (propertize detail
+                                  'face 'agent-shell-vertico-sidebar-detail)))
+         (line (if (eq agent-shell-vertico-sidebar-group-by 'state)
+                   detail
+                 (concat (propertize
+                          (agent-shell-vertico-sidebar--status-name-for
+                           (plist-get snapshot :status))
+                          'face (agent-shell-vertico-sidebar--mark-face
+                                 snapshot))
+                         (and detail
+                              (propertize
+                               " · " 'face 'agent-shell-vertico-sidebar-detail))
+                         detail))))
+    (when line
+      (cons (agent-shell-vertico-sidebar--fit line width) t))))
 
 (defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
   "Return FIELD from BUFFER's current render snapshot, when available."
@@ -1883,14 +1981,22 @@ parent-child relationship."
   (let* ((depth (or depth (if nested 1 0)))
          (content-width
           (agent-shell-vertico-sidebar--content-width width depth))
+         (snapshot (agent-shell-vertico-sidebar--snapshot buffer))
          (title (agent-shell-vertico-sidebar--title buffer))
          (icon (agent-shell-vertico-sidebar--icon buffer))
+         (age (agent-shell-vertico-sidebar--age-text snapshot))
+         (title-width (if age
+                          (max 1 (- content-width (string-width age) 1))
+                        content-width))
          (details-visible
           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
+         (title-text (agent-shell-vertico-sidebar--title-display-text title))
          (title-lines
-          (agent-shell-vertico-sidebar--wrap-text
-           (agent-shell-vertico-sidebar--title-display-text title)
-           content-width))
+          (if agent-shell-vertico-sidebar-wrap-titles
+              (agent-shell-vertico-sidebar--wrap-text title-text title-width)
+            (list (agent-shell-vertico-sidebar--fit title-text title-width))))
+         (detail-line
+          (agent-shell-vertico-sidebar--detail-line snapshot content-width))
          (project-line
           (when (not nested)
             (agent-shell-vertico-sidebar--flat-project-line
@@ -1909,9 +2015,17 @@ parent-child relationship."
           (add-face-text-property 0 (length line) face nil line))))
     (setq title-lines
           (cons (concat (agent-shell-vertico-sidebar--mark-field icon)
-                        (car title-lines))
+                        (car title-lines)
+                        (when age
+                          (concat (make-string
+                                   (max 1 (- content-width
+                                             (string-width (car title-lines))
+                                             (string-width age)))
+                                   ?\s)
+                                  age)))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
+            (when detail-line (list detail-line))
             (when project-line (list project-line))
             (when-let* ((line (agent-shell-vertico-sidebar--background-line
                                buffer content-width)))
@@ -2047,10 +2161,9 @@ already applies, so it adds no columns of its own either."
           (add-text-properties line-start (point)
                                (list 'line-prefix prefix
                                      'wrap-prefix prefix)))
-        (when (cdr line)
-          ;; Merge rather than set: an icon carries its own font family in
-          ;; its face, and replacing that face would leave the glyph with
-          ;; no font to draw it.
+        ;; A face of t says the line carries its own faces.
+        (when (and (cdr line) (not (eq (cdr line) t)))
+          ;; Merge rather than set, so the faces a line carries stay.
           (add-face-text-property line-start (point) (cdr line))))
       (when (null (cdr line))
         (setq title-end (point)))
@@ -2679,10 +2792,11 @@ killed, and its sessions can settle, between one beat and the next."
 
 (defun agent-shell-vertico-sidebar--ensure-age-refresh
     (&optional snapshots snapshots-supplied)
-  "Keep visible activity ages current while details are displayed.
+  "Keep the ages on screen current while the sidebar shows sessions.
 
-SNAPSHOTS, when supplied by the current render, avoids rediscovering live
-sessions just to decide whether an age timer is needed."
+Every row draws its age, so a visible sidebar with a session in it needs
+the minute timer.  SNAPSHOTS, when supplied by the current render,
+avoids rediscovering live sessions just to decide that."
   (let ((sidebar (or (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
                           (current-buffer))
                      (get-buffer "*Agent Shell Sessions*"))))
@@ -2690,15 +2804,10 @@ sessions just to decide whether an age timer is needed."
       (with-current-buffer sidebar
         (let* ((visible (agent-shell-vertico-sidebar--sidebar-visible-p
                          sidebar))
-               (activity-configured
-                (memq 'activity agent-shell-vertico-sidebar-extra-info))
-               (details-visible
-                (if snapshots-supplied
-                    (seq-some (lambda (snapshot)
-                                (plist-get snapshot :details-visible))
-                              snapshots)
-                  (agent-shell-vertico-sidebar--any-session-details-visible-p)))
-               (needed (and visible activity-configured details-visible)))
+               (sessions (if snapshots-supplied
+                             snapshots
+                           (seq-some #'buffer-live-p (agent-shell-buffers))))
+               (needed (and visible sessions)))
           (cond
            ((and needed
                  (not (timerp agent-shell-vertico-sidebar--age-refresh-timer)))
@@ -2707,12 +2816,8 @@ sessions just to decide whether an age timer is needed."
                    60 60
                    (lambda ()
                      (if (and (buffer-live-p sidebar)
-                              (with-current-buffer sidebar
-                                (and
-                                 (agent-shell-vertico-sidebar--sidebar-visible-p
-                                  sidebar)
-                                 (memq 'activity
-                                       agent-shell-vertico-sidebar-extra-info))))
+                              (agent-shell-vertico-sidebar--sidebar-visible-p
+                               sidebar))
                          (agent-shell-vertico-sidebar-refresh)
                        (when (buffer-live-p sidebar)
                          (with-current-buffer sidebar
@@ -2904,8 +3009,58 @@ subagent says is not the message the session has for the reader."
         (setq entry (list :chunks nil :open t)))
       (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
         (setq entry (plist-put entry :chunks
-                               (cons chunk (plist-get entry :chunks)))))
+                               (cons chunk (plist-get entry :chunks))))
+        (agent-shell-vertico-sidebar--set buffer 'detail 'message))
       (agent-shell-vertico-sidebar--set buffer 'message entry)))))
+
+(defun agent-shell-vertico-sidebar--clean-line (text)
+  "Return TEXT as one plain line, or nil when nothing is left.
+
+Terminal escapes and tags go, and every run of whitespace becomes one
+space, as Claude Code cleans the lines of its transcript tail."
+  (let ((line (string-trim
+               (replace-regexp-in-string
+                "[[:space:]]+" " "
+                (replace-regexp-in-string
+                 "<[^>\n]*>" ""
+                 (replace-regexp-in-string
+                  "\e\\[[0-9;?]*[A-Za-z]" "" (or text "")))))))
+    (unless (string-empty-p line)
+      line)))
+
+(defun agent-shell-vertico-sidebar--message-last-line (buffer)
+  "Return the last non-empty line of the message BUFFER is streaming.
+
+Only the newest chunks are joined, as many as hold a whole last line,
+so a long message costs no more than its end."
+  (let ((chunks (plist-get (agent-shell-vertico-sidebar--get buffer 'message)
+                           :chunks))
+        (tail ""))
+    (while (and chunks
+                (not (string-match-p "\n[^\n]*[^[:space:]]" tail)))
+      (setq tail (concat (pop chunks) tail)))
+    (seq-some (lambda (line)
+                (unless (string-match-p "\\`[ \t]*```" line)
+                  (agent-shell-vertico-sidebar--clean-line line)))
+              (reverse (split-string tail "\n")))))
+
+(defun agent-shell-vertico-sidebar--record-tool-call (buffer event)
+  "Record a failed tool call in EVENT as BUFFER's newest entry."
+  (let ((call (map-nested-elt event '(:data :tool-call))))
+    (when (and (equal (map-elt call :status) "failed")
+               (not (agent-shell-vertico-sidebar--subagent-event-p)))
+      (agent-shell-vertico-sidebar--set
+       buffer 'detail
+       (concat "✗ " (or (agent-shell-vertico-sidebar--clean-line
+                         (map-elt call :title))
+                        "tool call"))))))
+
+(defun agent-shell-vertico-sidebar--detail-text (buffer)
+  "Return BUFFER's newest entry as one line, or nil."
+  (let ((detail (agent-shell-vertico-sidebar--get buffer 'detail)))
+    (if (eq detail 'message)
+        (agent-shell-vertico-sidebar--message-last-line buffer)
+      detail)))
 
 (defun agent-shell-vertico-sidebar--last-message (buffer)
   "Return the newest agent message streamed into BUFFER, or nil."
@@ -3068,8 +3223,16 @@ events that end a snooze end it before they get here."
        (agent-shell-vertico-sidebar--set buffer 'error nil)
        ;; What the last turn said is no answer to this prompt.
        (agent-shell-vertico-sidebar--set buffer 'message nil)
+       (agent-shell-vertico-sidebar--set buffer 'result nil)
+       (agent-shell-vertico-sidebar--set
+        buffer 'detail
+        (when-let* ((prompt (agent-shell-vertico-sidebar--clean-line
+                             (map-nested-elt event '(:data :prompt)))))
+          (concat "> " prompt)))
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
+      ('tool-call-update
+       (agent-shell-vertico-sidebar--record-tool-call buffer event))
       ('session-restored
        ;; A restored session has a history, so it has been prompted.
        (agent-shell-vertico-sidebar--set buffer 'fresh nil))

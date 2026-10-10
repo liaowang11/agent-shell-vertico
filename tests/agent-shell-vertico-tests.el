@@ -612,7 +612,8 @@ a session outside its own family."
         (agent-shell-vertico-sidebar--render)
         (should (string-match-p "Review alpha" (buffer-string)))
         (should (string-match-p "⌂ alpha" (buffer-string)))
-        (should (= (count-lines (point-min) (point-max)) 2))
+        ;; The title, the status line and the project line.
+        (should (= (count-lines (point-min) (point-max)) 3))
         (should-not (eq (get-text-property
                          (point-min) 'agent-shell-vertico-sidebar-node-kind)
                         'project))))))
@@ -647,6 +648,8 @@ a session outside its own family."
                              (:modes . [((:id . "plan")
                                          (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
+          ;; The state view draws no status word for "Done" to match.
+          (agent-shell-vertico-sidebar-group-by 'state)
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(mode status model)))
       (with-temp-buffer
@@ -785,7 +788,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Codex · GPT-5")))))))
+                 '("✻ Review alpha" "Done" "Codex · GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-agent-value-is-identifiable ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -821,7 +824,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "-")))))))
+                 '("✻ Review alpha" "Done" "-")))))))
 
 (ert-deftest agent-shell-vertico-agent-name-prefers-mode-line-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -879,7 +882,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "↳ Find the failing test")))))))
+                 '("✻ Review alpha" "Done" "↳ Find the failing test")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -901,7 +904,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha" "Plan · Done" "GPT-5")))))))
+                 '("✻ Review alpha" "Done" "Plan · Done" "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -915,7 +918,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✻ Review alpha")))))))
+                 '("✻ Review alpha" "Done")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-flat-rows-have-no-project-indent ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1061,31 +1064,35 @@ anyone has read it, and only a session waiting on the reader needs them."
 (ert-deftest agent-shell-vertico-sidebar-toggles-session-details ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+              '((:session . ((:id . "a") (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
           (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(status)))
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
         (agent-shell-vertico-sidebar--render)
-        (should-not (string-match-p "Done" (buffer-string)))
+        (should-not (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-toggle-details)
         (agent-shell-vertico-sidebar--render)
-        (should (string-match-p "Done" (buffer-string)))
+        (should (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-toggle-details)
         (agent-shell-vertico-sidebar--render)
-        (should-not (string-match-p "Done" (buffer-string)))))))
+        (should-not (string-match-p "Plan" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-tab-toggles-session-details ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+              '((:session . ((:id . "a") (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
           (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(status)))
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
@@ -1095,18 +1102,22 @@ anyone has read it, and only a session waiting on the reader needs them."
         (call-interactively
          (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
         (agent-shell-vertico-sidebar--render)
-        (should (string-match-p "Done" (buffer-string)))))))
+        (should (string-match-p "Plan" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-tab-toggles-only-current-flat-session ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha")))))
+              '((:session . ((:id . "a") (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))])))))
        (beta "Codex Agent @ beta" "/work/beta/"
-             '((:session . ((:id . "b") (:title . "Review beta"))))))
+             '((:session . ((:id . "b") (:title . "Review beta")
+                            (:mode-id . "plan")
+                            (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-vertico-sidebar-group-by nil)
           (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(status project)))
+          (agent-shell-vertico-sidebar-extra-info '(mode project)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -1114,29 +1125,31 @@ anyone has read it, and only a session waiting on the reader needs them."
         (beginning-of-line)
         (call-interactively
          (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
-        (should (= (how-many "Done" (point-min) (point-max)) 1))
+        (should (= (how-many "Plan" (point-min) (point-max)) 1))
         (should (string-match-p "⌂ alpha" (buffer-string)))
-        (should-not (string-match-p "Ready.*beta" (buffer-string)))))))
+        (should-not (string-match-p "Plan.*beta" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-cycles-project-grouped-levels ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+              '((:session . ((:id . "a") (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'project)
           (agent-shell-vertico-sidebar-expand-by-default nil)
           (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(status)))
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (should (string-match-p "alpha" (buffer-string)))
         (should-not (string-match-p "Review alpha" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should-not (string-match-p "Done" (buffer-string)))
+        (should-not (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should (string-match-p "Done" (buffer-string)))
+        (should (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should-not (string-match-p "Review alpha" (buffer-string)))))))
 
@@ -1164,26 +1177,28 @@ anyone has read it, and only a session waiting on the reader needs them."
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
         (should (string-match-p "Review beta" (buffer-string)))
-        (should-not (string-match-p "Done" (buffer-string)))))))
+        (should-not (string-match-p "Codex" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-cycles-details-in-flat-view ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+              '((:session . ((:id . "a") (:title . "Review alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by nil)
           (agent-shell-vertico-sidebar-expand-by-default nil)
           (agent-shell-vertico-sidebar-show-details nil)
-          (agent-shell-vertico-sidebar-extra-info '(status)))
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
-        (should-not (string-match-p "Done" (buffer-string)))
+        (should-not (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should (string-match-p "Done" (buffer-string)))
+        (should (string-match-p "Plan" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should-not (string-match-p "Done" (buffer-string)))
+        (should-not (string-match-p "Plan" (buffer-string)))
         ;; A flat list has no project level, so the default never changes.
         (should-not agent-shell-vertico-sidebar-expand-by-default)))))
 
@@ -2137,7 +2152,7 @@ rows once the collapsed list fits the window."
     (let ((agent-shell-test-buffers (list aardvark alpha beta gamma))
           (agent-shell-vertico-sidebar-group-by nil)
           (agent-shell-vertico-sidebar-show-details t)
-          (agent-shell-vertico-sidebar-extra-info '(status project model mode))
+          (agent-shell-vertico-sidebar-extra-info '(status model mode))
           (agent-shell-vertico-sidebar-sort-by 'name)
           (other (generate-new-buffer " *agent-shell-vertico-other*")))
       (unwind-protect
@@ -2273,15 +2288,17 @@ top sessions stay hidden."
   "Collapsing a removed detail line leaves point on its session title."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha"))))))
+              '((:session . ((:id . "a") (:title . "Alpha")
+                             (:mode-id . "plan")
+                             (:modes . [((:id . "plan") (:name . "Plan"))]))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by nil)
           (agent-shell-vertico-sidebar-show-details t)
-          (agent-shell-vertico-sidebar-extra-info '(status)))
+          (agent-shell-vertico-sidebar-extra-info '(mode)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (search-forward "Done")
+        (search-forward "Plan")
         (beginning-of-line)
         (agent-shell-vertico-sidebar-toggle-at-point)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
@@ -2568,14 +2585,13 @@ and `window-state-put', which only carry parameters marked writable in
           (should (= (car timer-args) 60))
           (should (= (cadr timer-args) 60)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-age-refresh-skips-hidden-details ()
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
-    (let ((agent-shell-test-buffers (list alpha))
+(ert-deftest agent-shell-vertico-sidebar-age-refresh-skips-an-empty-sidebar ()
+  "Every row draws an age, so only a sidebar with no rows needs no timer."
+  (agent-shell-vertico-tests--with-session-buffers ()
+    (let ((agent-shell-test-buffers nil)
           (timer-calls 0)
           (agent-shell-vertico-sidebar-extra-info nil)
-          (agent-shell-vertico-sidebar-show-details t))
+          (agent-shell-vertico-sidebar-show-details nil))
       (agent-shell-vertico-tests--with-sidebar
         (cl-letf (((symbol-function
                     'agent-shell-vertico-sidebar--sidebar-visible-p)
@@ -4066,6 +4082,163 @@ is a still disc, so a working mark still differs in shape."
                  (agent-shell-vertico-sidebar--busy-frame 0 'bold))
                 'bold))))
 
+(ert-deftest agent-shell-vertico-sidebar-detail-follows-claude-code ()
+  "The state picks which field of the record the detail line shows."
+  (pcase-dolist (`(,snapshot ,detail)
+                 '(((:state done :tempo blocked :needs "Allow: Edit x.el"
+                     :detail "> go")
+                    "Allow: Edit x.el")
+                   ((:state working :tempo active :detail "> check it")
+                    "> check it")
+                   ((:state failed :tempo idle :error "Request timed out")
+                    "Failed: Request timed out")
+                   ((:state failed :tempo idle :error t) "Failed")
+                   ((:state stopped :tempo idle :detail "> go") "Stopped")
+                   ((:state done :tempo idle :result "Fixed it"
+                     :detail "last line")
+                    "Fixed it")
+                   ((:state done :tempo idle :detail "last line")
+                    "last line")
+                   ((:state working :tempo idle
+                     :needs "Send a prompt to start")
+                    "Send a prompt to start")
+                   ((:state done :tempo idle) nil)))
+    (should (equal (agent-shell-vertico-sidebar--detail-for snapshot)
+                   detail))))
+
+(ert-deftest agent-shell-vertico-sidebar-clean-line-strips-markup ()
+  "A detail is one plain line: no escapes, no tags, one space each."
+  (should (equal (agent-shell-vertico-sidebar--clean-line
+                  "\e[31mred\e[0m  <b>bold</b>\n\tnext")
+                 "red bold next"))
+  (should-not (agent-shell-vertico-sidebar--clean-line "  \n ")))
+
+(ert-deftest agent-shell-vertico-sidebar-detail-is-the-newest-entry ()
+  "The detail is the newest of the prompt, the agent's line, a failed tool."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((detail (lambda ()
+                    (plist-get (agent-shell-vertico-sidebar--session-snapshot
+                                alpha)
+                               :detail))))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . input-submitted)
+               (:data . ((:prompt . "check the\nOSC 777 path")))))
+      (should (equal (funcall detail) "> check the OSC 777 path"))
+      (agent-shell-vertico-tests--stream alpha "Looking at it.\nThe pa")
+      (agent-shell-vertico-tests--stream alpha "th sends from x.\n")
+      (should (equal (funcall detail) "The path sends from x."))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . tool-call-update)
+               (:data . ((:tool-call . ((:status . "failed")
+                                        (:title . "Edit x.el")))))))
+      (should (equal (funcall detail) "✗ Edit x.el"))
+      ;; A tool call that worked is not news the line reports.
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . tool-call-update)
+               (:data . ((:tool-call . ((:status . "completed")
+                                        (:title . "Read x.el")))))))
+      (should (equal (funcall detail) "✗ Edit x.el")))))
+
+(ert-deftest agent-shell-vertico-sidebar-age-is-time-in-the-state ()
+  "The age starts when the session entered its band."
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band snoozed :snoozed 5.0 :last-terminal-at 1.0))
+             5.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band attention :unread 7.0 :last-terminal-at 1.0))
+             7.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band working :busy-since-time 8.0 :created-at 1.0))
+             8.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band working :background-since 6.0 :created-at 1.0))
+             6.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band idle :last-terminal-at 4.0 :created-at 1.0))
+             4.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band idle :created-at 1.0))
+             1.0))
+  (should-not (agent-shell-vertico-sidebar--state-since '(:band idle))))
+
+(ert-deftest agent-shell-vertico-sidebar-row-shows-age-and-detail ()
+  "A row is its title with an age at the right edge, then its detail.
+
+The state view names the state in the section header, so the detail
+line is the detail alone; the flat view starts it with the status."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-extra-info nil)
+          (agent-shell-vertico-sidebar-width 30))
+      (agent-shell-vertico-sidebar--set alpha 'created-at (float-time))
+      (agent-shell-vertico-tests--stream alpha "result: Fixed the quit\n")
+      (agent-shell-vertico-tests--end-turn alpha)
+      (agent-shell-vertico-sidebar--set alpha 'last-terminal-at
+                                        (- (float-time) 300))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((lines (agent-shell-vertico-tests--lines)))
+          (should (equal (cdr lines)
+                         (list (concat "✻ Review alpha"
+                                       (make-string 12 ?\s) "5m")
+                               "Fixed the quit"))))
+        (let ((agent-shell-vertico-sidebar-group-by nil))
+          (agent-shell-vertico-sidebar--render)
+          (should (equal (cadr (agent-shell-vertico-tests--lines))
+                         "Done · Fixed the quit"))
+          (goto-char (point-min))
+          (search-forward "Done")
+          (should (eq (get-text-property (1- (point)) 'face)
+                      'agent-shell-vertico-sidebar-ready)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-stuck-age-is-yellow ()
+  "A working session silent for fifteen minutes draws its age in yellow."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (setq agent-shell-test-statuses (list (cons alpha 'busy)))
+      (agent-shell-vertico-sidebar--set alpha 'busy-since
+                                        (- (float-time) 1200))
+      (agent-shell-vertico-sidebar--set alpha 'updated-at
+                                        (- (float-time) 1000))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "20m")
+        (should (eq (get-text-property (1- (point)) 'face)
+                    'agent-shell-vertico-sidebar-blocked))
+        (agent-shell-vertico-sidebar--set alpha 'updated-at (float-time))
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "20m")
+        (should (eq (get-text-property (1- (point)) 'face)
+                    'agent-shell-vertico-sidebar-detail))))))
+
+(ert-deftest agent-shell-vertico-sidebar-long-title-is-cut ()
+  "A long title is cut with an ellipsis on one line, unless wrapping is on."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a")
+                             (:title . "A title that is deliberately long"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-extra-info nil)
+          (agent-shell-vertico-sidebar-width 20))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((title (car (agent-shell-vertico-tests--lines))))
+          (should (string-prefix-p "✻ A title that" title))
+          (should (string-match-p "…" title)))
+        (let ((agent-shell-vertico-sidebar-wrap-titles t))
+          (agent-shell-vertico-sidebar--render)
+          (should (string-match-p "deliberately"
+                                  (buffer-substring-no-properties
+                                   (point-min) (point-max)))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
   (agent-shell-vertico-tests--with-session-buffers
@@ -4306,6 +4479,11 @@ the command to refuse."
           (agent-shell-vertico-sidebar-mode)
           (goto-char (point-min))
           (should-not (get-text-property (point) 'line-prefix))
+          (forward-line 1)
+          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (should (equal (buffer-substring-no-properties
+                          (point) (line-end-position))
+                         "Done"))
           (forward-line 1)
           (should (equal (get-text-property (point) 'line-prefix) "  "))
           (should (string-prefix-p "⌂" (buffer-substring-no-properties
