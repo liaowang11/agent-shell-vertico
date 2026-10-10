@@ -227,11 +227,12 @@ of choices whose tokens were all offered."
         result)
     choices))
 
-(cl-defun agent-shell--session-choice-label (&key acp-session max-widths)
+(cl-defun agent-shell--session-choice-label (&key acp-session max-widths columns)
   "Return the picker label for ACP-SESSION.
-MAX-WIDTHS pads the columns in the real builder; the stub keeps the
-column order and the separator that matter to callers."
-  (ignore max-widths)
+MAX-WIDTHS pads the columns and COLUMNS picks them in the real builder;
+the stub keeps the column order and the separator that matter to
+callers."
+  (ignore max-widths columns)
   (format "%s  %s  %s"
           (file-name-nondirectory
            (directory-file-name (or (map-elt acp-session (quote cwd)) "")))
@@ -240,23 +241,33 @@ column order and the separator that matter to callers."
               (map-elt acp-session (quote createdAt))
               "unknown-time")))
 
-(defun agent-shell--prompt-select-session (acp-sessions)
+(defun agent-shell--prompt-select-session (acp-sessions &optional offer-archived)
   "Prompt to choose one of ACP-SESSIONS, or nil to start a new shell.
 Mirrors the real picker: choices pass through the choices function, a
 `completing-read' names one of them, and the label maps back to its
-token."
-  (let* ((choices (agent-shell--apply-session-choices
-                   (append (list (cons "New shell" :new-shell))
-                           (mapcar (lambda (acp-session)
-                                     (cons (agent-shell--session-choice-label
-                                            :acp-session acp-session)
-                                           acp-session))
-                                   acp-sessions))))
-         (selection (completing-read "Start shell: " choices nil t nil nil
-                                     (caar choices))))
-    (pcase (map-elt choices selection)
-      (:new-shell nil)
-      (acp-session acp-session))))
+token.  With OFFER-ARCHIVED, a choice to list archived sessions too is
+offered, and choosing it returns `:show-archived'.  Like the real
+picker, it offers nothing when there is neither a session nor a shell."
+  (when (or acp-sessions (agent-shell-buffers))
+    (let* ((choices (agent-shell--apply-session-choices
+                     (append (list (cons "New shell" :new-shell)
+                                   (cons "New Downloads shell" :downloads-shell)
+                                   (cons "New temp shell" :temp-shell))
+                             (when offer-archived
+                               (list (cons "Show archived sessions"
+                                           :show-archived)))
+                             (mapcar (lambda (acp-session)
+                                       (cons (agent-shell--session-choice-label
+                                              :acp-session acp-session)
+                                             acp-session))
+                                     acp-sessions))))
+           (selection (completing-read "Start shell: " choices nil t nil nil
+                                       (caar choices))))
+      (pcase (map-elt choices selection)
+        (:new-shell nil)
+        (:show-archived :show-archived)
+        ((or :downloads-shell :temp-shell) :other-shell)
+        (acp-session acp-session)))))
 
 (defun agent-shell-open-transcript ()
   "Record an open transcript action."
@@ -280,21 +291,24 @@ Non-nil only around a subagent's content; tests bind it to fake one.")
   (setq agent-shell-test-last-command 'agent-shell-subagents
         agent-shell-test-last-buffer (current-buffer)))
 
-(defun agent-shell-interrupt ()
-  "Record an interrupt action."
+(defun agent-shell-interrupt (&optional force)
+  "Record an interrupt action, ignoring FORCE."
   (interactive)
+  (ignore force)
   (setq agent-shell-test-last-command 'agent-shell-interrupt
         agent-shell-test-last-buffer (current-buffer)))
 
-(defun agent-shell-set-session-mode ()
-  "Record a set session mode action."
+(defun agent-shell-set-session-mode (&optional on-success)
+  "Record a set session mode action, ignoring ON-SUCCESS."
   (interactive)
+  (ignore on-success)
   (setq agent-shell-test-last-command 'agent-shell-set-session-mode
         agent-shell-test-last-buffer (current-buffer)))
 
-(defun agent-shell-set-session-model ()
-  "Record a set session model action."
+(defun agent-shell-set-session-model (&optional on-success)
+  "Record a set session model action, ignoring ON-SUCCESS."
   (interactive)
+  (ignore on-success)
   (setq agent-shell-test-last-command 'agent-shell-set-session-model
         agent-shell-test-last-buffer (current-buffer)))
 
@@ -351,8 +365,9 @@ list, and each entry may be a function returning a configuration."
   "Return the stubbed preferred config."
   (car (agent-shell--resolved-agent-configs)))
 
-(cl-defun agent-shell-select-config (&key _prompt)
-  "Return the stubbed selected config."
+(cl-defun agent-shell-select-config (&key prompt)
+  "Return the stubbed selected config, ignoring PROMPT."
+  (ignore prompt)
   (car agent-shell-agent-configs))
 
 (cl-defun agent-shell--display-viewport-when-ready (&rest args)

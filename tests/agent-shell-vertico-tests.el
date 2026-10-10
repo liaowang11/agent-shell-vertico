@@ -9973,7 +9973,7 @@ and `records' bound to that project's parsed records."
             (lambda (_prompt candidates _default)
               (setq annotations
                     (mapcar #'agent-shell-vertico-resume--annotate candidates))
-              (nth 1 candidates))))
+              (car (last candidates)))))
       (advice-add 'agent-shell--prompt-select-session
                   :around #'agent-shell-vertico-resume--select-session)
       (unwind-protect
@@ -9981,8 +9981,9 @@ and `records' bound to that project's parsed records."
                          session))
         (advice-remove 'agent-shell--prompt-select-session
                        #'agent-shell-vertico-resume--select-session))
-      (should-not (nth 0 annotations))
-      (should (string-match-p "make the sidebar wider" (nth 1 annotations))))))
+      (should-not (car annotations))
+      (should (string-match-p "make the sidebar wider"
+                              (car (last annotations)))))))
 
 (ert-deftest agent-shell-vertico-resume-picker-joins-session-across-tramp-mismatch ()
   "Joining is by session ID, so a TRAMP prefix on either side does not matter.
@@ -9999,8 +10000,8 @@ comparison would drop the join; the ID does not care."
            (agent-shell-vertico-resume-read-choice-function
             (lambda (_prompt candidates _default)
               (setq annotation
-                    (agent-shell-vertico-resume--annotate (nth 1 candidates)))
-              (nth 1 candidates))))
+                    (agent-shell-vertico-resume--annotate (car (last candidates))))
+              (car (last candidates)))))
       (cl-letf (((symbol-function 'project-current)
                  (lambda (&rest _) 'project))
                 ((symbol-function 'project-root)
@@ -10024,8 +10025,8 @@ comparison would drop the join; the ID does not care."
          (agent-shell-vertico-resume-read-choice-function
           (lambda (_prompt candidates _default)
             (setq annotation
-                  (agent-shell-vertico-resume--annotate (nth 1 candidates)))
-            (nth 1 candidates))))
+                  (agent-shell-vertico-resume--annotate (car (last candidates))))
+            (car (last candidates)))))
     (cl-letf (((symbol-function 'message)
                (lambda (format &rest arguments)
                  (setq reported (apply #'format-message format arguments)))))
@@ -10057,6 +10058,78 @@ comparison would drop the join; the ID does not care."
         (advice-remove 'agent-shell--prompt-select-session
                        #'agent-shell-vertico-resume--select-session)))
     (should-not parsed)))
+
+(ert-deftest agent-shell-vertico-resume-picker-passes-offer-archived ()
+  "The advice passes the picker's archived offer through and keeps its answer.
+agent-shell calls the picker with a second argument when the agent keeps
+a session index.  The choice that answers it starts no session, so it
+carries no annotation."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (archived-annotation 'unset)
+           (agent-shell-session-choices-function nil)
+           (default-directory root)
+           (agent-shell-vertico-resume-read-choice-function
+            (lambda (_prompt candidates _default)
+              (let ((choice (seq-find
+                             (lambda (candidate)
+                               (equal (substring-no-properties candidate)
+                                      "Show archived sessions"))
+                             candidates)))
+                (setq archived-annotation
+                      (agent-shell-vertico-resume--annotate choice))
+                choice))))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should (eq (agent-shell--prompt-select-session (list session) t)
+                      :show-archived))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session))
+      (should-not archived-annotation))))
+
+(ert-deftest agent-shell-vertico-resume-picker-resumes-with-archived-offer ()
+  "A session chosen while the archived offer is shown still resumes, annotated."
+  (agent-shell-vertico-tests--with-transcript-store
+      '(("one.md" "abc" "Claude" "opus" "make the sidebar wider"))
+    (let* ((session (agent-shell-vertico-tests--acp-session "abc"))
+           (annotation nil)
+           (agent-shell-session-choices-function nil)
+           (default-directory root)
+           (agent-shell-vertico-resume-read-choice-function
+            (lambda (_prompt candidates _default)
+              (let ((choice (car (last candidates))))
+                (setq annotation
+                      (agent-shell-vertico-resume--annotate choice))
+                choice))))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should (equal (agent-shell--prompt-select-session (list session) t)
+                         session))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session))
+      (should (string-match-p "make the sidebar wider" annotation)))))
+
+(ert-deftest agent-shell-vertico-resume-picker-passes-offer-without-sessions ()
+  "With no session listed, the archived offer still reaches the picker."
+  (let ((agent-shell-test-buffers (list (current-buffer)))
+        (agent-shell-session-choices-function nil)
+        (agent-shell-vertico-resume-read-choice-function
+         (lambda (&rest _) (error "Enriched a prompt with no sessions"))))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (seq-find (lambda (label)
+                             (equal label "Show archived sessions"))
+                           (all-completions "" collection)))))
+      (advice-add 'agent-shell--prompt-select-session
+                  :around #'agent-shell-vertico-resume--select-session)
+      (unwind-protect
+          (should (eq (agent-shell--prompt-select-session nil t)
+                      :show-archived))
+        (advice-remove 'agent-shell--prompt-select-session
+                       #'agent-shell-vertico-resume--select-session)))))
 
 (ert-deftest agent-shell-vertico-resume-setup-installs-advice ()
   "Setup installs the picker advice once."
@@ -10152,7 +10225,7 @@ comparison would drop the join; the ID does not care."
             #'agent-shell-vertico-consult--read-session-choice))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &optional predicate &rest _)
-                   (nth 1 (all-completions "" collection predicate))))
+                   (car (last (all-completions "" collection predicate)))))
                 ((symbol-function 'consult--read)
                  (lambda (candidates &rest options)
                    (cl-incf consult-read-count)

@@ -366,14 +366,17 @@ reader knows what a label stands for."
       (setq agent-shell-vertico-resume--choices result)
       result)))
 
-(defun agent-shell-vertico-resume--select-session (original acp-sessions)
+(defun agent-shell-vertico-resume--select-session
+    (original acp-sessions &rest other-arguments)
   "Run the session picker ORIGINAL over ACP-SESSIONS, annotated.
 
 ORIGINAL keeps deciding what a choice means, including the ones that
 start a new shell or switch to an existing one.  This only replaces how
-the choice is read."
+the choice is read.  OTHER-ARGUMENTS are the picker's remaining
+arguments, such as whether to offer archived sessions, passed through
+unchanged."
   (if (not acp-sessions)
-      (funcall original acp-sessions)
+      (apply original acp-sessions other-arguments)
     (let* ((agent-shell-vertico-resume--index
             (agent-shell-vertico-resume--index-for-directory
              (agent-shell-cwd)))
@@ -386,7 +389,7 @@ the choice is read."
                  (lambda (&rest arguments)
                    (apply #'agent-shell-vertico-resume--read
                           inner arguments))))
-        (funcall original acp-sessions)))))
+        (apply original acp-sessions other-arguments)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-resume-setup ()
