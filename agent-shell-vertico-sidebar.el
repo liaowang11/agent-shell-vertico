@@ -141,14 +141,6 @@ sidebar buffer."
               (const :tag "Snoozed" snoozed))
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-idle-rows 3
-  "How many sessions the Idle section shows before a \"more\" row.
-
-The rest are one `RET' away, on the row that counts them.  Nil shows
-every idle session."
-  :type '(choice (natnum :tag "Rows") (const :tag "All" nil))
-  :group 'agent-shell-vertico-sidebar)
-
 (defcustom agent-shell-vertico-sidebar-sort-by 'priority
   "Sort criterion used by the agent-shell sidebar.
 
@@ -570,9 +562,6 @@ which is its business and not something to read a frame number out of.")
   "Hash table of state sections folded or unfolded in this sidebar.
 
 An absent entry follows `agent-shell-vertico-sidebar-folded-sections'.")
-
-(defvar-local agent-shell-vertico-sidebar--open-tails nil
-  "State sections whose rows past the limit this sidebar shows.")
 
 (defvar-local agent-shell-vertico-sidebar--expanded-sessions nil
   "Hash table of session detail overrides in the current sidebar buffer.
@@ -2503,21 +2492,11 @@ the projects."
         value))))
 
 (defun agent-shell-vertico-sidebar--set-section-folded (section folded)
-  "Record in this sidebar that state SECTION is FOLDED or not.
-Folding also puts back the limit on the section's rows."
+  "Record in this sidebar that state SECTION is FOLDED or not."
   (unless (hash-table-p agent-shell-vertico-sidebar--section-folds)
     (setq agent-shell-vertico-sidebar--section-folds
           (make-hash-table :test #'eq)))
-  (puthash section folded agent-shell-vertico-sidebar--section-folds)
-  (when folded
-    (setq agent-shell-vertico-sidebar--open-tails
-          (delq section agent-shell-vertico-sidebar--open-tails))))
-
-(defun agent-shell-vertico-sidebar--section-limit (section)
-  "Return how many root rows state SECTION shows, or nil for all of them."
-  (and (eq section 'idle)
-       (not (memq section agent-shell-vertico-sidebar--open-tails))
-       agent-shell-vertico-sidebar-idle-rows))
+  (puthash section folded agent-shell-vertico-sidebar--section-folds))
 
 (defun agent-shell-vertico-sidebar--family-size (buffer)
   "Return how many rows BUFFER and its live descendants take."
@@ -2540,12 +2519,8 @@ Folding also puts back the limit on the section's rows."
   "Insert the header of state SECTION and, unless folded, its BUFFERS.
 
 An open header shows no count, since its rows are the count; a folded
-one says how many sessions it hides, children included.  The Idle
-section stops after `agent-shell-vertico-sidebar-idle-rows' top-level
-sessions, each drawn with its children, and ends with a row counting
-the sessions it hides the same way, which `RET' opens.  One hidden
-session is shown instead, since the row counting it would take the
-same line."
+one says how many sessions it hides, children included.  An open
+section draws every session it holds."
   (let* ((folded (agent-shell-vertico-sidebar--section-folded-p section))
          (line (agent-shell-vertico-sidebar--project-header-line
                 (agent-shell-vertico-sidebar--slot-icon
@@ -2567,27 +2542,7 @@ same line."
                          (list 'help-echo "TAB/RET/mouse-1: toggle section"
                                'kbd-help "TAB/RET/mouse-1: toggle section"))
     (unless folded
-      (let* ((limit (agent-shell-vertico-sidebar--section-limit section))
-             (shown (if (and limit (> (length buffers) (1+ limit)))
-                        (seq-take buffers limit)
-                      buffers))
-             (hidden (nthcdr (length shown) buffers)))
-        (agent-shell-vertico-sidebar--insert-sessions shown width nil 1)
-        (when hidden
-          (agent-shell-vertico-sidebar--insert-more
-           section
-           (apply #'+ (mapcar #'agent-shell-vertico-sidebar--family-size
-                              hidden))))))))
-
-(defun agent-shell-vertico-sidebar--insert-more (section count)
-  "Insert the row saying state SECTION hides COUNT more sessions."
-  (let ((start (agent-shell-vertico-sidebar--insert-node-line
-                (format "… %d more" count) 'more section
-                'agent-shell-vertico-sidebar-detail)))
-    (add-text-properties start (line-end-position 0)
-                         (list 'line-prefix "  " 'wrap-prefix "  "
-                               'help-echo "RET/mouse-1: show the rest"
-                               'kbd-help "RET/mouse-1: show the rest"))))
+      (agent-shell-vertico-sidebar--insert-sessions buffers width nil 1))))
 
 (cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
@@ -3783,35 +3738,12 @@ line, so the row point is in is never skipped."
      section (not (agent-shell-vertico-sidebar--section-folded-p section)))
     (agent-shell-vertico-sidebar--render)))
 
-(defun agent-shell-vertico-sidebar-show-more ()
-  "Show the rest of the state section whose \"more\" row is at point.
-Folding the section puts the limit back."
-  (interactive)
-  (unless (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'more)
-    (user-error "Point is not on a \"more\" row"))
-  (let ((section (agent-shell-vertico-sidebar--node-at-point)))
-    (cl-pushnew section agent-shell-vertico-sidebar--open-tails)
-    (let ((first-hidden
-           (save-excursion
-             (forward-line -1)
-             (agent-shell-vertico-sidebar--node-at-point))))
-      (agent-shell-vertico-sidebar--render)
-      ;; The first newly shown row takes the place of the row that was
-      ;; read, so point stays where the reader was looking.
-      (when-let* ((next (cl-loop for (buffer . position)
-                                 in (agent-shell-vertico-sidebar--session-rows)
-                                 with seen = nil
-                                 if seen return position
-                                 if (eq buffer first-hidden) do (setq seen t))))
-        (goto-char (agent-shell-vertico-sidebar--row-point next))))))
-
 (defun agent-shell-vertico-sidebar-open ()
   "Open the session, or toggle the project or section, at point."
   (interactive)
   (pcase (agent-shell-vertico-sidebar--node-kind-at-point)
     ('project (agent-shell-vertico-sidebar-toggle-project))
     ('section (agent-shell-vertico-sidebar-toggle-section))
-    ('more (agent-shell-vertico-sidebar-show-more))
     (_
      (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
        (agent-shell-vertico-sidebar--mark-seen buffer)
@@ -4027,7 +3959,7 @@ list has no header level, so it never returns `projects'."
   "Show every row at fold LEVEL, discarding per-row fold overrides.
 
 In the state view the header level folds every section and the other
-levels unfold every section, each with its default row limit.  Putting
+levels unfold every section.  Putting
 back each section's default fold instead would leave a sidebar whose
 sessions all sit in a section that starts folded showing headers alone
 at every level.  The project view folds or unfolds its Pinned section
@@ -4040,7 +3972,6 @@ with the projects, for the same reason."
          (clrhash agent-shell-vertico-sidebar--expanded-projects))
        (agent-shell-vertico-sidebar--set-section-folded 'pinned folded))
       ('state
-       (setq agent-shell-vertico-sidebar--open-tails nil)
        (dolist (section agent-shell-vertico-sidebar--sections)
          (agent-shell-vertico-sidebar--set-section-folded
           (car section) folded)))))
@@ -4098,7 +4029,6 @@ An expanded row also wraps the session's whole title."
   (pcase (agent-shell-vertico-sidebar--node-kind-at-point)
     ('project (agent-shell-vertico-sidebar-toggle-project))
     ('section (agent-shell-vertico-sidebar-toggle-section))
-    ('more (agent-shell-vertico-sidebar-show-more))
     ('session (agent-shell-vertico-sidebar-toggle-session-details))
     (_ (user-error "Point is not on a project or session row"))))
 
@@ -5001,10 +4931,9 @@ With OTHER-WINDOW, display the session in another window."
 This is the walk `--render' makes, without drawing: the sessions with no
 live parent, grouped by state section or project when
 `agent-shell-vertico-sidebar-group-by' says so, each followed depth-first
-by its children.  A folded project or section, and the Idle rows past
-its limit, still list their sessions, because nothing is drawn for the
-reader to look at and a step should not depend on how the sidebar was
-left."
+by its children.  A folded project or section still lists its
+sessions, because nothing is drawn for the reader to look at and a step
+should not depend on how the sidebar was left."
   (let* ((sort-by agent-shell-vertico-sidebar-sort-by)
          (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers)))
@@ -5460,8 +5389,7 @@ recently before it instead, leaving the sidebar open."
 
 A child is drawn under its topmost live ancestor, whatever its own
 directory or state, so the group to unfold is that ancestor's.  In the
-state view that means its family's section (`--family-section') and the
-rows past the section's limit."
+state view that means its family's section (`--family-section')."
   (let ((node (cons 'session session)))
     (unless (agent-shell-vertico-sidebar--goto-node node)
       (let ((top session))
@@ -5481,7 +5409,6 @@ rows past the section's limit."
            (let ((section
                   (agent-shell-vertico-sidebar--family-section top)))
              (agent-shell-vertico-sidebar--set-section-folded section nil)
-             (cl-pushnew section agent-shell-vertico-sidebar--open-tails)
              (agent-shell-vertico-sidebar--render)
              (agent-shell-vertico-sidebar--goto-node node))))))))
 

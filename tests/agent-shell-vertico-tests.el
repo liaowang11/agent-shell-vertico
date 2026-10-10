@@ -3904,7 +3904,6 @@ that order."
             (list (cons waiting 'blocked) (cons working 'busy)))
            (agent-shell-vertico-sidebar-group-by 'state)
            (agent-shell-vertico-sidebar-sort-by 'name)
-           (agent-shell-vertico-sidebar-idle-rows 3)
            (agent-shell-vertico-sidebar-folded-sections '(snoozed)))
        (agent-shell-vertico-sidebar--set snoozed 'snoozed 100.0)
        (with-temp-buffer
@@ -3922,8 +3921,7 @@ that order."
 
 An open section header shows no count, because the rows below it are
 the count; the folded Snoozed header shows how many it holds, and its
-row is not drawn.  The Idle section stops after three rows and says
-how many more it holds."
+row is not drawn.  An open section shows every row it holds."
   (agent-shell-vertico-tests--with-state-view
     (let ((lines (agent-shell-vertico-tests--lines)))
       (should (equal (seq-filter
@@ -3937,19 +3935,8 @@ how many more it holds."
       (should (seq-some (lambda (line)
                           (string-match-p "\\`▶ Snoozed +1\\'" line))
                         lines))
-      (should (member "… 2 more" lines)))
-    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
-                   (list waiting working idle-1 idle-2 idle-3)))))
-
-(ert-deftest agent-shell-vertico-sidebar-state-view-more-row-expands ()
-  "RET on the more row shows the rest of the Idle section."
-  (agent-shell-vertico-tests--with-state-view
-    (goto-char (point-min))
-    (search-forward "… 2 more")
-    (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'more))
-    (agent-shell-vertico-sidebar-open)
-    (should (eq (agent-shell-vertico-sidebar--node-at-point) idle-4))
-    (should-not (member "… 2 more" (agent-shell-vertico-tests--lines)))
+      (should-not (seq-some (lambda (line) (string-prefix-p "…" line))
+                            lines)))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list waiting working idle-1 idle-2 idle-3 idle-4
                          idle-5)))))
@@ -3967,7 +3954,9 @@ how many more it holds."
                    (list waiting working)))
     (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
     (agent-shell-vertico-sidebar-open)
-    (should (member "… 2 more" (agent-shell-vertico-tests--lines)))))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list waiting working idle-1 idle-2 idle-3 idle-4
+                         idle-5)))))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-display-order ()
   "Steps walk the sections in order, folded rows included."
@@ -3977,10 +3966,8 @@ how many more it holds."
                          snoozed)))))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-reveals-a-folded-row ()
-  "Revealing a session opens its section and the rest of Idle."
+  "Revealing a session opens its folded section."
   (agent-shell-vertico-tests--with-state-view
-    (agent-shell-vertico-sidebar--reveal-session idle-5)
-    (should (eq (agent-shell-vertico-sidebar--node-at-point) idle-5))
     (agent-shell-vertico-sidebar--reveal-session snoozed)
     (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed))))
 
@@ -4108,8 +4095,6 @@ counts each in its band."
     (agent-shell-vertico-sidebar--render)
     (let ((lines (agent-shell-vertico-tests--lines)))
       (should (equal (car lines) "▼ Pinned")))
-    ;; Four idle rows are left, and one hidden row would take the line
-    ;; its "more" row needs, so all four show.
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list idle-3 waiting working idle-1 idle-2 idle-4 idle-5)))
     ;; Forty columns hold the digits only: need you, working, idle,
