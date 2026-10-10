@@ -120,8 +120,9 @@ current sidebar buffer."
 (defcustom agent-shell-vertico-sidebar-group-by 'state
   "Grouping used by the agent-shell sidebar.
 
-`state' renders a foldable section for each state: Pinned, Needs you,
-Working, Idle and Snoozed, the buckets Claude Code's agent view uses.
+`state' renders a foldable section for each state: Pinned, Needs input,
+Working, Completed and Snoozed, the buckets Claude Code's agent view
+uses.
 `project' renders foldable project headers below a Pinned section.  Nil
 renders one flat list."
   :type '(choice (const :tag "State" state)
@@ -135,9 +136,9 @@ renders one flat list."
 An explicit fold or unfold of a section overrides this for the current
 sidebar buffer."
   :type '(set (const :tag "Pinned" pinned)
-              (const :tag "Needs you" attention)
+              (const :tag "Needs input" attention)
               (const :tag "Working" working)
-              (const :tag "Idle" idle)
+              (const :tag "Completed" idle)
               (const :tag "Snoozed" snoozed))
   :group 'agent-shell-vertico-sidebar)
 
@@ -983,9 +984,12 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
       (_ (list 'working 'idle nil)))))
 
 (defconst agent-shell-vertico-sidebar--sections
-  '((pinned . "Pinned") (attention . "Needs you") (working . "Working")
-    (idle . "Idle") (snoozed . "Snoozed"))
-  "State sections in display order, with their labels.")
+  '((pinned . "Pinned") (attention . "Needs input") (working . "Working")
+    (idle . "Completed") (snoozed . "Snoozed"))
+  "State sections in display order, with their labels.
+
+The labels are Claude Code's.  The symbols are the bands `--band-for'
+answers, so the Completed section is the `idle' band.")
 
 (defun agent-shell-vertico-sidebar--band-for (snapshot)
   "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
@@ -1061,7 +1065,7 @@ answers."
 A child is drawn under its parent, so the family takes one section: the
 Pinned one when ROOT is pinned, and otherwise the earliest in
 `--sections' among the bands of ROOT and every live descendant.  A child
-waiting on the reader thus draws its idle parent under Needs you, where
+waiting on the reader thus draws its idle parent under Needs input, where
 the header that counts it says it is."
   (if (eq (agent-shell-vertico-sidebar--section root) 'pinned)
       'pinned
