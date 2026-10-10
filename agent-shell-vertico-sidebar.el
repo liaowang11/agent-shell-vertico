@@ -260,8 +260,11 @@ It is called with the keyword arguments `:buffer', the session buffer;
 `:agent', the agent's display name; `:status', the wording the sidebar
 shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
 \"Background\", \"Done\", \"Stopped\", \"New\" or \"Starting\";
-`:unread', non-nil when the session holds output nobody has read; and
-`:last-message', the agent's newest message as it arrived, or nil.
+`:state', how the work stands in Claude Code's terms, one of `working',
+`done', `failed' or `stopped'; `:needs', what the session asks of the
+reader, such as \"Allow: Run make check\", or nil; `:unread', non-nil
+when the session holds output nobody has read; and `:last-message', the
+agent's newest message as it arrived, or nil.
 
 Status and unread are separate because they answer different questions:
 a finished turn leaves an ordinary `Done' session holding unread
@@ -3207,12 +3210,17 @@ events that end a snooze end it before they get here."
              (buffer-live-p buffer)
              (not (agent-shell-vertico-sidebar--snoozed-p buffer))
              (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
-    (funcall agent-shell-vertico-sidebar-notify-function
-             :buffer buffer
-             :agent (agent-shell-vertico--agent-name buffer)
-             :status (agent-shell-vertico-sidebar--status-name buffer)
-             :unread (agent-shell-vertico-sidebar--unread-p buffer)
-             :last-message (agent-shell-vertico-sidebar--last-message buffer))))
+    (pcase-let ((`(,state ,_tempo ,needs)
+                 (agent-shell-vertico-sidebar--job-state buffer)))
+      (funcall agent-shell-vertico-sidebar-notify-function
+               :buffer buffer
+               :agent (agent-shell-vertico--agent-name buffer)
+               :status (agent-shell-vertico-sidebar--status-name buffer)
+               :state state
+               :needs needs
+               :unread (agent-shell-vertico-sidebar--unread-p buffer)
+               :last-message (agent-shell-vertico-sidebar--last-message
+                              buffer)))))
 
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
   "Update sidebar metadata for BUFFER after agent EVENT."

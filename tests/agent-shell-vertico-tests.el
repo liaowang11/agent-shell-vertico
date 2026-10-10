@@ -11566,6 +11566,8 @@ and a page number would land on the turn before the one it names."
                      (list (list :buffer alpha
                                  :agent "Codex"
                                  :status "Done"
+                                 :state 'done
+                                 :needs nil
                                  :unread t
                                  :last-message "All done.")))))))
 
@@ -11588,10 +11590,13 @@ and a page number would land on the turn before the one it names."
       (should-not notifications))))
 
 (ert-deftest agent-shell-vertico-sidebar-notifies-a-permission-request ()
-  "A session that cannot continue without an answer says so."
+  "A session that cannot continue without an answer says what it asks."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha"))))))
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:tool-calls . (("call-1" . ((:title . "Run make check")
+                                             (:permission-request-id
+                                              . "p-1"))))))))
     (let* ((agent-shell-test-buffers (list alpha))
            (agent-shell-test-statuses (list (cons alpha 'blocked)))
            notifications
@@ -11605,6 +11610,8 @@ and a page number would land on the turn before the one it names."
                      (list (list :buffer alpha
                                  :agent nil
                                  :status "Waiting"
+                                 :state 'done
+                                 :needs "Allow: Run make check"
                                  :unread t
                                  :last-message nil)))))))
 
@@ -11620,6 +11627,7 @@ and a page number would land on the turn before the one it names."
       (agent-shell-vertico-tests--with-sidebar
         (agent-shell-vertico-sidebar--handle-event alpha '((:event . error))))
       (should (equal (plist-get (car notifications) :status) "Failed"))
+      (should (eq (plist-get (car notifications) :state) 'failed))
       (should (plist-get (car notifications) :unread)))))
 
 (ert-deftest agent-shell-vertico-sidebar-notifies-a-settled-burst ()
@@ -11642,6 +11650,8 @@ and a page number would land on the turn before the one it names."
                        (list (list :buffer alpha
                                    :agent nil
                                    :status "Done"
+                                   :state 'done
+                                   :needs nil
                                    :unread t
                                    :last-message "Background note."))))))))
 
