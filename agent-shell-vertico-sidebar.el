@@ -2517,9 +2517,12 @@ Folding also puts back the limit on the section's rows."
   "Insert the header of state SECTION and, unless folded, its BUFFERS.
 
 An open header shows no count, since its rows are the count; a folded
-one says how many sessions it hides.  The Idle section stops after
-`agent-shell-vertico-sidebar-idle-rows' sessions and ends with a row
-counting the rest, which `RET' opens."
+one says how many sessions it hides, children included.  The Idle
+section stops after `agent-shell-vertico-sidebar-idle-rows' top-level
+sessions, each drawn with its children, and ends with a row counting
+the sessions it hides the same way, which `RET' opens.  One hidden
+session is shown instead, since the row counting it would take the
+same line."
   (let* ((folded (agent-shell-vertico-sidebar--section-folded-p section))
          (line (agent-shell-vertico-sidebar--project-header-line
                 (agent-shell-vertico-sidebar--slot-icon
@@ -4099,11 +4102,11 @@ last, whatever their statuses."
    "  C-j / C-k   Move to the next or previous row\n"
    "  RET         Activate the row or metadata field\n"
    "  mouse-1     Activate at the clicked position\n"
-   "  TAB         Toggle a project or current session details\n"
-   "  S-TAB       Cycle all rows: projects, sessions, details\n\n"
+   "  TAB         Toggle a section, project or session details\n"
+   "  S-TAB       Cycle all rows: headers, sessions, details\n\n"
    "Actions\n"
    "  o / O       Open here / open in another window\n"
-   "  =           Toggle flat or project-grouped view\n"
+   "  =           Cycle the flat, project and state views\n"
    "  s           Choose the sort criterion\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"

@@ -3811,6 +3811,7 @@ how many more it holds."
     (search-forward "… 2 more")
     (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'more))
     (agent-shell-vertico-sidebar-open)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) idle-4))
     (should-not (member "… 2 more" (agent-shell-vertico-tests--lines)))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list waiting working idle-1 idle-2 idle-3 idle-4
