@@ -3963,6 +3963,89 @@ how many more it holds."
                (get-text-property (string-search "5" header) 'help-echo
                                   header))))))
 
+(ert-deftest agent-shell-vertico-sidebar-pin-and-snooze-cancel-each-other ()
+  "Pinning puts a session on top; snoozing puts it off; one ends the other."
+  (agent-shell-vertico-tests--with-alpha
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-pin))
+    (should (agent-shell-vertico-sidebar--pinned-p alpha))
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-snooze))
+    (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (should-not (agent-shell-vertico-sidebar--pinned-p alpha))
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-pin))
+    (should (agent-shell-vertico-sidebar--pinned-p alpha))
+    (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-pin))
+    (should-not (agent-shell-vertico-sidebar--pinned-p alpha))))
+
+(ert-deftest agent-shell-vertico-sidebar-pinned-sorts-first ()
+  "A pinned session leads whatever the sort, even a session waiting."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((idle "Codex Agent @ idle" "/work/a/"
+             '((:session . ((:id . "i") (:title . "Idle")))))
+       (waiting "Codex Agent @ waiting" "/work/a/"
+                '((:session . ((:id . "w") (:title . "Waiting"))))))
+    (let ((agent-shell-test-buffers (list waiting idle))
+          (agent-shell-test-statuses (list (cons waiting 'blocked))))
+      (agent-shell-vertico-sidebar--set idle 'pinned 1.0)
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list waiting idle) 'priority)
+                     (list idle waiting))))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-has-a-pinned-section ()
+  "Pinned sessions sit in their own first section; the header still
+counts each in its band."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set idle-3 'pinned 1.0)
+    (agent-shell-vertico-sidebar--render)
+    (let ((lines (agent-shell-vertico-tests--lines)))
+      (should (equal (car lines) "▼ Pinned")))
+    ;; Four idle rows are left, and one hidden row would take the line
+    ;; its "more" row needs, so all four show.
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list idle-3 waiting working idle-1 idle-2 idle-4 idle-5)))
+    ;; Forty columns hold the digits only: need you, working, idle,
+    ;; snoozed.
+    (should (string-prefix-p " 1 · 1 · 5 · 1 "
+                             (agent-shell-vertico-tests--header-text)))
+    (should (equal (agent-shell-vertico-sidebar--display-order)
+                   (list idle-3 waiting working idle-1 idle-2 idle-4 idle-5
+                         snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-view-has-a-pinned-section ()
+  "In the project view the pinned sessions leave their projects for the top."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (agent-shell-vertico-sidebar-expand-by-default t))
+      (agent-shell-vertico-sidebar--set beta 'pinned 1.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (seq-filter
+                        (lambda (line) (string-match-p "\\`[▼▶] " line))
+                        (agent-shell-vertico-tests--lines))
+                       '("▼ Pinned" "▼ alpha")))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list beta alpha)))
+        (should (equal (agent-shell-vertico-sidebar--display-order)
+                       (list beta alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-pin-is-bound-to-capital-p ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "P"))
+              #'agent-shell-vertico-sidebar-pin))
+  (should (eq (cdr (assoc "P" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-pin)))
+
 (ert-deftest agent-shell-vertico-sidebar-grouping-cycles-three-views ()
   "The grouping toggle cycles flat, project and state views."
   (let ((agent-shell-vertico-sidebar-group-by nil))

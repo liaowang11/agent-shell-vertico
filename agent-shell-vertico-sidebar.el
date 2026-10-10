@@ -130,7 +130,8 @@ renders foldable project headers.  Nil renders one flat list."
 
 An explicit fold or unfold of a section overrides this for the current
 sidebar buffer."
-  :type '(set (const :tag "Needs you" attention)
+  :type '(set (const :tag "Pinned" pinned)
+              (const :tag "Needs you" attention)
               (const :tag "Working" working)
               (const :tag "Idle" idle)
               (const :tag "Snoozed" snoozed))
@@ -314,6 +315,13 @@ it nor being done with it, so it is a record of its own beside `unread'
 and `error' rather than a value of either.  Presence is the whole
 record.  The time orders the snoozed tier oldest first, the way the
 attention tier is ordered.")
+  (pinned nil :documentation "\
+When the reader pinned the session, or nil.
+
+A pinned session sorts above every other and has a section of its own
+in the state and project views, until the reader unpins it.  Pin and
+snooze cancel each other, since one puts a session first and the other
+last.")
   (background-since nil :documentation "\
 When the sidebar first saw the session working in the background.
 
@@ -946,8 +954,8 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
       (_ (list 'working 'idle nil)))))
 
 (defconst agent-shell-vertico-sidebar--sections
-  '((attention . "Needs you") (working . "Working") (idle . "Idle")
-    (snoozed . "Snoozed"))
+  '((pinned . "Pinned") (attention . "Needs you") (working . "Working")
+    (idle . "Idle") (snoozed . "Snoozed"))
   "State sections in display order, with their labels.")
 
 (defun agent-shell-vertico-sidebar--band-for (snapshot)
@@ -966,25 +974,30 @@ still running, is working, as Claude Code files it."
      (t 'idle))))
 
 (defun agent-shell-vertico-sidebar--section-for (snapshot)
-  "Return the state section SNAPSHOT is drawn in."
-  (plist-get snapshot :band))
+  "Return the state section SNAPSHOT is drawn in.
+Its band, unless the reader pinned it."
+  (if (plist-get snapshot :pinned)
+      'pinned
+    (plist-get snapshot :band)))
 
 (defun agent-shell-vertico-sidebar--job-fields (buffer status snoozed)
   "Return the job fields of BUFFER in STATUS as a plist.
 
 SNOOZED is the session's snooze time as drawn.  The plist holds
-`:state', `:tempo', `:needs', `:in-flight', `:band' and `:section',
-the part of a render snapshot that `--band-for' reads."
+`:state', `:tempo', `:needs', `:in-flight', `:band', `:pinned' and
+`:section', the part of a render snapshot that `--band-for' reads."
   (pcase-let* ((`(,state ,tempo ,needs)
                 (agent-shell-vertico-sidebar--job-state buffer status))
                (fields (list :state state :tempo tempo :needs needs
                              :in-flight (eq status 'background)))
                (band (agent-shell-vertico-sidebar--band-for
-                      (append (list :snoozed snoozed) fields))))
+                      (append (list :snoozed snoozed) fields)))
+               (pinned (agent-shell-vertico-sidebar--get buffer 'pinned)))
     (append fields
             (list :band band
+                  :pinned pinned
                   :section (agent-shell-vertico-sidebar--section-for
-                            (list :band band))))))
+                            (list :band band :pinned pinned))))))
 
 (defun agent-shell-vertico-sidebar--section (buffer)
   "Return the state section BUFFER is drawn in."
@@ -1055,6 +1068,12 @@ as `agent-shell-vertico-sidebar--unread-for' keeps the unread one."
 (defun agent-shell-vertico-sidebar--snoozed-p (buffer)
   "Return non-nil when the reader has put BUFFER off."
   (and (agent-shell-vertico-sidebar--snoozed-time buffer) t))
+
+(defun agent-shell-vertico-sidebar--pinned-p (buffer)
+  "Return non-nil when the reader has pinned BUFFER."
+  (and (or (agent-shell-vertico-sidebar--snapshot-field buffer :pinned)
+           (agent-shell-vertico-sidebar--get buffer 'pinned))
+       t))
 
 (defun agent-shell-vertico-sidebar--needs-attention-p (buffer)
   "Return non-nil when BUFFER is waiting on the reader.
@@ -1685,10 +1704,13 @@ newest first so a session that was read or finished recently stays near
 the top of its tier.  See
 `agent-shell-vertico-sidebar--oldest-first-rank-p' for which is which.
 
-Whatever SORT-BY is, a snoozed session sorts after every session that
-is not, and each party keeps SORT-BY's order among itself: the reader
-has said the snoozed ones can wait, so they wait below the rest."
-  (let* ((left-snoozed (agent-shell-vertico-sidebar--snoozed-p left))
+Whatever SORT-BY is, a pinned session sorts before every session that
+is not, and a snoozed one after every session that is not, and each
+party keeps SORT-BY's order among itself: the reader has put the pinned
+ones first and said the snoozed ones can wait."
+  (let* ((left-pinned (agent-shell-vertico-sidebar--pinned-p left))
+         (right-pinned (agent-shell-vertico-sidebar--pinned-p right))
+         (left-snoozed (agent-shell-vertico-sidebar--snoozed-p left))
          (right-snoozed (agent-shell-vertico-sidebar--snoozed-p right))
          (left-title (agent-shell-vertico-sidebar--title left))
          (right-title (agent-shell-vertico-sidebar--title right))
@@ -1725,6 +1747,7 @@ has said the snoozed ones can wait, so they wait below the rest."
                                      0.0))
                        (_ 0.0))))
     (cond
+     ((not (eq left-pinned right-pinned)) left-pinned)
      ((not (eq left-snoozed right-snoozed)) right-snoozed)
      ((eq sort-by 'name)
       (agent-shell-vertico-sidebar--text-lessp left-title right-title))
@@ -2298,6 +2321,17 @@ draws no overline, so there the split is the order alone."
     (when expanded
       (agent-shell-vertico-sidebar--insert-sessions buffers width t 1))))
 
+(defun agent-shell-vertico-sidebar--split-pinned (buffers)
+  "Return (PINNED . REST), BUFFERS split by whether the reader pinned them.
+The project view draws the pinned ones under their own header, above
+the projects."
+  (let (pinned rest)
+    (dolist (buffer buffers)
+      (if (agent-shell-vertico-sidebar--pinned-p buffer)
+          (push buffer pinned)
+        (push buffer rest)))
+    (cons (nreverse pinned) (nreverse rest))))
+
 (defun agent-shell-vertico-sidebar--section-folded-p (section)
   "Return non-nil when state SECTION hides its rows in this sidebar."
   (let ((unset (make-symbol "unset")))
@@ -2485,12 +2519,20 @@ same line."
                  (agent-shell-vertico-sidebar--insert-section
                   section members width)))
               ('project
-               (dolist (group
-                        (agent-shell-vertico-sidebar--sort-groups
-                         (agent-shell-vertico-sidebar--group-buffers roots)
-                         agent-shell-vertico-sidebar-sort-by))
-                 (agent-shell-vertico-sidebar--insert-project
-                  (car group) (cdr group) width)))
+               (pcase-let ((`(,pinned . ,rest)
+                            (agent-shell-vertico-sidebar--split-pinned roots)))
+                 (when pinned
+                   (agent-shell-vertico-sidebar--insert-section
+                    'pinned
+                    (agent-shell-vertico-sidebar--sort-buffers
+                     pinned agent-shell-vertico-sidebar-sort-by)
+                    width))
+                 (dolist (group
+                          (agent-shell-vertico-sidebar--sort-groups
+                           (agent-shell-vertico-sidebar--group-buffers rest)
+                           agent-shell-vertico-sidebar-sort-by))
+                   (agent-shell-vertico-sidebar--insert-project
+                    (car group) (cdr group) width))))
               (_
                (agent-shell-vertico-sidebar--insert-sessions
                 (agent-shell-vertico-sidebar--sort-buffers
@@ -4062,6 +4104,7 @@ permission decision or a reply.  Nothing is shown when none does."
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
+   "  P           Pin the session to the top, or unpin it\n"
    "  S           List the session's subagents and background tasks\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
@@ -4096,6 +4139,7 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
@@ -4131,6 +4175,7 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
@@ -4173,6 +4218,7 @@ permission decision or a reply.  Nothing is shown when none does."
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
+    ("P" . agent-shell-vertico-sidebar-pin)
     ("S" . agent-shell-vertico-sidebar-subagents)
     ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
@@ -4441,8 +4487,27 @@ put off."
       (user-error "Session %s is still working" (buffer-name buffer)))
      (t
       (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
+      (agent-shell-vertico-sidebar--set buffer 'pinned nil)
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s snoozed" (buffer-name buffer))))))
+
+(defun agent-shell-vertico-sidebar-pin ()
+  "Pin the session at point, or the current session, or unpin it.
+
+A pinned session sorts above every other session, whatever the sort,
+and the state and project views draw it under a Pinned header at the
+top.  It keeps its state: the header still counts it in its own band.
+Pinning wakes a snoozed session, and snoozing unpins one."
+  (interactive)
+  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+    (if (agent-shell-vertico-sidebar--get buffer 'pinned)
+        (progn
+          (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+          (message "Session %s unpinned" (buffer-name buffer)))
+      (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
+      (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+      (message "Session %s pinned" (buffer-name buffer)))
+    (agent-shell-vertico-sidebar-refresh)))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-jump (&optional read)
@@ -4614,11 +4679,18 @@ left."
                            (agent-shell-vertico-sidebar--sort-buffers
                             roots sort-by))))
                         ('project
-                         (seq-mapcat
-                          #'cdr
-                          (agent-shell-vertico-sidebar--sort-groups
-                           (agent-shell-vertico-sidebar--group-buffers roots)
-                           sort-by)))
+                         (pcase-let ((`(,pinned . ,rest)
+                                      (agent-shell-vertico-sidebar--split-pinned
+                                       roots)))
+                           (append
+                            (agent-shell-vertico-sidebar--sort-buffers
+                             pinned sort-by)
+                            (seq-mapcat
+                             #'cdr
+                             (agent-shell-vertico-sidebar--sort-groups
+                              (agent-shell-vertico-sidebar--group-buffers
+                               rest)
+                              sort-by)))))
                         (_ (agent-shell-vertico-sidebar--sort-buffers
                             roots sort-by)))))
       (seq-mapcat (lambda (buffer)
@@ -5059,11 +5131,14 @@ limit."
           (setq top parent))
         (pcase agent-shell-vertico-sidebar-group-by
           ('project
-           (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
-             (puthash (agent-shell-vertico-sidebar--project-root top) t
-                      agent-shell-vertico-sidebar--expanded-projects)
-             (agent-shell-vertico-sidebar--render)
-             (agent-shell-vertico-sidebar--goto-node node)))
+           (if (agent-shell-vertico-sidebar--pinned-p top)
+               (agent-shell-vertico-sidebar--set-section-folded 'pinned nil)
+             (when (hash-table-p
+                    agent-shell-vertico-sidebar--expanded-projects)
+               (puthash (agent-shell-vertico-sidebar--project-root top) t
+                        agent-shell-vertico-sidebar--expanded-projects)))
+           (agent-shell-vertico-sidebar--render)
+           (agent-shell-vertico-sidebar--goto-node node))
           ('state
            (let ((section (agent-shell-vertico-sidebar--section top)))
              (agent-shell-vertico-sidebar--set-section-folded section nil)
