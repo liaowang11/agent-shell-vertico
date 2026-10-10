@@ -4040,6 +4040,22 @@ counts each in its band."
         (should (equal (agent-shell-vertico-sidebar--display-order)
                        (list beta alpha)))))))
 
+(ert-deftest agent-shell-vertico-sidebar-mode-line-counts-a-pinned-wait ()
+  "A pinned session that waits still needs the reader."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/a/"
+                '((:session . ((:id . "w") (:title . "Waiting"))))))
+    (let ((agent-shell-test-buffers (list waiting))
+          (agent-shell-test-statuses (list (cons waiting 'blocked))))
+      (agent-shell-vertico-sidebar--set waiting 'pinned 1.0)
+      (should (equal (substring-no-properties
+                      (agent-shell-vertico-sidebar--mode-line-text))
+                     " 1 need you"))
+      (should (equal (substring-no-properties
+                      (agent-shell-vertico-sidebar--project-summary
+                       (list waiting)))
+                     "✻ 1")))))
+
 (ert-deftest agent-shell-vertico-sidebar-pin-is-bound-to-capital-p ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "P"))
               #'agent-shell-vertico-sidebar-pin))

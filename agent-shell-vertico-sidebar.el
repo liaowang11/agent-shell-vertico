@@ -1003,15 +1003,23 @@ SNOOZED is the session's snooze time as drawn.  The plist holds
                   :section (agent-shell-vertico-sidebar--section-for
                             (list :band band :pinned pinned))))))
 
-(defun agent-shell-vertico-sidebar--section (buffer)
-  "Return the state section BUFFER is drawn in."
-  (or (agent-shell-vertico-sidebar--snapshot-field buffer :section)
+(defun agent-shell-vertico-sidebar--job-field (buffer field)
+  "Return job FIELD of BUFFER, from the render snapshot when there is one."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer field)
       (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
         (plist-get (agent-shell-vertico-sidebar--job-fields
                     buffer status
                     (agent-shell-vertico-sidebar--snoozed-for
                      status (agent-shell-vertico-sidebar--get buffer 'snoozed)))
-                   :section))))
+                   field))))
+
+(defun agent-shell-vertico-sidebar--section (buffer)
+  "Return the state section BUFFER is drawn in."
+  (agent-shell-vertico-sidebar--job-field buffer :section))
+
+(defun agent-shell-vertico-sidebar--band (buffer)
+  "Return the band BUFFER is counted in, pinned or not."
+  (agent-shell-vertico-sidebar--job-field buffer :band))
 
 (defun agent-shell-vertico-sidebar--group-by-section (buffers)
   "Group BUFFERS by state section, in section order.
@@ -2220,7 +2228,7 @@ other bands are the whole sidebar's header, and every status is on the
 session row that has it, so a project header states only what asks for
 a reply."
   (let ((count (seq-count (lambda (buffer)
-                            (eq (agent-shell-vertico-sidebar--section buffer)
+                            (eq (agent-shell-vertico-sidebar--band buffer)
                                 'attention))
                           buffers)))
     (when (> count 0)
@@ -4030,7 +4038,7 @@ margins that WIDTH leaves out."
   "Return the titles of the live sessions in the attention band."
   (delq nil
         (mapcar (lambda (buffer)
-                  (when (eq (agent-shell-vertico-sidebar--section buffer)
+                  (when (eq (agent-shell-vertico-sidebar--band buffer)
                             'attention)
                     (agent-shell-vertico-sidebar--title buffer)))
                 (seq-filter #'buffer-live-p (agent-shell-buffers)))))
