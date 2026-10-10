@@ -15611,6 +15611,98 @@ burst on an unread mark is otherwise silent."
                     ?S agent-shell-vertico-sidebar-jump-dispatch-alist))
               #'agent-shell-vertico-sidebar--jump-subagents)))
 
+(ert-deftest agent-shell-vertico-sidebar-rename-renames-the-session ()
+  "`C' renames the session at point, in that session."
+  (agent-shell-vertico-tests--with-background nil
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--render)
+      (search-forward "Alpha")
+      (agent-shell-vertico-sidebar-rename))
+    (should (eq agent-shell-test-last-command 'agent-shell-rename-session))
+    (should (eq agent-shell-test-last-buffer alpha)))
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "C"))
+                #'agent-shell-vertico-sidebar-rename)))
+  (should (eq (alist-get "C" agent-shell-vertico-sidebar--evil-bindings
+                         nil nil #'equal)
+              #'agent-shell-vertico-sidebar-rename))
+  (should (eq (lookup-key agent-shell-vertico-embark-map (kbd "C"))
+              #'agent-shell-vertico-rename-session))
+  (should (eq (car (alist-get
+                    ?C agent-shell-vertico-sidebar-jump-dispatch-alist))
+              #'agent-shell-vertico-rename-session)))
+
+(ert-deftest agent-shell-vertico-rename-session-needs-the-command ()
+  "An agent-shell without `agent-shell-rename-session' is a `user-error'."
+  (agent-shell-vertico-tests--with-background nil
+    (cl-letf (((symbol-function 'agent-shell-rename-session) nil))
+      (should-error (agent-shell-vertico-rename-session alpha)
+                    :type 'user-error))))
+
+(defun agent-shell-vertico-tests--sidebar-action (command)
+  "Run sidebar COMMAND with point on Alpha's row."
+  (with-temp-buffer
+    (agent-shell-vertico-sidebar-mode)
+    (agent-shell-vertico-sidebar--render)
+    (search-forward "Alpha")
+    (funcall command)))
+
+(defun agent-shell-vertico-tests--sidebar-key-p (key command)
+  "Return non-nil when sidebar KEY runs COMMAND in every keymap."
+  (and (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd key))
+           command)
+       (eq (lookup-key agent-shell-vertico-sidebar-action-map (kbd key))
+           command)
+       (eq (alist-get key agent-shell-vertico-sidebar--evil-bindings
+                      nil nil #'equal)
+           command)))
+
+(ert-deftest agent-shell-vertico-sidebar-session-commands-run-in-session ()
+  "`A', `a', `F' and `Y' run their agent-shell command in the session."
+  (dolist (case '(("A" agent-shell-vertico-sidebar-archive
+                   agent-shell-archive-session)
+                  ("a" agent-shell-vertico-sidebar-side
+                   agent-shell-side)
+                  ("F" agent-shell-vertico-sidebar-fork
+                   agent-shell-fork)
+                  ("Y" agent-shell-vertico-sidebar-copy-session-id
+                   agent-shell-copy-session-id)))
+    (pcase-let ((`(,key ,command ,delegate) case))
+      (setq agent-shell-test-last-command nil)
+      (agent-shell-vertico-tests--with-background nil
+        (cl-letf (((symbol-function 'agent-shell-side)
+                   (lambda ()
+                     (interactive)
+                     (setq agent-shell-test-last-command 'agent-shell-side
+                           agent-shell-test-last-buffer (current-buffer)))))
+          (agent-shell-vertico-tests--sidebar-action command))
+        (should (eq agent-shell-test-last-command delegate))
+        (should (eq agent-shell-test-last-buffer alpha)))
+      (should (agent-shell-vertico-tests--sidebar-key-p key command)))))
+
+(ert-deftest agent-shell-vertico-sidebar-session-commands-dispatch-from-jump ()
+  "The jump offers archive, fork and copy, but not `a', a jump key."
+  (dolist (case '((?A . agent-shell-vertico-archive-session)
+                  (?F . agent-shell-vertico-fork-session)
+                  (?Y . agent-shell-vertico-copy-session-id)))
+    (should (eq (car (alist-get
+                      (car case)
+                      agent-shell-vertico-sidebar-jump-dispatch-alist))
+                (cdr case))))
+  (should (memq ?a agent-shell-vertico-sidebar-jump-keys)))
+
+(ert-deftest agent-shell-vertico-optional-session-commands-need-the-command ()
+  "Archive and side conversations are a `user-error' when absent."
+  (agent-shell-vertico-tests--with-background nil
+    (cl-letf (((symbol-function 'agent-shell-archive-session) nil)
+              ((symbol-function 'agent-shell-side) nil))
+      (should-error (agent-shell-vertico-archive-session alpha)
+                    :type 'user-error)
+      (should-error (agent-shell-vertico-side-conversation alpha)
+                    :type 'user-error))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

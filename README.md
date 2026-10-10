@@ -390,9 +390,10 @@ Each of these jumps is recorded in the jump history above, so
 coloured, and pressing an action's key does that to the next session chosen
 instead of displaying it, the way `ace-window` dispatches on
 `aw-dispatch-alist`.  The shipped actions are `o` open in another window, `x`
-kill, `r` restart, `i` interrupt, `m` set mode, `M` set model, `t` open
-transcript, `T` view traffic, `u` mark unread, `!` mark read, `z` snooze or
-wake, and `S` list subagents.  The prompt names the pending action, the keys
+kill, `r` restart, `i` interrupt, `m` set mode, `M` set model, `C` rename, `A`
+archive, `F` fork, `Y` copy the session ID, `t` open transcript, `T` view
+traffic, `u` mark unread, `!` mark read, `z` snooze or wake, and `S` list
+subagents.  The prompt names the pending action, the keys
 stay drawn while you choose, and the action runs once the sidebar is back as it
 was, so a command that asks something of its own has a window to ask in.  Each
 entry is a key, a function of one session buffer, and a description, so a custom
@@ -524,9 +525,10 @@ The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
 previous row, session, section or project header), `TAB` (fold or session
 details), `S-TAB` (cycle all fold levels), `=` (cycle the views), `s` (sort),
 `g` (refresh), `c` (new session), `k` (kill), `r` (restart), `i` (interrupt),
-`m`/`M` (mode/model), `t`/`T` (traffic/transcript), `u`/`!` (mark unread/read),
-`z` (snooze), `P` (pin), `p` (peek), `S` (list subagents), `?` (show the key
-reference), and `q` (close the side window).
+`m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation),
+`F` (fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `u`/`!`
+(mark unread/read), `z` (snooze), `P` (pin), `p` (peek), `S` (list
+subagents), `?` (show the key reference), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the current row or
@@ -534,11 +536,15 @@ metadata field, `o` opens the session, `O` opens it in another window, `TAB`
 toggles the current row, and `S-TAB` cycles every row through the fold levels.
 `gr` refreshes, `D` kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
-read, `z` snoozes it, `P` pins it, `p` peeks at it, and `S` lists its
-subagents; `!`, `z` and `S` take
-precedence over Evil's `evil-shell-command`, `z` prefix (scrolling and folds)
-and `evil-change-whole-line` in this read-only list, and `P` and `p` replace
-`evil-paste-before` and `evil-paste-after`.  `q` closes the sidebar,
+read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
+subagents, `C` renames it, `A` archives it, `a` starts a side conversation from
+it, `F` forks it, and `Y` copies its session ID; `!`, `z`, `S`, `C`, `A`, `a`,
+`F` and `Y` take precedence over Evil's `evil-shell-command`, `z` prefix
+(scrolling and folds), `evil-change-whole-line`, `evil-change-line`,
+`evil-append-line`, `evil-append`, `evil-find-char-backward` and
+`evil-yank-line` in this read-only list, and `P` and `p` replace
+`evil-paste-before` and `evil-paste-after`.
+`q` closes the sidebar,
 while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
 `v` remains Evil's visual-state key.  `?` shows the same key reference.  The
 local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
@@ -933,6 +939,7 @@ session actions follow `agent-shell-manager` closely:
 - `i` interrupt session
 - `m` set session mode
 - `M` set session model
+- `C` rename the session (needs an agent with the sessionIndex extension)
 
 Normal `embark-buffer-map` actions stay available too.
 

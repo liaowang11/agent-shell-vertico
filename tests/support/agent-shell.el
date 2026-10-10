@@ -321,6 +321,31 @@ SUBMIT and NO-FOCUS are recorded with it, as upstream takes them."
   (setq agent-shell-test-last-command 'agent-shell-set-session-model
         agent-shell-test-last-buffer (current-buffer)))
 
+(defun agent-shell-rename-session (title)
+  "Record a rename session action, ignoring TITLE."
+  (interactive (list "Renamed"))
+  (ignore title)
+  (setq agent-shell-test-last-command 'agent-shell-rename-session
+        agent-shell-test-last-buffer (current-buffer)))
+
+(defun agent-shell-archive-session ()
+  "Record an archive session action."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-archive-session
+        agent-shell-test-last-buffer (current-buffer)))
+
+(defun agent-shell-fork ()
+  "Record a fork action."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-fork
+        agent-shell-test-last-buffer (current-buffer)))
+
+(defun agent-shell-copy-session-id ()
+  "Record a copy session ID action."
+  (interactive)
+  (setq agent-shell-test-last-command 'agent-shell-copy-session-id
+        agent-shell-test-last-buffer (current-buffer)))
+
 (defun agent-shell-start (&rest args)
   "Record a start action with ARGS.
 Returns the stubbed shell buffer, as the real command does."

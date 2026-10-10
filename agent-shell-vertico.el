@@ -37,6 +37,11 @@
 (declare-function agent-shell--resolved-agent-configs "agent-shell" ())
 (declare-function agent-shell--display-buffer "agent-shell")
 (declare-function agent-shell--start "agent-shell" (&rest arguments))
+(declare-function agent-shell-archive-session "agent-shell" ())
+(declare-function agent-shell-copy-session-id "agent-shell" ())
+(declare-function agent-shell-fork "agent-shell" ())
+(declare-function agent-shell-rename-session "agent-shell" (title))
+(declare-function agent-shell-side "agent-shell-side" (&optional message))
 (declare-function agent-shell-resume-session "agent-shell" (session-id))
 (declare-function agent-shell-select-config "agent-shell" (&rest arguments))
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
@@ -189,6 +194,7 @@ previews the session under point.")
   "i" #'agent-shell-vertico-interrupt-session
   "m" #'agent-shell-vertico-set-session-mode
   "M" #'agent-shell-vertico-set-session-model
+  "C" #'agent-shell-vertico-rename-session
   "t" #'agent-shell-vertico-view-traffic
   "T" #'agent-shell-vertico-open-transcript)
 
@@ -1341,6 +1347,57 @@ Call this only after Embark is loaded."
   (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-set-session-model)))
+
+(defun agent-shell-vertico-rename-session (buffer)
+  "Rename the session of BUFFER on the agent's side.
+
+This is `agent-shell-rename-session', which needs an agent offering
+claude-agent-acp's sessionIndex extension.  The new title arrives
+later through the agent, so a list showing the old one redraws when
+it does."
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (unless (fboundp 'agent-shell-rename-session)
+    (user-error "This agent-shell cannot rename sessions"))
+  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer))
+    (call-interactively #'agent-shell-rename-session)))
+
+(defun agent-shell-vertico-archive-session (buffer)
+  "Archive the session of BUFFER, which stops and closes it.
+
+This is `agent-shell-archive-session', which asks first and needs an
+agent offering claude-agent-acp's sessionIndex extension."
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (unless (fboundp 'agent-shell-archive-session)
+    (user-error "This agent-shell cannot archive sessions"))
+  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer))
+    (call-interactively #'agent-shell-archive-session)))
+
+(defun agent-shell-vertico-fork-session (buffer)
+  "Fork the session of BUFFER into a new shell."
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer))
+    (call-interactively #'agent-shell-fork)))
+
+(defun agent-shell-vertico-side-conversation (buffer)
+  "Start a side conversation forked from the session of BUFFER.
+
+This is `agent-shell-side', from the agent-shell-side package."
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (unless (fboundp 'agent-shell-side)
+    (user-error "Side conversations need the agent-shell-side package"))
+  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer))
+    (call-interactively #'agent-shell-side)))
+
+(defun agent-shell-vertico-copy-session-id (buffer)
+  "Copy the session ID of BUFFER to the kill ring."
+  (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
+  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
+                        (agent-shell-vertico--session-buffer buffer))
+    (call-interactively #'agent-shell-copy-session-id)))
 
 ;;; Imenu
 ;;

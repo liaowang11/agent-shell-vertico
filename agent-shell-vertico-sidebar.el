@@ -456,6 +456,10 @@ that tidy up after a killed buffer leave nothing behind."
     (?i agent-shell-vertico-interrupt-session "interrupt")
     (?m agent-shell-vertico-set-session-mode "set mode")
     (?M agent-shell-vertico-set-session-model "set model")
+    (?C agent-shell-vertico-rename-session "rename")
+    (?A agent-shell-vertico-archive-session "archive")
+    (?F agent-shell-vertico-fork-session "fork")
+    (?Y agent-shell-vertico-copy-session-id "copy the session ID of")
     (?t agent-shell-vertico-open-transcript "open transcript")
     (?T agent-shell-vertico-view-traffic "view traffic")
     (?u agent-shell-vertico-sidebar--jump-mark-unread "mark unread")
@@ -3894,6 +3898,36 @@ With a mouse EVENT, move to the clicked position before dispatching."
   (agent-shell-vertico-sidebar--call-session-action
    #'agent-shell-vertico-set-session-model))
 
+(defun agent-shell-vertico-sidebar-rename ()
+  "Rename the session at point."
+  (interactive)
+  (agent-shell-vertico-sidebar--call-session-action
+   #'agent-shell-vertico-rename-session))
+
+(defun agent-shell-vertico-sidebar-archive ()
+  "Archive the session at point."
+  (interactive)
+  (agent-shell-vertico-sidebar--call-session-action
+   #'agent-shell-vertico-archive-session))
+
+(defun agent-shell-vertico-sidebar-fork ()
+  "Fork the session at point into a new shell."
+  (interactive)
+  (agent-shell-vertico-sidebar--call-session-action
+   #'agent-shell-vertico-fork-session))
+
+(defun agent-shell-vertico-sidebar-side ()
+  "Start a side conversation forked from the session at point."
+  (interactive)
+  (agent-shell-vertico-sidebar--call-session-action
+   #'agent-shell-vertico-side-conversation))
+
+(defun agent-shell-vertico-sidebar-copy-session-id ()
+  "Copy the session ID of the session at point."
+  (interactive)
+  (agent-shell-vertico-sidebar--call-session-action
+   #'agent-shell-vertico-copy-session-id))
+
 (defun agent-shell-vertico-sidebar-view-traffic ()
   "View traffic for the session at point."
   (interactive)
@@ -4262,6 +4296,10 @@ permission decision or a reply.  Nothing is shown when none does."
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"
    "  m / M       Set mode / model\n"
+   "  C           Rename (change the title of) the session\n"
+   "  A           Archive the session, stopping and closing it\n"
+   "  a / F       Start a side conversation / fork the session\n"
+   "  Y           Copy the session ID\n"
    "  t / T       Traffic / transcript (regular); reverse in Evil\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
@@ -4297,6 +4335,11 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
     (define-key map (kbd "m") #'agent-shell-vertico-sidebar-set-mode)
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
+    (define-key map (kbd "C") #'agent-shell-vertico-sidebar-rename)
+    (define-key map (kbd "A") #'agent-shell-vertico-sidebar-archive)
+    (define-key map (kbd "a") #'agent-shell-vertico-sidebar-side)
+    (define-key map (kbd "F") #'agent-shell-vertico-sidebar-fork)
+    (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
@@ -4334,6 +4377,11 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
     (define-key map (kbd "m") #'agent-shell-vertico-sidebar-set-mode)
     (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
+    (define-key map (kbd "C") #'agent-shell-vertico-sidebar-rename)
+    (define-key map (kbd "A") #'agent-shell-vertico-sidebar-archive)
+    (define-key map (kbd "a") #'agent-shell-vertico-sidebar-side)
+    (define-key map (kbd "F") #'agent-shell-vertico-sidebar-fork)
+    (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
@@ -4378,6 +4426,11 @@ permission decision or a reply.  Nothing is shown when none does."
     ("I" . agent-shell-vertico-sidebar-interrupt)
     ("m" . agent-shell-vertico-sidebar-set-mode)
     ("M" . agent-shell-vertico-sidebar-set-model)
+    ("C" . agent-shell-vertico-sidebar-rename)
+    ("A" . agent-shell-vertico-sidebar-archive)
+    ("a" . agent-shell-vertico-sidebar-side)
+    ("F" . agent-shell-vertico-sidebar-fork)
+    ("Y" . agent-shell-vertico-sidebar-copy-session-id)
     ("t" . agent-shell-vertico-sidebar-open-transcript)
     ("T" . agent-shell-vertico-sidebar-view-traffic)
     ("u" . agent-shell-vertico-sidebar-mark-unread)
@@ -4418,8 +4471,8 @@ while normal and motion states get the same direct mnemonic commands."
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (equal (car binding) "gr")
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M"
-                     "t" "T" "u" "!" "z" "P" "p" "S" "?" "q"))
+      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M" "C"
+                     "A" "a" "F" "Y" "t" "T" "u" "!" "z" "P" "p" "S" "?" "q"))
         (when-let ((command (lookup-key
                              agent-shell-vertico-sidebar-action-map
                              (kbd key))))
