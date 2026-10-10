@@ -1302,9 +1302,7 @@ repeating those queries during one redisplay."
            :recency-time recency-time
            :model (agent-shell-vertico--model-name buffer)
            :mode (agent-shell-vertico--mode-name buffer)
-           :agent (agent-shell-vertico--agent-name buffer)
-           :details-visible
-           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
+           :agent (agent-shell-vertico--agent-name buffer))
      (list :detail (agent-shell-vertico-sidebar--detail-text buffer)
            :result (agent-shell-vertico-sidebar--get buffer 'result)
            :error (agent-shell-vertico-sidebar--get buffer 'error)
@@ -4315,8 +4313,8 @@ while normal and motion states get the same direct mnemonic commands."
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (equal (car binding) "gr")
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r"
-                     "i" "m" "M" "t" "T" "u" "!" "?" "q"))
+      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M"
+                     "t" "T" "u" "!" "z" "P" "p" "S" "?" "q"))
         (when-let ((command (lookup-key
                              agent-shell-vertico-sidebar-action-map
                              (kbd key))))
@@ -4557,6 +4555,7 @@ put off."
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s snoozed" (buffer-name buffer))))))
 
+;;;###autoload
 (defun agent-shell-vertico-sidebar-pin ()
   "Pin the session at point, or the current session, or unpin it.
 
@@ -4633,6 +4632,7 @@ Pinning wakes a snoozed session, and snoozing unpins one."
      (propertize "r reply · RET open · q close"
                  'face 'agent-shell-vertico-sidebar-detail))))
 
+;;;###autoload
 (defun agent-shell-vertico-sidebar-peek ()
   "Show what the session at point asks and last said, below the sidebar.
 

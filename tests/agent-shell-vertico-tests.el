@@ -1316,6 +1316,22 @@ anyone has read it, and only a session waiting on the reader needs them."
                               agent-shell-vertico-sidebar--evil-bindings))
                   #'agent-shell-vertico-sidebar-refresh)))))
 
+(ert-deftest agent-shell-vertico-sidebar-evil-bindings-mirror-the-action-map ()
+  "Every key of the `C-c' action map is bound under `C-c' in Evil too."
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (_state key definition)
+                 (push (cons (key-description key) definition) bindings)))
+              ((symbol-function 'evil-get-auxiliary-keymap)
+               (lambda (&rest _args) nil)))
+      (agent-shell-vertico-sidebar--bind-evil-keys)
+      (map-keymap
+       (lambda (event command)
+         (when (commandp command)
+           (let ((key (key-description (vector ?\C-c event))))
+             (should (eq (cdr (assoc key bindings)) command)))))
+       agent-shell-vertico-sidebar-action-map))))
+
 (ert-deftest agent-shell-vertico-sidebar-hides-mode-line ()
   (with-temp-buffer
     (agent-shell-vertico-sidebar-mode)
@@ -4971,33 +4987,57 @@ Unread output is not something to report: the session is idle."
   "A project header counts the sessions that need the reader, no others.
 
 An unread failure or finished turn is idle, as the header counts it,
-and says so on its own row."
+and says so on its own row, so a project holding only those has no
+count at all."
   (agent-shell-vertico-tests--with-session-buffers
       ((failed "Codex Agent @ alpha" "/work/alpha/"
                '((:session . ((:id . "f") (:title . "Failed")))))
        (waiting "Claude Agent @ alpha" "/work/alpha/"
                 '((:session . ((:id . "w") (:title . "Waiting")))))
-       (finished "Codex Agent @ alpha" "/work/alpha/"
-                 '((:session . ((:id . "d") (:title . "Finished"))))))
-    (let ((agent-shell-test-buffers (list failed waiting finished))
+       (asking "Codex Agent @ alpha<2>" "/work/alpha/"
+               '((:session . ((:id . "a") (:title . "Asking")))))
+       (finished "Codex Agent @ alpha<3>" "/work/alpha/"
+                 '((:session . ((:id . "d") (:title . "Finished")))))
+       (beta-failed "Codex Agent @ beta" "/work/beta/"
+                    '((:session . ((:id . "bf") (:title . "Beta failed")))))
+       (beta-done "Claude Agent @ beta" "/work/beta/"
+                  '((:session . ((:id . "bd") (:title . "Beta done"))))))
+    (let ((agent-shell-test-buffers
+           (list failed waiting asking finished beta-failed beta-done))
           (agent-shell-test-statuses (list (cons failed 'ready)
                                            (cons waiting 'blocked)
-                                           (cons finished 'ready)))
+                                           (cons asking 'blocked)
+                                           (cons finished 'ready)
+                                           (cons beta-failed 'ready)
+                                           (cons beta-done 'ready)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar-group-by 'project))
-      (agent-shell-vertico-sidebar--set failed 'state 'failed)
-      (agent-shell-vertico-sidebar--set failed 'unread 10.0)
-      (agent-shell-vertico-sidebar--set finished 'unread 10.0)
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil))
+      (dolist (buffer (list failed beta-failed))
+        (agent-shell-vertico-sidebar--set buffer 'state 'failed))
+      (dolist (buffer (list failed finished beta-failed beta-done))
+        (agent-shell-vertico-sidebar--set buffer 'unread 10.0))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (goto-char (point-min))
-        (let ((line (buffer-substring-no-properties
-                     (point) (line-end-position))))
-          (should (string-suffix-p "✻ 1" line))
-          (should-not (string-match-p "✖" line))
-          (should-not (string-match-p "✓" line)))))))
+        (let (headers)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (when (eq (get-text-property
+                       (point) 'agent-shell-vertico-sidebar-node-kind)
+                      'project)
+              (push (cons (get-text-property
+                           (point) 'agent-shell-vertico-sidebar-node)
+                          (buffer-substring-no-properties
+                           (point) (line-end-position)))
+                    headers))
+            (forward-line 1))
+          (should (string-suffix-p
+                   "✻ 2" (cdr (assoc "/work/alpha/" headers))))
+          (let ((beta (cdr (assoc "/work/beta/" headers))))
+            (should beta)
+            (should-not (string-match-p "✻\\|[0-9]" beta))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
