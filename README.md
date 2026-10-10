@@ -113,30 +113,46 @@ one that previews the prompt under point.
 
 `agent-shell-vertico-sidebar` provides a compact side window for jumping
 between live sessions without opening a minibuffer.  It is modelled on Claude
-Code's agent view, and it has three views; `=` cycles them:
+Code's agent view, and it has two views; `=` switches between them:
 
 - **state** (the default) puts each session under one of the agent view's
-  sections: Pinned, Needs you, Working, Idle and Snoozed.  Empty sections are
-  left out.  Snoozed starts folded
-  (`agent-shell-vertico-sidebar-folded-sections`), and Idle shows its first
-  three sessions (`agent-shell-vertico-sidebar-idle-rows`) and then a
-  `… N more` row that `RET` opens; when only one session is left over, it is
-  shown instead of a `… 1 more` row.
+  sections: Pinned, Needs input, Working, Completed and Snoozed.  Empty
+  sections are left out.  Snoozed starts folded
+  (`agent-shell-vertico-sidebar-folded-sections`); an open section shows
+  every session it holds.
 - **project** puts each session under a foldable project header, with a
-  Pinned section above the projects.
-- **flat** is one list.
+  Pinned section above the projects.  Projects start open
+  (`agent-shell-vertico-sidebar-expand-by-default`).
 
-In the state and flat views the default `project` metadata entry is promoted
-to a compact context line below each row (for example,
-`⌂ agent-shell-vertico`), since no header above the row names the project.
+`agent-shell-vertico-sidebar-group-by` picks the view: `state` or `project`.
+Any other value, nil included, is the state view.
+
+Every section header counts the sessions under it, side conversations
+included, and how many of them hold output you have not read, whether the
+section is folded or open:
+
+```
+▼ Completed · 5 · • 2
+```
+
+The unread count is left out when there is none.  Hover the Needs input
+count to name the sessions waiting for input, and click it to run
+`agent-shell-vertico-sidebar-jump`; a click on the label still folds the
+section.  A project header reads the same way, `▼ my-project · 4 · • 1`, and
+when some of its sessions wait for you it ends in `✻ N` at the right edge.
+
+In the state view, and under the project view's Pinned header, the default
+`project` metadata entry is promoted to a compact context line below each row
+(for example, `⌂ agent-shell-vertico`), since no header above the row names
+the project.
 
 Project labels prefer agent-shell's configured project name and fall back to
 the directory basename.  Hover shows the full working directory.
 
 ### What a row says
 
-Each session is a title line, a detail line, and in the state and flat views
-a project line:
+Each session is a title line, a detail line, and in the state view a project
+line:
 
 ```
 ✻ Fix the login redirect                 3m
@@ -148,18 +164,18 @@ The detail line appears only when there is something to say: an idle session
 whose turn the sidebar never saw finish, for example, has none.
 
 The mark is Claude Code's star, and its colour is the session's state: blue
-while it works, yellow while it waits for you, red when its last turn failed,
-green when its last turn finished, grey when it stopped or has started and
-nobody has prompted it yet, and purple when you snoozed it.  A shell still
+while it works, yellow while it waits for you or for its first prompt, red
+when its last turn failed, green when its last turn finished, grey when it
+stopped, and purple when you snoozed it.  A shell still
 starting its agent session counts as working: its star is blue and spins.  A
 working star spins through Claude Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
 `agent-shell-vertico-sidebar-animate-busy` off it is a still `●`.  A session
 whose agent process has exited is a dot, `∙`.  Output you have not read makes
 the title bold and puts a `•` before the age, in the star's colour; it does not
-change the colour or the section, so a finished turn nobody has read is Idle,
-exactly as in the agent view.  The dot is what tells an unread finished row
-from a read one in the flat and project views, where the `priority` sort lists
-unread sessions first.
+change the colour or the section, so a finished turn nobody has read is
+Completed, exactly as in the agent view.  The dot is what tells an unread
+finished row from a read one, since the `priority` sort lists unread sessions
+first within a section or project.
 
 The detail line is the one line that matters for the state.  A waiting session
 says what it waits for (`Allow: Run make check`), a working one shows its
@@ -169,10 +185,18 @@ turn shows its last line.  Only that last line is read for a marker: when it
 is a `result:` line the row shows what follows the colon, when it is a `needs
 input:` or `blocked:` line the session waits for you, and when it is a
 `failed:` line the turn failed.  The same words earlier in a reply are plain
-text and change nothing.  A session nobody has prompted says `Send a
-prompt to start`.  In the project and flat views the line starts with the
+text and change nothing.  In the project view the line starts with the
 status word, such as `Waiting · Allow: Run make check`, since there is no
 section header to say it.
+
+A session nobody has prompted yet sits under Needs input with a yellow star
+and says `Send a prompt to start`, as in Claude Code.  It asks you nothing
+else, though, so it is not counted where the sidebar counts who waits for you:
+the mode-line count and its tooltip, a project header's `✻` count and the
+notification function leave it out, and `agent-shell-vertico-sidebar-jump`
+visits it only once it holds output you have not read.  A side conversation
+nobody has prompted pulls its parent under Needs input too, since a child is
+drawn under its parent.
 
 The age at the right edge is how long the session has been in its current
 state, not how old it is.  A working session that has said nothing for
@@ -197,13 +221,12 @@ to the window you were in before.
 `TAB` folds or expands a section or project header, or toggles metadata for
 only the session at point.  `RET`/mouse-1 activates the selected row or metadata field;
 the model and mode values open their selectors, while a project value opens
-that directory in another window.  Groups are collapsed by default, and
-session metadata is hidden by default.  `S-TAB` cycles the whole sidebar
-through its fold levels, following Org's global-cycle convention: section or
-project headers alone, then their session rows, then each session's metadata,
-then back to the headers.  It discards the individual folds made with `TAB`.  A
-flat list has no project level, so there `S-TAB` alternates between hiding and
-showing metadata for every session.  A title is shown up to
+that directory in another window.  Sections other than Snoozed and projects
+start open, and session metadata is hidden by default.  `S-TAB` cycles the
+whole sidebar through its fold levels in both views, following Org's
+global-cycle convention: section or project headers alone, then their session
+rows, then each session's metadata, then back to the headers.  It discards the
+individual folds made with `TAB`.  A title is shown up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
 The layout measures the current sidebar body width and reflows titles when the
 window is resized.  The configured sidebar width is a maximum: the window asks
@@ -222,7 +245,7 @@ which expanded-session values are shown: `agent`, `status`, `activity`,
 per row.  `status` and `last-user-message` are off by default: the row icon
 and the detail line already carry the status, and the detail line shows the
 prompt while the session works on it.  Removing `project` also removes the
-project line under each row in the state and flat views.
+project line under each row in the state view.
 Activating an agent value starts a new session with that agent in the same
 project.
 The default `priority` sort puts sessions waiting for attention first, followed
@@ -288,17 +311,20 @@ session.
 an error already dealt with elsewhere, or a turn read in the sidebar itself,
 stops holding the head of the `priority` order and
 `agent-shell-vertico-sidebar-jump` moves on to the next session.  A session
-waiting for a permission decision stays in Needs you, because that comes from
+waiting for a permission decision stays in Needs input, because that comes from
 its live status rather than from a mark: it cannot proceed until you answer
 it.  New output marks the session again, whether a turn finishes or a
 background stream goes quiet.
 
 `z` snoozes a session you mean to come back to, which neither `u` nor `!` can
 say: `!` loses the reminder, and leaving it unread keeps it at the head of the
-list.  A snoozed session's mark turns purple and its title grey, it moves to the
-Snoozed section of the state view, and it sorts below every other session in
-the other views.  The header counts it as snoozed whatever its state, and
-`agent-shell-vertico-sidebar-jump` and the notification function pass over it.
+list.  A snoozed session's mark turns purple and its title grey.  In the state
+view it moves to the Snoozed section, which starts folded; in the project view
+it sorts below the other sessions of its project, under a thin rule where the
+snoozed ones begin, and a project whose sessions are all snoozed sorts below
+the other projects.  It leaves the mode-line count and a project header's `✻`
+count, and `agent-shell-vertico-sidebar-jump` and the notification function
+pass over it.
 Its title is still bold when it holds unread output.  Looking at it,
 marking it read and new output leave it snoozed; sending it a prompt, a new
 permission request, an error, `u`, or `z` again wakes it, with whatever it held
@@ -307,9 +333,9 @@ back at the age it had.  A working session is refused.  Like `u` and `!`,
 
 `P` pins a session, the opposite of a snooze: it sorts above every other
 session whatever the sort, and the state and project views draw it under a
-Pinned header at the top.  It keeps its state, so the header still counts it in
-its own band.  Pinning wakes a snoozed session, snoozing unpins one, and `P`
-again unpins.
+Pinned header at the top.  It keeps its state, so a pinned session waiting
+for you still counts in the mode line.  Pinning wakes a snoozed session,
+snoozing unpins one, and `P` again unpins.
 
 A session whose turn has ended but which still has a subagent or an async task
 running is shown as `Background`: a blue star that does not spin, in the
@@ -328,13 +354,13 @@ sidebar reads it from the session's state, and checks every two seconds while it
 shows something running.
 
 `agent-shell-vertico-sidebar-jump-by-key` picks a session the way
-`ace-window` picks a window.  The sessions are listed flat in the sidebar,
-each row's status mark replaced by a key from
+`ace-window` picks a window.  The sidebar is drawn in the state view with
+every section open, each row's status mark replaced by a key from
 `agent-shell-vertico-sidebar-jump-keys`, digits `1`-`9` then the home row
 by default, in row order; press a key and that session is displayed.  A
-hidden sidebar is shown for the read and closed again after it, and a
-grouped one is grouped again after, folds as they were, so the command
-works from anywhere without changing the sidebar.  The keys follow the
+hidden sidebar is shown for the read and closed again after it, and a shown
+one returns to its own view after, folds as they were, so the command works
+from anywhere without changing the sidebar.  The keys follow the
 rows, so they are assigned afresh each time and read off the sidebar
 rather than remembered: under `priority` sorting a session that just
 finished moves up and takes a new key.  A single live session is displayed
@@ -377,10 +403,11 @@ session up, and jumping to a session reads it, which moves it too.
 `agent-shell-vertico-sidebar-previous-session` step one row down or up
 the sidebar from the session you are in, wrapping at either end; from a
 buffer that is no session they start at the top or the bottom row.  The
-order is the one the sidebar draws, project groups and side
-conversations nested under their parents included, and a folded project
-still counts.  Like the numbered jumps, they open no sidebar, and under
-`priority` sorting the session you step to can move once it is read.
+order is the one the sidebar draws, its sections or project groups and
+side conversations nested under their parents included, and a folded
+section or project still counts.  Like the numbered jumps, they open no
+sidebar, and under `priority` sorting the session you step to can move once
+it is read.
 
 Each of these jumps is recorded in the jump history above, so
 `agent-shell-vertico-jump-back` undoes whichever one you took.
@@ -439,7 +466,7 @@ here as in its shell.  The animation runs only while the sidebar is visible and
 something is working.
 
 The status is what the session is, never whether you have read it.  A turn
-that completes while its buffer is off screen leaves an ordinary Idle
+that completes while its buffer is off screen leaves an ordinary Completed
 session with a bold title; selecting that window clears the bold and leaves
 the star green.  A failed session stays failed until you send it something,
 because that is what it is; reading it only clears the bold.
@@ -448,25 +475,14 @@ The `activity` metadata value is the age of the last observed agent event,
 not the time in state the title line shows; an actively streaming session
 therefore shows `now`.
 
-The header is one line that stays put while the list scrolls.  It counts the
-sessions in each band, in the colours the marks use, and names the view at
-the right edge:
-
-```
- 1 need you · 2 working · 3 idle           state
-```
-
-A band with no sessions is left out.  A pinned session is counted in its
-band, not as pinned.  When the words do not fit, the counts become coloured
-digits and the words move to the tooltip.  Hover the "need you" count to see
-which sessions it counts, and click it to run
-`agent-shell-vertico-sidebar-jump`.  A project header
-shows how many of its sessions need you, and nothing when none does.
-
-The sidebar hides the regular mode line and uses its compact header instead.
-Enable `agent-shell-vertico-sidebar-mode-line-mode` to put the "need you"
-count in every mode line, with the same tooltip and click, so it is visible
-while the sidebar is closed.  It shows nothing when nobody needs you.
+The sidebar has no mode line and no header line of its own: the section and
+project headers carry the counts.  Enable
+`agent-shell-vertico-sidebar-mode-line-mode` to put a "need you" count in
+every mode line, so it is visible while the sidebar is closed.  It counts the
+sessions waiting for a permission decision or a reply, pinned ones included
+and never-prompted ones left out, names them in its tooltip, and runs
+`agent-shell-vertico-sidebar-jump` on a click.  It shows nothing when nobody
+needs you.
 
 Workspace packages such as persp-mode, used by the Doom Emacs `:ui
 workspaces` module, save one window layout per workspace and restore it on
@@ -507,8 +523,7 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-jump-dim-others t)
   (agent-shell-vertico-sidebar-group-by 'state)
   (agent-shell-vertico-sidebar-folded-sections '(snoozed))
-  (agent-shell-vertico-sidebar-idle-rows 3)
-  (agent-shell-vertico-sidebar-expand-by-default nil)
+  (agent-shell-vertico-sidebar-expand-by-default t)
   (agent-shell-vertico-sidebar-show-details nil)
   (agent-shell-vertico-sidebar-extra-info
    '(agent project model mode activity))
@@ -523,12 +538,13 @@ built-in `help-at-pt` support:
 
 The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
 previous row, session, section or project header), `TAB` (fold or session
-details), `S-TAB` (cycle all fold levels), `=` (cycle the views), `s` (sort),
-`g` (refresh), `c` (new session), `k` (kill), `r` (restart), `i` (interrupt),
-`m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation),
-`F` (fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `u`/`!`
-(mark unread/read), `z` (snooze), `P` (pin), `p` (peek), `S` (list
-subagents), `?` (show the key reference), and `q` (close the side window).
+details), `S-TAB` (cycle all fold levels), `=` (switch between the state and
+project views), `s` (sort), `g` (refresh), `c` (new session), `k` (kill), `r`
+(restart), `i` (interrupt), `m`/`M` (mode/model), `C` (rename), `A`
+(archive), `a` (side conversation), `F` (fork), `Y` (copy the session ID),
+`t`/`T` (traffic/transcript), `u`/`!` (mark unread/read), `z` (snooze), `P`
+(pin), `p` (peek), `S` (list subagents), `?` (show the key reference), and `q`
+(close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the current row or

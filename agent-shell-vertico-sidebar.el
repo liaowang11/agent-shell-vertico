@@ -4148,9 +4148,9 @@ EVENT is the area clicked in, such as `mode-line'; nil is buffer text."
 (defun agent-shell-vertico-sidebar--mode-line-text ()
   "Return how many sessions need the reader, for the mode line, or nil.
 
-The count is the header's attention band less the sessions nobody has
-prompted (`--waits-p'), read from the live sessions because the sidebar
-need not be open."
+The count is the attention band less the sessions nobody has prompted
+(`--waits-p'), pinned ones included, read from the live sessions because
+the sidebar need not be open."
   (when-let* ((titles (agent-shell-vertico-sidebar--attention-titles)))
     (propertize (format " %d need you" (length titles))
                 'face 'agent-shell-vertico-sidebar-blocked
@@ -4179,9 +4179,10 @@ The mode line is redrawn far more often than a session changes."
 (define-minor-mode agent-shell-vertico-sidebar-mode-line-mode
   "Show in the mode line how many agent-shell sessions need you.
 
-The count is the sessions in the attention band, which the sidebar's
-Needs input section holds unless they are pinned: sessions waiting for
-a permission decision or a reply.  Nothing is shown when none does."
+The count is the sessions waiting for a permission decision or a reply,
+pinned ones included.  The sidebar's Needs input section also holds the
+sessions nobody has prompted yet, which ask the reader nothing, so the
+count leaves them out.  Nothing is shown when none waits."
   :global t
   :group 'agent-shell-vertico-sidebar
   (setq agent-shell-vertico-sidebar--mode-line-cache nil)

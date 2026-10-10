@@ -308,7 +308,7 @@ input:`, `blocked:` or `failed:` line there (`--marker-regexp`,
 case-insensitive) makes it `done` with that `result`, `blocked` with that
 `needs`, or `failed` with that `error`. The same words on any earlier line
 are ordinary text, because a reply's summary such as `Blocked: 2 jobs`
-followed by `All done.` would otherwise park a finished session in Needs you
+followed by `All done.` would otherwise park a finished session in Needs input
 until the next prompt. When the last line is no marker the turn is `done`,
 and that line is the result. There is no model step, as there is in Claude
 Code; the markers are the whole convention.
@@ -332,10 +332,11 @@ idle, as in the agent view, and says so with a bold title (`-unread-title`)
 rather than a colour. `--section-for` is the band, unless the session is
 pinned. `--job-fields` computes all of it once per snapshot as `:state :tempo
 :needs :in-flight :band :pinned :section`, and `--band` and `--section` read
-one field back for a buffer outside a render. Counting asks `--band` (the
-header, the mode line, a project's count), so a pinned session still counts
-where its state puts it; placing a top-level row asks `--family-section`:
-Pinned when the root is pinned, else the most urgent `--band` in its family.
+one field back for a buffer outside a render. Counting who waits asks
+`--waits-p`, which asks `--band` (the mode line, a project's `✻` count), so a
+pinned session still counts where its state puts it; placing a top-level row
+asks `--family-section`: Pinned when the root is pinned, else the most urgent
+`--band` in its family.
 
 **The state view.** The sidebar has two views, and
 `agent-shell-vertico-sidebar-group-by` names one: `state`, the default, or
@@ -371,11 +372,13 @@ and a key while the folds themselves stay as the reader left them.
 **The detail line and the age.** Every row is a title line and, when
 `--detail-for` has something to say, a detail line, as the agent view draws a
 job; an idle session whose turn the sidebar never saw finish has none. The state
-and flat views add a third, the `⌂ project` line: `--insert-section` passes
-`nested` nil to `--insert-sessions`, so `--session-lines` draws it there as in
-the flat view, because a section header does not name the project; only a
+view adds a third, the `⌂ project` line: `--insert-section` passes `nested` nil
+to `--insert-sessions`, so `--session-lines` draws it there, because a section
+header does not name the project; the project view's Pinned section goes
+through `--insert-section` too, so its rows carry the line as well. Only a
 project header suppresses it, and so does leaving `project` out of
-`agent-shell-vertico-sidebar-extra-info` (`--flat-project-line`).
+`agent-shell-vertico-sidebar-extra-info` (`--flat-project-line`, a name kept
+from the flat view this line was first drawn in).
 `--detail-for` picks the line as Claude Code does:
 NEEDS while blocked, the newest entry while active, `Failed: REASON` or
 `Stopped` for a turn that ended that way, and otherwise NEEDS, then the result,
@@ -384,8 +387,9 @@ then the newest entry. The newest entry is the `detail` slot: `> PROMPT` from
 failed tool call (`--record-tool-call`); subagent events never touch it.
 `message` is resolved when drawn by `--message-last-line`, which joins only as
 many of the newest chunks as hold a whole last line, so a long message costs no
-more than its end. In the project and flat views `--detail-line` starts with the
-status word in the mark's face, because no section header says it there. The
+more than its end. In the project view `--detail-line` starts with the status
+word in the mark's face, because no section header says it there; `--view`
+decides, so a nil `group-by` draws the detail alone. The
 title line ends in `--age-text`: time in the current band (`--state-since`), not
 the session's age, drawn yellow when `--stuck-p` says an active session has been
 silent for `agent-shell-vertico-sidebar-stuck-after` seconds. A wait on a
@@ -414,22 +418,28 @@ with its live descendants, then, only when some hold unread output
 `--band-faces`; Pinned and projects are no band, so theirs takes the
 header's colour. `--insert-node-line` and `--insert-project` append the
 header face, so those per-span colours win. A project header reads
-`NAME · N · • U` and keeps `--project-summary`'s `✻ A`, the attention band
-across each root's family, at its right edge; `--project-header-line`
-keeps both counts whole and shortens the name. The state view places a
+`NAME · N · • U` and keeps `--project-summary`'s `✻ A` at its right edge;
+`--project-header-line` keeps both counts whole and shortens the name. `A`
+counts by `--waits-p` across each root's family: the attention band less the
+sessions nobody has prompted. The three counts differ on purpose: a header's
+`N` counts every row drawn under it, the Needs input tooltip names every
+session of the attention band, the unprompted ones included, and `A` and the
+mode line count only who asks the reader something. The state view places a
 family by its most urgent band, so a session is drawn in its own band's
 section or an earlier one: whoever is in the attention band sits under Needs
 input unless its family is pinned. `--mark-attention-count` puts the
 attention tooltip (`--attention-tooltip`, naming those sessions) and a
 `keymap` running `agent-shell-vertico-sidebar-jump` on mouse-1 on the Needs
 input count alone, so a click on the label still folds the section. The
-jump visits
-`--needs-attention-p`, which also takes an unread idle session the band does
-not count: the two answer different questions, and the jump was left as it
-was. `agent-shell-vertico-sidebar-mode-line-mode` puts the same count into
-`global-mode-string` as an `(:eval ...)` entry, read from the live sessions
-because the sidebar need not be open, and cached for a second because a mode
-line redraws far more often than a session changes. `--session-statistics`
+jump visits `--needs-attention-p`, which also takes an unread idle session the
+band does not count: the two answer different questions, and the jump was
+left as it was. `agent-shell-vertico-sidebar-mode-line-mode` counts as `A`
+does: `--attention-titles` keeps the live sessions `--waits-p` answers for,
+pinned ones included and unprompted ones not, and the count goes into
+`global-mode-string` as an `(:eval ...)` entry with its own tooltip and click,
+read from the live sessions because the sidebar need not be open, and cached
+for a second because a mode line redraws far more often than a session
+changes. `--session-statistics`
 and `--statistics-slots` remain only for the jump's message when nothing needs
 the reader.
 
@@ -437,8 +447,8 @@ the reader.
 cancel: pinning wakes a session and snoozing unpins one.
 `--compare-buffers` asks whether a session is pinned before it asks whether it
 is snoozed, so whatever the sort a pinned session leads. The state and project
-views draw pinned sessions under a Pinned header; the band, and so the header
-count, is unchanged.
+views draw pinned sessions under a Pinned header, which counts them; the band,
+and so the mode line's count, is unchanged.
 
 **Peeking at a session.** `agent-shell-vertico-sidebar-peek` writes
 `--peek-text` (title, status, age, NEEDS, the last message) into `*Agent
@@ -458,9 +468,13 @@ looks at the session, which `--session-focused-p` decides by comparing against
 the selected window's buffer on a focused frame. Being merely current is not
 enough: any code that does `with-current-buffer` on a session would otherwise
 mark it read. `--needs-attention-p` joins the two axes: unread output, or a
-`blocked` status, unless the reader has snoozed the session (see below). Blocked
-is deliberately not recorded — the session reports itself blocked for as long as
-it waits, so reading the status is the whole answer and no record can go stale.
+`blocked` status, unless the reader has snoozed the session (see below). A
+session nobody has prompted sits in the attention band, but its status is
+`new`, not `blocked`, so it needs attention only once it holds unread output;
+`--waits-p` is the band-side counterpart that leaves it out of the counts.
+Blocked is deliberately not recorded — the session reports itself blocked for
+as long as it waits, so reading the status is the whole answer and no record
+can go stale.
 Reading a blocked session therefore drops its unread mark and leaves it in the
 attention tier, which is right: it still owes a permission decision. The one
 place the axes are not independent is that a working session is never unread,
@@ -507,19 +521,22 @@ session nor being done with it: `mark-read` lost the reminder and leaving it
 unread kept it at the head of the list. It is not a value of `--unread`, so
 snoozing leaves that record alone, and waking a session hands back whatever it
 held at the age it had. `--needs-attention-p` answers nil for a snoozed session,
-which is the one change that takes it out of the jump, `--attention-sessions`
-and a project header's count; `--notify` skips it too. The snoozed sessions
+which is the one change that takes it out of the jump and
+`--attention-sessions`; `--band-for` files it `snoozed` before anything but an
+active tempo, which takes it out of `--waits-p` and so the mode line and a
+project header's `✻` count; `--notify` skips it too. The snoozed sessions
 are a second party below the rest, whatever the sort: `--compare-buffers` asks
 whether a session is snoozed before anything else, and each party keeps the
 sort's own order. `--status-rank-for` still gives it a rank of its own, 4, so
 the snoozed party runs oldest-snoozed first under `priority`, `--priority-time`
 asking the snooze time before the unread one. `--insert-sessions` marks where
-the party begins, in every sibling list (the flat list, a project's sessions, a
-parent's children), with an overline on the first snoozed row's first line
-rather than a line of its own, because a line with no session on it is one
-every motion and row count would have to step over. The newline carries it with
-`:extend`, since rows are not padded; its colour is the foreground of
-`-snoozed-rule`, because a plain overline takes each glyph's colour. A terminal
+the party begins, in every sibling list (a section's sessions, a project's
+sessions, a parent's children), with an overline on the first snoozed row's
+first line rather than a line of its own, because a line with no session on
+it is one every motion and row count would have to step over. The newline
+carries it with `:extend`, since rows are not padded; its colour is the
+foreground of `-snoozed-rule`, because a plain overline takes each glyph's
+colour. A terminal
 draws no overline, so there the split is the order alone. A project whose
 sessions are all snoozed sorts below the others, since `--sort-groups` compares
 groups by their first session. In the state view the snoozed sessions are a
@@ -595,7 +612,7 @@ Indentation, which used to be a boolean (`nested`, under a project header or
 not), is now a depth count, since a child under a project-grouped parent
 needs two steps and a project's own sessions still need one; `--content-width`
 and `--insert-row` both take the count directly, while `--session-lines`
-keeps `nested` for the unrelated question of whether the row's own flat
+keeps `nested` for the unrelated question of whether the row's own
 project line would repeat what a header above it already says — a project
 header and a parent's own row answer two different questions and can each be
 present without the other. A child whose parent has died promotes itself for
@@ -610,13 +627,16 @@ the same convention `--live-status` already uses for `agent-shell-status`.
 **Jumping to a session by key.** `agent-shell-vertico-sidebar-jump-by-key` is
 the `ace-window` model: assign labels at trigger time, show them where the
 reader is already looking, read one key. The sidebar is the only rendering, so
-`--read-jump-target` first makes it list the sessions flat: a hidden sidebar
-is displayed for the read and its window deleted after, and
-`agent-shell-vertico-sidebar-group-by` is let-bound to nil around a render so
-a folded session has a row too. Every exit path renders again under the real
-grouping, including the aborts, which is also what repairs a sidebar shown on
-another frame: the buffer is shared, so the flat render reached that frame
-too. The folds themselves are never touched. Labels come from
+`--read-jump-target` first draws it in the state view with every section open:
+a hidden sidebar is displayed for the read and its window deleted after, and
+`agent-shell-vertico-sidebar-group-by` is let-bound to `state`,
+`--section-folds` to nil and `folded-sections` to nil around a render, so a
+folded session has a row too. An empty fold table with no default folds leaves
+every section open without writing to the reader's folds. Every exit path
+renders again under the real view and folds, including the aborts, which is
+also what repairs a sidebar shown on another frame: the buffer is shared, so
+the open-sections render reached that frame too. The folds themselves are
+never touched. Labels come from
 `--session-rows`, the rendered rows in display order, not from a separate
 sort, so what is drawn is what is keyed, and `--visible-rows` then drops the
 rows outside the window, because `read-key` blocks and a key nobody can scroll
@@ -646,8 +666,9 @@ is not looking. Rows are compared against the labels rather than against the
 visible rows, or a row on screen but past the last key would stay bright and
 unpressable. Timers fire while `read-key` waits and a render erases the
 buffer, so `--render` returns early, marking the sidebar dirty, while
-`--jump-in-progress` is bound; that flag is bound only after the flat render
-the jump itself needs, and the cleanup render is what acts on the dirty mark.
+`--jump-in-progress` is bound; that flag is bound only after the open-sections
+render the jump itself needs, and the cleanup render is what acts on the dirty
+mark.
 An erased buffer leaves each label overlay empty rather than gone, so the
 tests assert the span and the character under it, not the overlay's existence.
 Keys are positional on purpose: under `priority` sorting rows move, so a
@@ -693,12 +714,12 @@ and `-previous-session` move one row from the session in the selected
 window (`agent-shell-vertico--current-session`, so a viewport counts),
 wrapping at both ends; from a buffer that is no session they start at the
 top or bottom row. The order is `--display-order`, the walk `--render`
-makes without drawing it: the roots, grouped when
-`agent-shell-vertico-sidebar-group-by` says so, each followed depth-first
+makes without drawing it: the roots, grouped by state section or by project
+as `agent-shell-vertico-sidebar-group-by` says, each followed depth-first
 by its children. It is not `-jump-to-index`'s flat sort, which ignores
-both grouping and nesting. A folded project still lists its sessions,
-because nothing is drawn. The order is asked again on every step rather
-than kept for a run of presses, so under `priority` the session just read
+both grouping and nesting. A folded section or project still lists its
+sessions, because nothing is drawn. The order is asked again on every step
+rather than kept for a run of presses, so under `priority` the session just read
 may have moved by the next step. That was the user's call, the same trade
 the index jump makes.
 
@@ -786,18 +807,19 @@ snapshot. The glyph is `✻`, a still `●` for an active session when
 of its own), and `∙` when `--live-p` says the agent process ran and exited.
 The face follows Claude Code's colour table, first match wins: purple
 (`-snoozed`) for a snoozed session, yellow (`-blocked`) while it waits for
-the reader, blue (`-working`) while active or in flight, red (`-failed`) for
+the reader, a session nobody has prompted included since its tempo is
+`blocked`, blue (`-working`) while active or in flight, red (`-failed`) for
 a failed turn, green (`-ready`) for a finished one, and grey (`-detail`)
-otherwise, which is a stopped turn or a session nobody has prompted. Purple
+otherwise, which is a stopped turn. Purple
 because grey was taken: `-snoozed` inherits `link-visited` for its colour
 alone, and the row's title recedes into `-snoozed-title` (`shadow`) so the
 rows still asking stand out. Unread is not a colour: it is a bold title
 (`-unread-title`) and a `•` before the age (`--title-suffix`, face
 `-unread-dot` over the mark's face), so it reads the same in a terminal, and a
 snoozed session holding unread output is both purple and bold. The dot exists
-because the `priority` sort still lists unread sessions first, so the flat and
-project views put a green finished row far above another one; a bold title
-alone did not say why. Every mark is a plain
+because the `priority` sort still lists unread sessions first, so a section or
+project puts a green finished row far above another one; a bold title alone
+did not say why. Every mark is a plain
 character, so no icon font is needed and a terminal draws what a graphical
 frame does. The other glyphs are slots in `--icons` drawn by `--slot-icon`:
 `⌂` project, `↳` message, `◇` subagents, `$` tasks, and the `▼`/`▶` folds.
@@ -894,14 +916,13 @@ clears the overlays and cancels the timer before binding
 `--animate-busy` returns early under that flag the way `--render` does. The
 timer is armed by `--ensure-busy-refresh` from the same two questions that
 stop it — an overlay to animate and a window to see it in — following
-`--ensure-age-refresh`. Only rows spin: header counts are words and digits,
-and a project's count reports only what asks for a reply.
+`--ensure-age-refresh`. Only rows spin: header counts are digits, and a
+project's `✻` count reports only what asks for a reply.
 
 **Where point rests.** A row's leading icon and the gap after it are one
 field (`--mark-field`, the `agent-shell-vertico-sidebar-mark-field` text
 property): the status mark, a section's or project's fold triangle, the home
-on a
-flat row's project line, the arrow on a message line. Standing on one
+on a row's project line, the arrow on a message line. Standing on one
 says nothing, and the sidebar draws no cursor to say where point is, so
 `--keep-point-off-marks` moves point past it from
 `pre-redisplay-functions`, which answers for every way point arrives
