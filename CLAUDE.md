@@ -334,28 +334,36 @@ header, the mode line, a project's count), so a pinned session still counts
 where its state puts it; placing a top-level row asks `--family-section`:
 Pinned when the root is pinned, else the most urgent `--band` in its family.
 
-**The state view.** `agent-shell-vertico-sidebar-group-by` defaults to
-`state`, and `=` cycles flat, project and state. `--render` draws
+**The state view.** The sidebar has two views, and
+`agent-shell-vertico-sidebar-group-by` names one: `state`, the default, or
+`project`. Any other value, nil included, is the state view, because
+`--view` is the only reader of the option and answers `project` for
+`project` alone; the flat list it once also offered is gone, since a flat
+list with headers is the state view. `=` toggles the two. `--render` draws
 `--group-by-section` over the roots: a header for each non-empty section in
-`--sections` order, sessions in the user's sort within it. A child is drawn
-under its parent, so a root's section is its whole family's
-(`--family-section`): Pinned when the root is pinned, otherwise the earliest
-section among the bands of the root and every live descendant. A child
-waiting on the reader therefore draws its idle parent under Needs you, and a
-working child puts an idle family under Working. Each header is a
-fold in `--section-folds`, seeded from
-`agent-shell-vertico-sidebar-folded-sections`; an open header carries no
-count, since its rows are the count, and a folded one counts what it hides,
-children included (`--family-size`). Idle stops after
-`agent-shell-vertico-sidebar-idle-rows` roots and ends on a `… N more` row, a
-`more` node that `show-more` opens by adding the section to `--open-tails`
-until it is folded or the view level is cycled. One hidden session is drawn
-instead of a row counting it, since both take one line. The project view puts
-a Pinned section above the projects (`--split-pinned`), and the flat view
-relies on `--compare-buffers` sorting pinned sessions first.
-`--display-order`, `--reveal-session`, `--view-level` and `--set-view-level`
-each have a state arm, and each asks `--family-section` of a root, so
-stepping, revealing and `S-TAB` see the sections the render draws.
+`--sections` order, sessions in the user's sort within it. The sections are
+Claude Code's: Pinned, Needs input, Working, Completed and Snoozed. Their
+symbols are the bands `--band-for` answers, so Completed is the `idle`
+band and Needs input the `attention` one. A child is drawn under its
+parent, so a root's section is its whole family's (`--family-section`):
+Pinned when the root is pinned, otherwise the earliest section among the
+bands of the root and every live descendant. A child waiting on the reader
+therefore draws its idle parent under Needs input, and a working child puts
+an idle family under Working. Each header is a fold in `--section-folds`,
+seeded from `agent-shell-vertico-sidebar-folded-sections`, and an open
+section draws every session it holds: there is no cap and no "more" row.
+The header counts, folded or open, which `--header-counts` says (see the
+header paragraph below). The project view puts a Pinned section above the
+projects (`--split-pinned`), and its projects start open
+(`agent-shell-vertico-sidebar-expand-by-default`). `--display-order`,
+`--reveal-session`, `--view-level` and `--set-view-level` each have a state
+arm, and each asks `--family-section` of a root, so stepping, revealing and
+`S-TAB` see the sections the render draws. `S-TAB` steps both views through
+headers alone, rows, then rows with details, and back to headers.
+`agent-shell-vertico-sidebar-jump-by-key` reads in the state view with every
+section open: it binds the option to `state`, `--section-folds` to nil and
+`folded-sections` to nil around its render, so a folded session gets a row
+and a key while the folds themselves stay as the reader left them.
 
 **The detail line and the age.** Every row is a title line and, when
 `--detail-for` has something to say, a detail line, as the agent view draws a
@@ -393,19 +401,26 @@ over a message the command left, and takes it back when point leaves.
 Since every row carries an age, `--ensure-age-refresh` runs whenever the sidebar
 is visible and has sessions.
 
-**The header and the mode line.** `--header-line-for` counts the snapshots by
-`:band`, each session in its own band, children included. The state view
-places a family by its most urgent band, so a session is drawn in its own
-band's section or an earlier one, never a later one: whoever the header says
-needs the reader sits under Needs you unless its family is pinned, and a
-project header (`--project-summary`) counts the attention band across each
-root's family for the same reason. It writes words
-(`1 need you · 2 working · 3 idle`) when they fit beside the view's name, and
-coloured digits with the words in tooltips otherwise; the name keeps the right
-edge through an `:align-to` space, because the header spans the fringes and
-margins the render's width leaves out. The "need you" count names its
-sessions in its tooltip and runs
-`agent-shell-vertico-sidebar-jump` on a click. The jump visits
+**The header and the mode line.** There is no summary line above the
+sidebar: `header-line-format` stays nil, and every section and project
+header counts for itself instead. `--header-counts` writes what follows the
+label, `Completed · 5 · • 2`: the rows drawn under the header, each root
+with its live descendants, then, only when some hold unread output
+(`--unread-p`), a `•` and how many. The dot is drawn as a row's is,
+`agent-shell-vertico-sidebar-unread-dot` over the section's band face from
+`--band-faces`; Pinned and projects are no band, so theirs takes the
+header's colour. `--insert-node-line` and `--insert-project` append the
+header face, so those per-span colours win. A project header reads
+`NAME · N · • U` and keeps `--project-summary`'s `✻ A`, the attention band
+across each root's family, at its right edge; `--project-header-line`
+keeps both counts whole and shortens the name. The state view places a
+family by its most urgent band, so a session is drawn in its own band's
+section or an earlier one: whoever is in the attention band sits under Needs
+input unless its family is pinned. `--mark-attention-count` puts the
+attention tooltip (`--attention-tooltip`, naming those sessions) and a
+`keymap` running `agent-shell-vertico-sidebar-jump` on mouse-1 on the Needs
+input count alone, so a click on the label still folds the section. The
+jump visits
 `--needs-attention-p`, which also takes an unread idle session the band does
 not count: the two answer different questions, and the jump was left as it
 was. `agent-shell-vertico-sidebar-mode-line-mode` puts the same count into
