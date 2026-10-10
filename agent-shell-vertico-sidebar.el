@@ -45,6 +45,8 @@
 (declare-function evil-previous-line "evil" ())
 (declare-function dired-other-window "dired" (dirname))
 (declare-function agent-shell-subagents "agent-shell-subagents" ())
+(declare-function agent-shell--stop-reason-description "agent-shell"
+                  (stop-reason))
 
 ;; Bound by agent-shell around the dispatch of a subagent's notification,
 ;; which is when its event subscribers run.  No value, see CLAUDE.md.
@@ -107,14 +109,13 @@ current sidebar buffer."
   "Sort criterion used by the agent-shell sidebar.
 
 `priority' puts sessions needing attention first, followed by working,
-ready, and starting sessions.  Attention and working sessions order
+idle, and starting sessions.  Attention and working sessions order
 oldest first, so the top of the list is the session that has waited
-longest and the one `agent-shell-vertico-sidebar-jump' visits.  Ready
+longest and the one `agent-shell-vertico-sidebar-jump' visits.  Idle
 and starting sessions order by their latest activity, newest first, so
-a session
-read or finished recently stays above stale idle ones.  `activity' uses
-the latest agent event, `recency' uses the last display time, `status'
-uses only status, and `name' sorts by session title."
+a session read or finished recently stays above stale idle ones.
+`activity' uses the latest agent event, `recency' uses the last display
+time, `status' uses only status, and `name' sorts by session title."
   :type '(choice (const priority) (const activity) (const recency)
                  (const status) (const name))
   :group 'agent-shell-vertico-sidebar)
@@ -230,12 +231,12 @@ before the switch is reopened right after it."
 It is called with the keyword arguments `:buffer', the session buffer;
 `:agent', the agent's display name; `:status', the wording the sidebar
 shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
-\"Background\", \"Ready\" or \"Starting\"; `:unread', non-nil when the
-session holds output nobody has read; and `:last-message', the agent's
-newest message as it arrived, or nil.
+\"Background\", \"Done\", \"Stopped\", \"New\" or \"Starting\";
+`:unread', non-nil when the session holds output nobody has read; and
+`:last-message', the agent's newest message as it arrived, or nil.
 
 Status and unread are separate because they answer different questions:
-a finished turn leaves an ordinary `Ready' session holding unread
+a finished turn leaves an ordinary `Done' session holding unread
 output, and a failed one leaves a `Failed' session that stays failed
 after it is read.
 
@@ -302,6 +303,37 @@ session unread; the result comes later, as out-of-turn output that
 finds the mark in place and would announce nothing.  Presence says the
 next burst to settle once the work has ended is that result, so
 `agent-shell-vertico-sidebar--out-of-turn-settled' announces it.")
+  (state nil :documentation "\
+How the session's last turn ended, in Claude Code's words.
+
+`working' from a prompt until its turn ends, then `done', `failed',
+`stopped' (the reader cancelled it) or `blocked' (it ended asking a
+question).  Nil when the sidebar has seen no turn, which reads as
+`done' because nothing says the session was never prompted.  This is
+what the turn left behind; what the session does now comes from
+agent-shell, and `agent-shell-vertico-sidebar--raw-status' puts the
+two together.")
+  (needs nil :documentation "\
+The question a turn ended on, from its `needs input:' line.")
+  (result nil :documentation "\
+The headline of the message a turn ended on.
+
+Its `result:' line when it has one, as Claude Code reads it, and its
+last non-empty line otherwise.")
+  (stop-reason nil :documentation "\
+The ACP stop reason the last turn ended with, such as \"end_turn\".")
+  (fresh nil :documentation "\
+Non-nil when the sidebar saw the session start and nobody has prompted it.
+
+Only a session seen before it had an ACP session can be known to be
+unprompted; one already running when the sidebar first saw it may have
+any history, and a restored one has some.")
+  (created-at nil :documentation "\
+When the sidebar first saw the session.")
+  (first-terminal-at nil :documentation "\
+When a turn of the session first ended.  Set once.")
+  (last-terminal-at nil :documentation "\
+When the session's latest turn ended.")
   (updated-at nil :documentation "\
 When the latest agent event arrived.")
   (busy-since nil :documentation "\
@@ -537,7 +569,7 @@ working magenta the way the two statuses sit beside each other."
 
 (defface agent-shell-vertico-sidebar-ready
   '((t :inherit success))
-  "Face for ready sessions."
+  "Face for sessions whose last turn finished."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-detail
@@ -791,42 +823,86 @@ See the `background-since' slot of `agent-shell-vertico-sidebar--session'."
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
-Four things agent-shell does not report are added to what it does.  A
-session is blocked while it waits for a permission decision, whatever
-else it is doing, though agent-shell calls it blocked only while a turn
-is in flight; the agent is working during an out-of-turn burst whether
-or not a turn asked for the work, so say so; a session whose last turn
-failed is failed until a new turn starts, though agent-shell calls it
-idle; and a session with no ACP session yet is starting, though
-agent-shell has nothing to call it but ready, since no turn is in flight
-either way.  All four only apply to an otherwise idle session: a live
-`busy' or `blocked' means a real turn owns the session and wins.  The
-pending decision comes first among them, because a burst beside it is
-work the session does while it waits, not an answer to it.
+The answer is `starting', `new', `busy', `background', `blocked',
+`done', `failed' or `stopped', or whatever else agent-shell reports.
 
-A fifth is the background: an idle session with a subagent or an async
-task still running, which agent-shell calls ready because no turn is in
-flight.  The session takes a prompt, which is what separates it from
-`busy', but it is not done either.  A failure says more, so it wins, and
-nothing runs before a session has started.  Every running kind counts
-alike, a dev server with a subagent, since a task says nothing about
-whether it will ever end."
+agent-shell answers what the session does now, and a live `busy' or
+`blocked' means a turn owns the session and wins.  An otherwise idle
+session is described by what the sidebar knows and agent-shell does
+not, first match first:
+
+- `blocked' while a permission decision waits, which agent-shell calls
+  blocked only while a turn is in flight.  It comes first, because a
+  burst beside it is work the session does while it waits;
+- `busy' during an out-of-turn burst, which no turn asked for;
+- `failed' when its last turn failed, until a new turn starts;
+- `starting' while it has no ACP session yet;
+- `stopped' when the reader cancelled its last turn, and `blocked'
+  when that turn ended on a question;
+- `new' when the sidebar saw it start and nobody has prompted it;
+- `background' with a subagent or an async task still running.  The
+  session takes a prompt, which separates it from `busy', but it is not
+  done either.  Every running kind counts alike, a dev server with a
+  subagent, since a task says nothing about whether it will ever end;
+- `done' otherwise: its last turn ended, or nothing says it ran one.
+
+`agent-shell-vertico-sidebar--job-state' gives the same answer in
+Claude Code's terms."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
       (let* ((live (agent-shell-vertico-sidebar--live-status buffer))
+             (state (agent-shell-vertico-sidebar--get buffer 'state))
              (status
               (cond
                ((not (eq live 'ready)) live)
                ((agent-shell-vertico-sidebar--permission-pending-p buffer)
                 'blocked)
                ((agent-shell-vertico-sidebar--get buffer 'out-of-turn) 'busy)
-               ((agent-shell-vertico-sidebar--get buffer 'error) 'failed)
+               ((eq state 'failed) 'failed)
                ((not (agent-shell-vertico--session-field buffer :id))
                 'starting)
+               ((eq state 'stopped) 'stopped)
+               ((eq state 'blocked) 'blocked)
+               ((agent-shell-vertico-sidebar--get buffer 'fresh) 'new)
                ((agent-shell-vertico-sidebar--background-work buffer)
                 'background)
-               (t live))))
+               (t 'done))))
         (agent-shell-vertico-sidebar--track-background buffer status)
         status)))
+
+(defconst agent-shell-vertico-sidebar--new-needs "Send a prompt to start"
+  "What a session nobody has prompted yet is waiting for.")
+
+(defun agent-shell-vertico-sidebar--permission-needs (buffer)
+  "Return what BUFFER's pending permission request asks, or nil."
+  (when-let* ((call (seq-find (lambda (entry)
+                                (map-elt (cdr entry) :permission-request-id))
+                              (map-elt (agent-shell-vertico--state buffer)
+                                       :tool-calls))))
+    (concat "Allow: " (or (map-elt (cdr call) :title) "a tool call"))))
+
+(defun agent-shell-vertico-sidebar--job-state (buffer)
+  "Return (STATE TEMPO NEEDS) for BUFFER, in Claude Code's terms.
+
+STATE is how the work stands: `working', `blocked', `done', `failed' or
+`stopped'.  TEMPO is what the session does about it now: `active' while
+it works, `blocked' while it waits for the reader, `idle' otherwise.
+NEEDS is what the reader is asked for, or nil.  Claude Code keeps these
+three fields for every job; here they are read off the status, so the
+two can never disagree.  A session nobody has prompted is working and
+idle: Claude Code calls it blocked, which would put a shell the reader
+has just opened among the sessions waiting for them."
+  (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
+    (pcase status
+      ((or 'busy 'starting) (list 'working 'active nil))
+      ('background (list 'working 'idle nil))
+      ('new (list 'working 'idle agent-shell-vertico-sidebar--new-needs))
+      ('blocked
+       (list (or (agent-shell-vertico-sidebar--get buffer 'state) 'done)
+             'blocked
+             (or (agent-shell-vertico-sidebar--permission-needs buffer)
+                 (agent-shell-vertico-sidebar--get buffer 'needs))))
+      ((or 'done 'failed 'stopped) (list status 'idle nil))
+      (_ (list 'working 'idle nil)))))
 
 (defun agent-shell-vertico-sidebar--unread-for (status time)
   "Return TIME when a session in STATUS owes the reader that output.
@@ -896,7 +972,7 @@ because the reader has said when they will come back to it."
   "Return a display status name for BUFFER.
 
 The name says what the session is, never whether anyone has read it:
-a finished turn leaves a session `Ready'."
+a finished turn leaves a session `Done'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-name)
       (agent-shell-vertico-sidebar--status-name-for
        (agent-shell-vertico-sidebar--raw-status buffer))))
@@ -950,7 +1026,7 @@ it has already said all it has to say."
    ((eq status 'blocked) 1)
    ((eq status 'busy) 2)
    ((eq status 'background) 3)
-   ((eq status 'ready) 5)
+   ((memq status '(done stopped new)) 5)
    (t 6)))
 
 (defun agent-shell-vertico-sidebar--oldest-first-rank-p (rank)
@@ -980,8 +1056,8 @@ their places.  See
     ('failed 1)
     ('busy 2)
     ('background 3)
-    ('ready 4)
-    ('starting 5)
+    ((or 'done 'stopped) 4)
+    ((or 'new 'starting) 5)
     (_ 6)))
 
 (defun agent-shell-vertico-sidebar--status-name-for (status)
@@ -991,7 +1067,9 @@ their places.  See
     ('failed "Failed")
     ('busy "Working")
     ('background "Background")
-    ('ready "Ready")
+    ('done "Done")
+    ('stopped "Stopped")
+    ('new "New")
     ('starting "Starting")
     (_ "Unknown")))
 
@@ -1342,8 +1420,12 @@ default in `agent-shell-vertico-sidebar-show-details'."
               "nf-md-dots_circle"           "◆")
     (background "nf-md-clock"
                 "nf-md-clock_outline"       "◔")
-    (ready    "nf-md-check_circle"
+    (done     "nf-md-check_circle"
               "nf-md-check_circle_outline"  "✓")
+    (stopped  "nf-md-stop_circle"
+              "nf-md-stop_circle_outline"   "■")
+    (new      "nf-md-circle_outline"
+              "nf-md-circle_outline"        "○")
     (starting "nf-md-circle_outline"
               "nf-md-circle_outline"        "○"))
   "Status, filled and outline nerd-icons names, and plain character.
@@ -1362,7 +1444,7 @@ back until it stops.  Their filled names are never drawn, and are the
 same glyph as their outline ones.")
 
 (defconst agent-shell-vertico-sidebar--status-order
-  '(failed blocked busy background ready starting)
+  '(failed blocked busy background done stopped new starting)
   "Order in which status counts appear in headers.")
 
 (defconst agent-shell-vertico-sidebar--icons
@@ -1641,7 +1723,7 @@ Everything else is drawn in its status colour."
     'agent-shell-vertico-sidebar-unresolved)
    ((eq (car mark) 'busy) 'agent-shell-vertico-sidebar-working)
    ((eq (car mark) 'background) 'agent-shell-vertico-sidebar-background)
-   ((eq (car mark) 'ready) 'agent-shell-vertico-sidebar-ready)
+   ((eq (car mark) 'done) 'agent-shell-vertico-sidebar-ready)
    (t 'agent-shell-vertico-sidebar-detail)))
 
 (defun agent-shell-vertico-sidebar--mark-counts (marks)
@@ -2916,6 +2998,90 @@ subagent says is not the message the session has for the reader."
                        :chunks)))
     (apply #'concat (reverse chunks))))
 
+(defconst agent-shell-vertico-sidebar--marker-regexp
+  "^[ \t]*\\(result\\|needs input\\|blocked\\|failed\\):[ \t]*\\(.+?\\)[ \t]*$"
+  "A line a turn can end on to say how it ended, read case-insensitively.")
+
+(defconst agent-shell-vertico-sidebar--marker-window 800
+  "How many characters at the end of a message the markers are read in.")
+
+(defun agent-shell-vertico-sidebar--classify-message (text)
+  "Return (STATE . LINE) for agent message TEXT, read as Claude Code does.
+
+Claude Code asks its background sessions to end a turn on a `result:',
+`needs input:' or `failed:' line, and reads the end of the message for
+one before it asks a model.  The same lines are read here, outside code
+fences and in the message's last
+`agent-shell-vertico-sidebar--marker-window' characters, and the last
+one wins; there is no model step.  `needs input:' and `blocked:' give
+`blocked', `failed:' gives `failed', and `result:' gives `done'.  LINE
+is what follows the colon.  With no marker the turn is done, and LINE is
+the message's last non-empty line, or nil when there is no message."
+  (let* ((text (or text ""))
+         (window-start (max 0 (- (length text)
+                                 agent-shell-vertico-sidebar--marker-window)))
+         (case-fold-search t)
+         (position 0)
+         fenced marker last-line)
+    (dolist (line (split-string text "\n"))
+      (let ((end (+ position (length line))))
+        (setq position (1+ end))
+        (cond
+         ((string-match-p "\\`[ \t]*```" line) (setq fenced (not fenced)))
+         (fenced nil)
+         (t
+          (let ((trimmed (string-trim line)))
+            (unless (string-empty-p trimmed)
+              (setq last-line trimmed)))
+          (when (and (> end window-start)
+                     (string-match agent-shell-vertico-sidebar--marker-regexp
+                                   line))
+            (setq marker
+                  (cons (pcase (downcase (match-string 1 line))
+                          ("result" 'done)
+                          ("failed" 'failed)
+                          (_ 'blocked))
+                        (match-string 2 line))))))))
+    (or marker (cons 'done last-line))))
+
+(defun agent-shell-vertico-sidebar--stamp-terminal (buffer time)
+  "Record that a turn of BUFFER ended at TIME."
+  (agent-shell-vertico-sidebar--set buffer 'last-terminal-at time)
+  (unless (agent-shell-vertico-sidebar--get buffer 'first-terminal-at)
+    (agent-shell-vertico-sidebar--set buffer 'first-terminal-at time)))
+
+(defun agent-shell-vertico-sidebar--end-turn (buffer reason time)
+  "Record how BUFFER's turn ended at TIME, stopping for REASON.
+
+REASON is the ACP stop reason.  A cancelled turn is `stopped'.  A turn
+that ran to its end is classified by
+`agent-shell-vertico-sidebar--classify-message'.  Any other reason, a
+refusal or a limit, cut the turn short, so it `failed', in agent-shell's
+own words for the reason.  A turn-complete with no reason is read as
+one that ran to its end, unless the error event before it already said
+the turn failed."
+  (agent-shell-vertico-sidebar--set buffer 'stop-reason reason)
+  (agent-shell-vertico-sidebar--stamp-terminal buffer time)
+  (pcase reason
+    ("cancelled" (agent-shell-vertico-sidebar--set buffer 'state 'stopped))
+    ((or "end_turn" 'nil)
+     (unless (and (null reason)
+                  (eq (agent-shell-vertico-sidebar--get buffer 'state) 'failed))
+       (pcase-let ((`(,state . ,line)
+                    (agent-shell-vertico-sidebar--classify-message
+                     (agent-shell-vertico-sidebar--last-message buffer))))
+         (agent-shell-vertico-sidebar--set buffer 'state state)
+         (pcase state
+           ('done (agent-shell-vertico-sidebar--set buffer 'result line))
+           ('blocked (agent-shell-vertico-sidebar--set buffer 'needs line))
+           ('failed (agent-shell-vertico-sidebar--set buffer 'error line))))))
+    (_
+     (agent-shell-vertico-sidebar--set buffer 'state 'failed)
+     (agent-shell-vertico-sidebar--set
+      buffer 'error (if (fboundp 'agent-shell--stop-reason-description)
+                        (agent-shell--stop-reason-description reason)
+                      reason)))))
+
 (defun agent-shell-vertico-sidebar--notify (buffer)
   "Report that BUFFER now needs attention.
 
@@ -2953,13 +3119,18 @@ events that end a snooze end it before they get here."
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
-       (agent-shell-vertico-sidebar--set buffer 'error t)
+       (agent-shell-vertico-sidebar--set buffer 'state 'failed)
+       (agent-shell-vertico-sidebar--set
+        buffer 'error (or (map-nested-elt event '(:data :message)) t))
+       (agent-shell-vertico-sidebar--stamp-terminal buffer now)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
+       (agent-shell-vertico-sidebar--end-turn
+        buffer (map-nested-elt event '(:data :stop-reason)) now)
        (if (agent-shell-vertico-sidebar--background-work buffer)
            (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end t)
          (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
@@ -2975,9 +3146,17 @@ events that end a snooze end it before they get here."
        ;; the last one ended stops being what the session is.  It is
        ;; also dealing with the session, which is what a snooze waits for.
        (agent-shell-vertico-sidebar--set buffer 'unread nil)
+       (agent-shell-vertico-sidebar--set buffer 'state 'working)
+       (agent-shell-vertico-sidebar--set buffer 'fresh nil)
+       (agent-shell-vertico-sidebar--set buffer 'needs nil)
        (agent-shell-vertico-sidebar--set buffer 'error nil)
+       ;; What the last turn said is no answer to this prompt.
+       (agent-shell-vertico-sidebar--set buffer 'message nil)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
+      ('session-restored
+       ;; A restored session has a history, so it has been prompted.
+       (agent-shell-vertico-sidebar--set buffer 'fresh nil))
       ('permission-response
        ;; Answering a request is reading it, whether or not another one
        ;; is already pending behind it.
@@ -3041,7 +3220,13 @@ renders neither retry it nor report it again."
                        (buffer-name buffer) (error-message-string error))
               agent-shell-vertico-sidebar--subscription-refused))))
       (puthash buffer subscription
-               agent-shell-vertico-sidebar--subscriptions))
+               agent-shell-vertico-sidebar--subscriptions)
+      (unless (agent-shell-vertico-sidebar--get buffer 'created-at)
+        (agent-shell-vertico-sidebar--set buffer 'created-at (float-time))
+        ;; Only a session seen before its ACP session exists is known to
+        ;; have had no prompt yet.
+        (unless (agent-shell-vertico--session-field buffer :id)
+          (agent-shell-vertico-sidebar--set buffer 'fresh t))))
     (with-current-buffer buffer
       (add-hook 'kill-buffer-hook
                 #'agent-shell-vertico-sidebar--unwatch-buffer nil t))
@@ -3562,7 +3747,9 @@ snoozed and background counts in that order."
     (blocked . "waiting")
     (busy . "working")
     (background . "in the background")
-    (ready . "ready")
+    (done . "done")
+    (stopped . "stopped")
+    (new . "new")
     (starting . "starting"))
   "Tooltip wording for each status counted in a header.
 

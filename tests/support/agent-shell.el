@@ -688,6 +688,17 @@ an action binds."
   (setq agent-shell-test-opened-link url
         agent-shell-test-file-display-action agent-shell-file-display-action))
 
+(defun agent-shell--stop-reason-description (stop-reason)
+  "Return a human-readable text description for STOP-REASON.
+The same wording agent-shell's own function returns."
+  (pcase stop-reason
+    ("end_turn" "Finished")
+    ("max_tokens" "Max token limit reached")
+    ("max_turn_requests" "Exceeded request limit")
+    ("refusal" "Refused")
+    ("cancelled" "Cancelled")
+    (_ (format "Stop for unknown reason: %s" stop-reason))))
+
 (provide 'agent-shell)
 
 ;;; agent-shell.el ends here

@@ -654,7 +654,7 @@ a session outside its own family."
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (dolist (case '(("Plan" . mode)
-                       ("Ready" . status)
+                       ("Done" . status)
                        ("GPT-5" . model)))
           (goto-char (point-min))
           (search-forward (car case))
@@ -902,7 +902,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "Plan · Ready" "GPT-5")))))))
+                 '("✓ Review alpha" "Plan · Done" "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -999,13 +999,13 @@ a session outside its own family."
         (agent-shell-vertico-sidebar-mode)
         (puthash "/work/alpha/" t agent-shell-vertico-sidebar--expanded-projects)
         (agent-shell-vertico-sidebar--render)
-        (should-not (string-match-p "Ready" (buffer-string)))
+        (should-not (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-toggle-details)
         (agent-shell-vertico-sidebar--render)
-        (should (string-match-p "Ready" (buffer-string)))
+        (should (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-toggle-details)
         (agent-shell-vertico-sidebar--render)
-        (should-not (string-match-p "Ready" (buffer-string)))))))
+        (should-not (string-match-p "Done" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-tab-toggles-session-details ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1024,7 +1024,7 @@ a session outside its own family."
         (call-interactively
          (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
         (agent-shell-vertico-sidebar--render)
-        (should (string-match-p "Ready" (buffer-string)))))))
+        (should (string-match-p "Done" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-tab-toggles-only-current-flat-session ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1043,7 +1043,7 @@ a session outside its own family."
         (beginning-of-line)
         (call-interactively
          (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "TAB")))
-        (should (= (how-many "Ready" (point-min) (point-max)) 1))
+        (should (= (how-many "Done" (point-min) (point-max)) 1))
         (should (string-match-p "⌂ alpha" (buffer-string)))
         (should-not (string-match-p "Ready.*beta" (buffer-string)))))))
 
@@ -1062,10 +1062,10 @@ a session outside its own family."
         (should-not (string-match-p "Review alpha" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should-not (string-match-p "Ready" (buffer-string)))
+        (should-not (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should (string-match-p "Ready" (buffer-string)))
+        (should (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should-not (string-match-p "Review alpha" (buffer-string)))))))
 
@@ -1093,7 +1093,7 @@ a session outside its own family."
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
         (should (string-match-p "Review beta" (buffer-string)))
-        (should-not (string-match-p "Ready" (buffer-string)))))))
+        (should-not (string-match-p "Done" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-cycles-details-in-flat-view ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -1106,13 +1106,13 @@ a session outside its own family."
           (agent-shell-vertico-sidebar-extra-info '(status)))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
-        (should-not (string-match-p "Ready" (buffer-string)))
+        (should-not (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should (string-match-p "Ready" (buffer-string)))
+        (should (string-match-p "Done" (buffer-string)))
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (string-match-p "Review alpha" (buffer-string)))
-        (should-not (string-match-p "Ready" (buffer-string)))
+        (should-not (string-match-p "Done" (buffer-string)))
         ;; A flat list has no project level, so the default never changes.
         (should-not agent-shell-vertico-sidebar-expand-by-default)))))
 
@@ -2206,7 +2206,7 @@ top sessions stay hidden."
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (search-forward "Ready")
+        (search-forward "Done")
         (beginning-of-line)
         (agent-shell-vertico-sidebar-toggle-at-point)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
@@ -3519,21 +3519,190 @@ now in another application."
           (agent-shell-vertico-sidebar--focus-change)
           (should (agent-shell-vertico-sidebar--unread-p alpha)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-finished-turn-is-ready-and-unread ()
-  "A finished turn is unread output, not a status of its own.
+(defmacro agent-shell-vertico-tests--with-alpha (&rest body)
+  "Evaluate BODY with ALPHA, one idle session that has a session id."
+  (declare (indent 0) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "a") (:title . "Review alpha"))))))
+     (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+       ,@body)))
 
-The session is idle and ready to take a prompt; what it owes the reader
-is the output nobody has looked at."
+(defun agent-shell-vertico-tests--end-turn (buffer &optional reason)
+  "Send BUFFER a `turn-complete' event stopping for REASON."
+  (agent-shell-vertico-sidebar--handle-event
+   buffer `((:event . turn-complete)
+            (:data . ((:stop-reason . ,(or reason "end_turn")))))))
+
+(defun agent-shell-vertico-tests--stream (buffer text)
+  "Send BUFFER one `agent-message-chunk' event carrying TEXT."
+  (agent-shell-vertico-sidebar--handle-event
+   buffer `((:event . agent-message-chunk)
+            (:data . ((:text-chunk . ,text))))))
+
+(ert-deftest agent-shell-vertico-sidebar-finished-turn-is-done-and-unread ()
+  "A finished turn leaves the session done, holding unread output."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (agent-shell-vertico-sidebar--unread-p alpha))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha) "Done"))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done idle nil)))))
+
+(ert-deftest agent-shell-vertico-sidebar-cancelled-turn-is-stopped ()
+  "A turn the reader cancelled leaves the session stopped, not done."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--end-turn alpha "cancelled")
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'stopped))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Stopped"))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(stopped idle nil)))))
+
+(ert-deftest agent-shell-vertico-sidebar-turn-cut-short-is-failed ()
+  "A turn stopped by a refusal or a limit failed, for agent-shell's reason."
+  (dolist (case '(("refusal" . "Refused")
+                  ("max_tokens" . "Max token limit reached")
+                  ("max_turn_requests" . "Exceeded request limit")))
+    (agent-shell-vertico-tests--with-alpha
+      (agent-shell-vertico-tests--end-turn alpha (car case))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+      (should (equal (agent-shell-vertico-sidebar--get alpha 'error)
+                     (cdr case))))))
+
+(ert-deftest agent-shell-vertico-sidebar-error-keeps-its-message ()
+  "The error event's message is what the failure says."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . error)
+             (:data . ((:code . -32603) (:message . "Request timed out")))))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'error)
+                   "Request timed out"))))
+
+(ert-deftest agent-shell-vertico-sidebar-session-seen-starting-is-new ()
+  "A session the sidebar saw start is new until it is first prompted."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+              '((:session . ((:title . "Review alpha"))))))
     (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (agent-shell-vertico-sidebar--watch-buffer alpha)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))
+      (with-current-buffer alpha
+        (setq-local agent-shell--state
+                    '((:session . ((:id . "a") (:title . "Review alpha"))))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'new))
+      (should (equal (agent-shell-vertico-sidebar--status-name alpha) "New"))
+      (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                     '(working idle "Send a prompt to start")))
       (agent-shell-vertico-sidebar--handle-event
-       alpha '((:event . turn-complete)))
-      (should (agent-shell-vertico-sidebar--unread-p alpha))
-      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
-      (should (equal (agent-shell-vertico-sidebar--status-name alpha) "Ready"))
-      (should (agent-shell-vertico-sidebar--needs-attention-p alpha)))))
+       alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+      (agent-shell-vertico-tests--end-turn alpha)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done)))))
+
+(ert-deftest agent-shell-vertico-sidebar-session-of-unknown-history-is-done ()
+  "A session already running when the sidebar first saw it is not new.
+
+Nothing says whether it was ever prompted, so it is described the way a
+session that finished a turn is."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-sidebar--watch-buffer alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
+
+(ert-deftest agent-shell-vertico-sidebar-restored-session-is-not-new ()
+  "A session reloaded from its history has been prompted before."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:title . "Review alpha"))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (agent-shell-vertico-sidebar--watch-buffer alpha)
+      (with-current-buffer alpha
+        (setq-local agent-shell--state
+                    '((:session . ((:id . "a") (:title . "Review alpha"))))))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . session-restored)))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done)))))
+
+(ert-deftest agent-shell-vertico-sidebar-needs-input-line-blocks-the-session ()
+  "A turn ending on a `needs input:' line asks the reader that question."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--stream alpha "Two ways to go.\n")
+    (agent-shell-vertico-tests--stream alpha "needs input: which branch?\n")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(blocked blocked "which branch?")))
+    (agent-shell-vertico-sidebar--mark-seen alpha)
+    (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . input-submitted) (:data . ((:prompt . "main")))))
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
+
+(ert-deftest agent-shell-vertico-sidebar-failed-line-fails-the-turn ()
+  "A turn ending on a `failed:' line failed, for the reason it gives."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--stream alpha "failed: the tests do not build")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'error)
+                   "the tests do not build"))))
+
+(ert-deftest agent-shell-vertico-sidebar-result-line-is-the-result ()
+  "A `result:' line is the turn's result, else its last non-empty line."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--stream
+     alpha "Looked at it.\nresult: Fixed the paging\nTwo tests added.\n\n")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                   "Fixed the paging"))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . input-submitted) (:data . ((:prompt . "and?")))))
+    (agent-shell-vertico-tests--stream alpha "Nothing else.\n  Done for now.  \n")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                   "Done for now."))))
+
+(ert-deftest agent-shell-vertico-sidebar-turn-ends-stamp-terminal-times ()
+  "The first turn end is kept; the latest one moves with every end."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((now 100.0))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _) now)))
+        (agent-shell-vertico-tests--end-turn alpha)
+        (setq now 200.0)
+        (agent-shell-vertico-tests--end-turn alpha)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'first-terminal-at)
+                   100.0))
+        (should (= (agent-shell-vertico-sidebar--get alpha 'last-terminal-at)
+                   200.0))
+        (setq now 300.0)
+        (agent-shell-vertico-sidebar--handle-event alpha '((:event . error)))
+        (should (= (agent-shell-vertico-sidebar--get alpha 'last-terminal-at)
+                   300.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-job-state-follows-claude-code ()
+  "State and tempo carry Claude Code's names for what a session does."
+  (agent-shell-vertico-tests--with-alpha
+    (setq agent-shell-test-statuses (list (cons alpha 'busy)))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(working active nil)))
+    (setq agent-shell-test-statuses (list (cons alpha 'ready)))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "a") (:title . "Review alpha")))
+                    (:tool-calls
+                     . (("t1" . ((:title . "Edit agent-shell.el")
+                                 (:permission-request-id . "p1"))))))))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done blocked "Allow: Edit agent-shell.el")))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "a") (:title . "Review alpha")))
+                    (:native-subagents . (("s1" . ((:id . "s1"))))))))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(working idle nil)))))
 
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
@@ -3571,7 +3740,7 @@ the reader."
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . input-submitted)))
       (should-not (agent-shell-vertico-sidebar--unread-p alpha))
-      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready)))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done)))))
 
 (ert-deftest agent-shell-vertico-sidebar-no-session-yet-is-starting ()
   "A session with no ACP session yet is starting, not ready.
@@ -3598,7 +3767,7 @@ What tells them apart is whether the session has an id yet."
                      "Starting")))))
 
 (ert-deftest agent-shell-vertico-sidebar-session-id-ends-starting ()
-  "Getting a session id turns a starting session ready.
+  "Getting a session id ends starting.
 
 No event marks this transition: the next status query simply sees the
 id agent-shell recorded once the session was created."
@@ -3608,9 +3777,9 @@ id agent-shell recorded once the session was created."
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))
       (with-current-buffer alpha
         (setq agent-shell--state '((:session . ((:id . "a"))))))
-      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
       (should (equal (agent-shell-vertico-sidebar--status-name alpha)
-                     "Ready")))))
+                     "Done")))))
 
 (ert-deftest agent-shell-vertico-sidebar-blocked-needs-attention-unrecorded ()
   "A session waiting for a permission decision needs no record to say so.
@@ -3668,7 +3837,7 @@ the command to refuse."
     ;; last one ended nor whether it was read still describes the session.
     (let ((agent-shell-vertico-sidebar--sessions (make-hash-table :test #'eq)))
       (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
-      (agent-shell-vertico-sidebar--set alpha 'error t)
+      (agent-shell-vertico-sidebar--set alpha 'state 'failed)
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . input-submitted)))
       (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
@@ -3683,7 +3852,7 @@ the command to refuse."
     (let ((agent-shell-test-statuses (list (cons blocked 'blocked)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (agent-shell-vertico-sidebar--set failed 'unread 10.0)
       (should (equal (agent-shell-vertico-sidebar--icon failed) "✖"))
       (should (equal (agent-shell-vertico-sidebar--icon blocked) "?"))
@@ -3697,7 +3866,7 @@ the command to refuse."
     (let ((agent-shell-test-buffers (list failed))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -3763,7 +3932,7 @@ question mark says what kind of answer."
       (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
                      (cdr slot))))
     (dolist (status '((failed . "✖") (blocked . "?") (busy . "◆")
-                      (ready . "✓") (starting . "○")))
+                      (done . "✓") (starting . "○")))
       (dolist (unread '(t nil))
         (should (equal (agent-shell-vertico-sidebar--status-icon
                         (car status) unread)
@@ -3798,9 +3967,9 @@ question mark says what kind of answer."
                      "<md:nf-md-dots_circle>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'busy nil)
                      "<md:nf-md-dots_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'ready t)
+      (should (equal (agent-shell-vertico-sidebar--status-icon 'done t)
                      "<md:nf-md-check_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'ready nil)
+      (should (equal (agent-shell-vertico-sidebar--status-icon 'done nil)
                      "<md:nf-md-check_circle_outline>"))
       (should (equal (agent-shell-vertico-sidebar--status-icon 'starting t)
                      "<md:nf-md-circle_outline>"))
@@ -3894,7 +4063,7 @@ question mark says what kind of answer."
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil))
-      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (agent-shell-vertico-sidebar--set failed 'unread 10.0)
       (agent-shell-vertico-sidebar--set finished 'unread 10.0)
       (with-temp-buffer
@@ -4021,7 +4190,7 @@ header has room for one count."
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
-      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (agent-shell-vertico-sidebar--set failed 'unread 10.0)
       (agent-shell-vertico-sidebar--set finished 'unread 10.0)
       (with-temp-buffer
@@ -10227,7 +10396,7 @@ after the test has already finished.  Tests call
               '((:session . ((:id . "a") (:title . "Alpha"))))))
     (agent-shell-vertico-tests--with-settled-timers
       (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
-        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
         (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
@@ -10272,9 +10441,9 @@ after the test has already finished.  Tests call
                        10.0))
         ;; The burst left the session idle and ready; what it left behind
         ;; is unread output, not a status.
-        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
         (should (equal (agent-shell-vertico-sidebar--status-name alpha)
-                       "Ready"))
+                       "Done"))
         (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-clears-when-seen ()
@@ -10312,7 +10481,7 @@ after the test has already finished.  Tests call
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
         (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
-        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-skips-read-session ()
   "Output that streamed into the selected window has already been read."
@@ -10358,7 +10527,7 @@ is unread output on top of that."
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . input-submitted)))
         (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
-        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))))
 
 (ert-deftest agent-shell-vertico-sidebar-turn-complete-cancels-out-of-turn-settle ()
   "A real turn's completion supersedes any burst that preceded it."
@@ -10436,10 +10605,10 @@ session is doing now, and the session is working."
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
-        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
         (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                       '(ready t nil)))))))
+                       '(done t nil)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-burst-defers-a-failed-mark ()
   "A failed session that streams again is working until it stops."
@@ -10848,7 +11017,7 @@ and a page number would land on the turn before the one it names."
       (should (equal notifications
                      (list (list :buffer alpha
                                  :agent "Codex"
-                                 :status "Ready"
+                                 :status "Done"
                                  :unread t
                                  :last-message "All done.")))))))
 
@@ -10924,7 +11093,7 @@ and a page number would land on the turn before the one it names."
         (should (equal notifications
                        (list (list :buffer alpha
                                    :agent nil
-                                   :status "Ready"
+                                   :status "Done"
                                    :unread t
                                    :last-message "Background note."))))))))
 
@@ -12411,7 +12580,7 @@ move it behind the ones that have waited less."
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)))
           (inhibit-message t))
-      (agent-shell-vertico-sidebar--set alpha 'error t)
+      (agent-shell-vertico-sidebar--set alpha 'state 'failed)
       (agent-shell-vertico-sidebar--mark-unread-at alpha 100.0)
       (with-current-buffer alpha
         (agent-shell-vertico-sidebar-mark-read))
@@ -13996,7 +14165,7 @@ under its point."
     (should (agent-shell-vertico-sidebar--unread-p alpha))
     (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
     (should (equal (agent-shell-vertico-sidebar--mark alpha)
-                   '(ready t t)))
+                   '(done t t)))
     (should (eq (agent-shell-vertico-sidebar--mark-face
                  (agent-shell-vertico-sidebar--mark alpha))
                 'agent-shell-vertico-sidebar-snoozed))
@@ -14326,7 +14495,7 @@ BETA is live and idle beside it."
                      :ended-at)
             '(0 0)))
     (should-not (agent-shell-vertico-sidebar--background-work alpha))
-    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-from-an-async-task ()
   "A running async task counts; a finished one does not."
@@ -14336,7 +14505,7 @@ BETA is live and idle beside it."
     (should (equal (agent-shell-vertico-sidebar--background-work alpha)
                    '(0 . 1)))
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
-    (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'ready))))
+    (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'done))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-yields-to-the-turn ()
   "A live turn, a pending decision and a failure all say more."
@@ -14346,7 +14515,7 @@ BETA is live and idle beside it."
       (setf (alist-get alpha agent-shell-test-statuses) status)
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) status)))
     (setf (alist-get alpha agent-shell-test-statuses) 'ready)
-    (agent-shell-vertico-sidebar--set alpha 'error t)
+    (agent-shell-vertico-sidebar--set alpha 'state 'failed)
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-ranks-below-working ()
