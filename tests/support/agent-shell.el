@@ -285,6 +285,15 @@ picker, it offers nothing when there is neither a session nor a shell."
   "The subagent whose notification is being dispatched, as upstream binds it.
 Non-nil only around a subagent's content; tests bind it to fake one.")
 
+(cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
+  "Record an insertion of TEXT into SHELL-BUFFER.
+SUBMIT and NO-FOCUS are recorded with it, as upstream takes them."
+  (setq agent-shell-test-last-command 'agent-shell-insert
+        agent-shell-test-last-buffer shell-buffer
+        agent-shell-test-last-args (list :text text :submit submit
+                                         :no-focus no-focus))
+  nil)
+
 (defun agent-shell-subagents ()
   "Record a subagents list action."
   (interactive)

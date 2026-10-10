@@ -45,6 +45,7 @@
 (declare-function evil-previous-line "evil" ())
 (declare-function dired-other-window "dired" (dirname))
 (declare-function agent-shell-subagents "agent-shell-subagents" ())
+(declare-function agent-shell-insert "agent-shell" (&rest args))
 (declare-function agent-shell--stop-reason-description "agent-shell"
                   (stop-reason))
 
@@ -4105,6 +4106,7 @@ permission decision or a reply.  Nothing is shown when none does."
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
    "  P           Pin the session to the top, or unpin it\n"
+   "  p           Peek: read the session's question and message, reply\n"
    "  S           List the session's subagents and background tasks\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
    "  q           Close the sidebar\n\n"
@@ -4140,6 +4142,7 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
+    (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map (kbd "q") #'quit-window)
@@ -4176,6 +4179,7 @@ permission decision or a reply.  Nothing is shown when none does."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
+    (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
     (define-key map [mouse-1] #'agent-shell-vertico-sidebar-activate)
@@ -4219,6 +4223,7 @@ permission decision or a reply.  Nothing is shown when none does."
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
     ("P" . agent-shell-vertico-sidebar-pin)
+    ("p" . agent-shell-vertico-sidebar-peek)
     ("S" . agent-shell-vertico-sidebar-subagents)
     ("?" . agent-shell-vertico-sidebar-help)
     ("q" . quit-window))
@@ -4508,6 +4513,117 @@ Pinning wakes a snoozed session, and snoozing unpins one."
       (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
       (message "Session %s pinned" (buffer-name buffer)))
     (agent-shell-vertico-sidebar-refresh)))
+
+(defconst agent-shell-vertico-sidebar--peek-buffer "*Agent Shell Peek*"
+  "Buffer `agent-shell-vertico-sidebar-peek' shows a session in.")
+
+(defvar-local agent-shell-vertico-sidebar--peek-session nil
+  "The session the peek buffer shows.")
+
+(defvar agent-shell-vertico-sidebar-peek-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "r") #'agent-shell-vertico-sidebar-peek-reply)
+    (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-peek-open)
+    (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-peek-open)
+    (define-key map (kbd "q") #'quit-window)
+    map)
+  "Keymap for `agent-shell-vertico-sidebar-peek-mode'.")
+
+(define-derived-mode agent-shell-vertico-sidebar-peek-mode special-mode
+  "Agent-Shell-Peek"
+  "Major mode for the window showing one session's question and message."
+  (setq-local truncate-lines nil
+              mode-line-format nil)
+  (visual-line-mode 1)
+  (when (fboundp 'evil-local-set-key)
+    (dolist (state '(normal motion))
+      (evil-local-set-key state (kbd "r")
+                          #'agent-shell-vertico-sidebar-peek-reply)
+      (evil-local-set-key state (kbd "RET")
+                          #'agent-shell-vertico-sidebar-peek-open)
+      (evil-local-set-key state (kbd "q") #'quit-window))))
+
+(defun agent-shell-vertico-sidebar--peek-text (buffer)
+  "Return what the peek shows for session BUFFER."
+  (let* ((snapshot (agent-shell-vertico-sidebar--session-snapshot buffer))
+         (needs (plist-get snapshot :needs))
+         (message (or (agent-shell-vertico-sidebar--last-message buffer)
+                      (agent-shell-vertico-sidebar--detail-for snapshot)))
+         (age (agent-shell-vertico-sidebar--age-text snapshot)))
+    (concat
+     (propertize (agent-shell-vertico-sidebar--title buffer) 'face 'bold)
+     " · "
+     (propertize (agent-shell-vertico-sidebar--status-name-for
+                  (plist-get snapshot :status))
+                 'face (agent-shell-vertico-sidebar--mark-face snapshot))
+     (and age (concat " · " age))
+     "\n"
+     (and needs
+          (concat (propertize needs 'face 'agent-shell-vertico-sidebar-blocked)
+                  "\n"))
+     "\n"
+     (propertize "Last message" 'face 'agent-shell-vertico-sidebar-section)
+     "\n"
+     (if message
+         (string-trim message)
+       (propertize "Nothing yet" 'face 'agent-shell-vertico-sidebar-detail))
+     "\n\n"
+     (propertize "r reply · RET open · q close"
+                 'face 'agent-shell-vertico-sidebar-detail))))
+
+(defun agent-shell-vertico-sidebar-peek ()
+  "Show what the session at point asks and last said, below the sidebar.
+
+Outside the sidebar the current session is shown.  The window takes the
+sidebar's side, under it, and is selected, so `r' replies to the
+session without leaving the list and `RET' opens it.  Showing the
+message is reading it, so the session's unread mark goes."
+  (interactive)
+  (let* ((session (agent-shell-vertico-sidebar--attention-target))
+         (buffer (get-buffer-create agent-shell-vertico-sidebar--peek-buffer)))
+    (with-current-buffer buffer
+      (agent-shell-vertico-sidebar-peek-mode)
+      (setq agent-shell-vertico-sidebar--peek-session session)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (agent-shell-vertico-sidebar--peek-text session))
+        (goto-char (point-min))))
+    (agent-shell-vertico-sidebar--mark-seen session)
+    (when-let* ((window (display-buffer-in-side-window
+                         buffer
+                         `((side . ,agent-shell-vertico-sidebar-side)
+                           (slot . 1)
+                           (window-height . 0.35)))))
+      (select-window window))))
+
+(defun agent-shell-vertico-sidebar--peek-target ()
+  "Return the live session the peek buffer shows, or signal a user error."
+  (let ((session agent-shell-vertico-sidebar--peek-session))
+    (unless (buffer-live-p session)
+      (user-error "The peeked session is gone"))
+    session))
+
+(defun agent-shell-vertico-sidebar-peek-reply ()
+  "Send one prompt to the session the peek shows, staying in the peek."
+  (interactive)
+  (let* ((session (agent-shell-vertico-sidebar--peek-target))
+         (text (string-trim
+                (read-string
+                 (format "Reply to %s: "
+                         (agent-shell-vertico-sidebar--title session))))))
+    (when (string-empty-p text)
+      (user-error "Nothing to send"))
+    (agent-shell-insert :text text :submit t :no-focus t
+                        :shell-buffer session)
+    (message "Sent to %s" (buffer-name session))))
+
+(defun agent-shell-vertico-sidebar-peek-open ()
+  "Open the session the peek shows, and close the peek."
+  (interactive)
+  (let ((session (agent-shell-vertico-sidebar--peek-target)))
+    (quit-window)
+    (agent-shell-vertico--display-session (buffer-name session))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-jump (&optional read)

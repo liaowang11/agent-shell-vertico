@@ -4046,6 +4046,61 @@ counts each in its band."
   (should (eq (cdr (assoc "P" agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-pin)))
 
+(ert-deftest agent-shell-vertico-sidebar-peek-shows-the-question-and-message ()
+  "Peeking shows what a session asks and what it last said, and reads it."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--stream
+       alpha "I changed the count.\nneeds input: which branch?\n")
+      (agent-shell-vertico-tests--end-turn alpha)
+      (should (agent-shell-vertico-sidebar--unread-p alpha))
+      (save-window-excursion
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-peek))
+        (let ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+          (unwind-protect
+              (with-current-buffer peek
+                (should (derived-mode-p
+                         'agent-shell-vertico-sidebar-peek-mode))
+                (should (eq agent-shell-vertico-sidebar--peek-session alpha))
+                (let ((text (buffer-substring-no-properties
+                             (point-min) (point-max))))
+                  (should (string-match-p "Review alpha · Waiting" text))
+                  (should (string-match-p "which branch\\?" text))
+                  (should (string-match-p "I changed the count\\." text))
+                  (should (string-match-p "r reply" text))))
+            (kill-buffer peek))))
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-replies-to-the-session ()
+  "r in the peek sends one prompt to the session without leaving the peek."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha)))
+      (save-window-excursion
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-peek))
+        (let ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+          (unwind-protect
+              (with-current-buffer peek
+                (should (eq (lookup-key
+                             agent-shell-vertico-sidebar-peek-mode-map "r")
+                            #'agent-shell-vertico-sidebar-peek-reply))
+                (cl-letf (((symbol-function 'read-string)
+                           (lambda (&rest _) "use main")))
+                  (agent-shell-vertico-sidebar-peek-reply))
+                (should (eq agent-shell-test-last-command
+                            'agent-shell-insert))
+                (should (eq agent-shell-test-last-buffer alpha))
+                (should (equal agent-shell-test-last-args
+                               '(:text "use main" :submit t :no-focus t))))
+            (kill-buffer peek)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-is-bound-to-p ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "p"))
+              #'agent-shell-vertico-sidebar-peek))
+  (should (eq (cdr (assoc "p" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-peek)))
+
 (ert-deftest agent-shell-vertico-sidebar-grouping-cycles-three-views ()
   "The grouping toggle cycles flat, project and state views."
   (let ((agent-shell-vertico-sidebar-group-by nil))
