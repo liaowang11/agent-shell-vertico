@@ -47,12 +47,8 @@
                   (&key force-refresh))
 (declare-function agent-shell-viewport-refresh "agent-shell-viewport" ())
 (declare-function agent-shell-viewport--update-header "agent-shell-viewport" ())
-(declare-function shell-maker-history "shell-maker" ())
-(declare-function shell-maker-prompt-regexp "shell-maker" (config))
-(declare-function shell-maker--re-search-forward-prompt "shell-maker"
-                  (prompt-regexp &optional bound))
-(declare-function shell-maker--find-marker "shell-maker"
-                  (marker bound &rest arguments))
+(declare-function agent-shell--turns "agent-shell" ())
+(declare-function agent-shell--turn-at-index "agent-shell" (index))
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 (declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
@@ -75,7 +71,6 @@
 (declare-function comint-send-eof "comint" ())
 
 (defvar agent-shell--state)
-(defvar shell-maker--config)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
 (defvar agent-shell-preferred-agent-config)
@@ -938,12 +933,14 @@ shell for a viewport."
 
 ;;; Viewport pages
 ;;
-;; A viewport shows one exchange of a session at a time and moves through
-;; them one step at a time.  These read which exchange to show instead,
-;; naming each by the prompt that started it.
+;; A viewport shows one turn of a session at a time and moves through
+;; them one step at a time.  These read which turn to show instead,
+;; naming each by the prompt that started it.  A turn is a submitted
+;; prompt plus every prompt steered into it, which is how the viewport
+;; numbers its own pages.
 
 (defun agent-shell-vertico--viewport-page-candidate (prompt page width)
-  "Return the candidate naming PAGE, the exchange PROMPT started.
+  "Return the candidate naming PAGE, the turn PROMPT started.
 
 The number leads, right-aligned in WIDTH columns, so the prompts of a
 history with ten or more pages still start in one column."
@@ -958,19 +955,22 @@ PAGE counts from one, which is how the viewport numbers its own
 position, and CANDIDATE leads with that number.  The prompt alone named
 a page before, which cost the reader both ends of the same fact: two
 exchanges opened with the same prompt collapsed onto the first, and
-nothing on a row said where in the history it sat."
+nothing on a row said where in the history it sat.
+
+Pages are turns, not exchanges: a prompt steered into a running turn is
+an exchange of its own in the shell but reads inside the turn it joined,
+so counting exchanges would number every later page past the viewport's."
   (agent-shell-viewport--ensure-buffer)
   (when-let* ((shell-buffer (agent-shell-viewport--shell-buffer))
-              (history (with-current-buffer shell-buffer
-                         (shell-maker-history)))
-              ((not (seq-empty-p history)))
-              (width (length (number-to-string (length history)))))
+              (turns (with-current-buffer shell-buffer
+                       (agent-shell--turns)))
+              (width (length (number-to-string (length turns)))))
     (seq-map-indexed
-     (lambda (item index)
+     (lambda (turn index)
        (cons (agent-shell-vertico--viewport-page-candidate
-              (car item) (1+ index) width)
+              (map-elt turn :prompt) (1+ index) width)
              (1+ index)))
-     history)))
+     turns)))
 
 (defun agent-shell-vertico--read-viewport-page (page)
   "Return the viewport history page PAGE names.
@@ -998,31 +998,12 @@ reads one by its number and prompt text."
 (defun agent-shell-vertico--goto-viewport-page (page shell-buffer)
   "Move SHELL-BUFFER's point to the start of PAGE and return it.
 
-A page is a prompt whose exchange carries shell-maker's end-of-prompt
-marker.  A prompt without one is text the agent printed, not an exchange
-the viewport can show."
+PAGE counts turns the way `agent-shell--turns' does, which is the
+viewport's own page count."
   (with-current-buffer shell-buffer
-    (let ((prompt-regexp (shell-maker-prompt-regexp shell-maker--config))
-          (count 0)
-          found)
-      (goto-char (point-min))
-      (while (and (not found)
-                  (shell-maker--re-search-forward-prompt prompt-regexp))
-        (let ((prompt-start (match-beginning 0))
-              (chunk-end (save-excursion
-                           (if (shell-maker--re-search-forward-prompt
-                                prompt-regexp)
-                               (match-beginning 0)
-                             (point-max)))))
-          (when (shell-maker--find-marker
-                 "<shell-maker-end-of-prompt>" chunk-end)
-            (setq count (1+ count))
-            (when (= count page)
-              (setq found prompt-start)))))
-      (unless found
-        (user-error "Page %d is out of range" page))
-      (goto-char found)
-      found)))
+    (let ((turn (or (agent-shell--turn-at-index page)
+                    (user-error "Page %d is out of range" page))))
+      (goto-char (map-elt turn :position)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-viewport-goto-page (page)

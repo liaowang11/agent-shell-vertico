@@ -10714,9 +10714,7 @@ resolves its shell from its own buffer name."
           (viewport (get-buffer-create
                      (concat (buffer-name shell) " [viewport]"))))
      (unwind-protect
-         (let ((agent-shell-test-history
-                (mapcar (lambda (page) (list (car page) (cdr page))) ,pages))
-               (agent-shell-test-viewport-refreshed nil)
+         (let ((agent-shell-test-viewport-refreshed nil)
                (agent-shell-test-viewport-header-updated nil)
                (agent-shell-test-viewport-position
                 (list (cons :current 1) (cons :total (length ,pages)))))
@@ -10859,6 +10857,41 @@ prompt could not be reached at all."
       (agent-shell-vertico-viewport-goto-page nil))
     (with-current-buffer (agent-shell-viewport--shell-buffer)
       (should (looking-at "> real second")))))
+
+(defun agent-shell-vertico-tests--mark-steered (prompt)
+  "Mark the shell prompt reading PROMPT as steered into the turn before it."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward (concat "> " prompt))
+    (put-text-property (match-beginning 0) (1+ (match-beginning 0))
+                       'agent-shell-steered-prompt t)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-counts-turns ()
+  "A page is a turn, so a steered prompt reads inside the turn it joined.
+
+The viewport numbers its pages by turn.  Offering a steer as a page of
+its own would number every later page one past the viewport's header,
+and a page number would land on the turn before the one it names."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("steered aside" . "steered answer")
+        ("third question" . "third answer"))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (agent-shell-vertico-tests--mark-steered "steered aside"))
+    (let ((agent-shell-test-viewport-position
+           (list (cons :current 1) (cons :total 2)))
+          offered)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _arguments)
+                   (setq offered (all-completions "" collection))
+                   "2: third question")))
+        (agent-shell-vertico-viewport-goto-page nil))
+      (should (equal offered '("1: first question" "2: third question")))
+      (with-current-buffer (agent-shell-viewport--shell-buffer)
+        (should (looking-at "> third question")))
+      (agent-shell-vertico-viewport-goto-page 2)
+      (with-current-buffer (agent-shell-viewport--shell-buffer)
+        (should (looking-at "> third question"))))))
 
 ;;; Attention notifications
 

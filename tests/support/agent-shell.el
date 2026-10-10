@@ -577,6 +577,61 @@ buffer name plus the viewport suffix."
                    (length agent-shell-viewport--suffix)))))
     (get-buffer shell-name)))
 
+(defun agent-shell--steered-prompt-p (position)
+  "Return non-nil when the prompt beginning at POSITION was steered into a turn."
+  (get-text-property position 'agent-shell-steered-prompt))
+
+(defun agent-shell--turns ()
+  "Return the shell's history as turns, oldest first.
+
+Mirrors the real walk: an exchange is a real prompt whose chunk carries
+a real end-of-prompt marker, and a steered prompt's exchange joins the
+turn before it rather than starting one.  Each turn is an alist of
+`:prompt', `:response', `:position' and `:exchanges'."
+  (let ((prompt-regexp (shell-maker-prompt-regexp shell-maker--config))
+        (index 0)
+        turns)
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not (string-match-p prompt-regexp ""))
+                  (shell-maker--re-search-forward-prompt prompt-regexp)
+                  (> (point) (match-beginning 0)))
+        (let* ((prompt-start (match-beginning 0))
+               (command-start (point))
+               (next-prompt (save-excursion
+                              (if (shell-maker--re-search-forward-prompt
+                                   prompt-regexp)
+                                  (match-beginning 0)
+                                (point-max))))
+               (end-marker (shell-maker--find-marker
+                            "<shell-maker-end-of-prompt>" next-prompt)))
+          (when end-marker
+            (setq index (1+ index))
+            (let ((command (buffer-substring command-start (car end-marker)))
+                  (response (buffer-substring (cdr end-marker) next-prompt)))
+              (if (and turns (agent-shell--steered-prompt-p prompt-start))
+                  (let ((turn (car turns)))
+                    (setf (alist-get :response turn)
+                          (concat (or (alist-get :response turn) "")
+                                  (buffer-substring prompt-start command-start)
+                                  command
+                                  response))
+                    (setcdr (alist-get :exchanges turn) index))
+                (push (list (cons :prompt (unless (string-empty-p command)
+                                            command))
+                            (cons :response (unless (string-empty-p response)
+                                              response))
+                            (cons :position prompt-start)
+                            (cons :exchanges (cons index index)))
+                      turns))))
+          (goto-char (max next-prompt (point))))))
+    (nreverse turns)))
+
+(defun agent-shell--turn-at-index (index)
+  "Return the turn at one-based INDEX (see `agent-shell--turns'), or nil."
+  (when (> index 0)
+    (nth (1- index) (agent-shell--turns))))
+
 (cl-defun agent-shell-viewport--buffer (&key shell-buffer existing-only)
   "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER.
 

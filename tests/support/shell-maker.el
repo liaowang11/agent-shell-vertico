@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 
-;; Only the parts `agent-shell-vertico' reads are stubbed.  The two
+;; Only the parts the agent-shell stub reads are stubbed.  The two
 ;; searchers keep shell-maker's own rules for what counts as a real
 ;; prompt and a real marker, because those rules are what separate a
 ;; page boundary from text an agent happened to print.
@@ -17,16 +17,9 @@
 (defvar agent-shell-test-prompt-regexp "^> "
   "Stub: regexp `shell-maker-prompt-regexp' reports.")
 
-(defvar agent-shell-test-history nil
-  "Stub: history `shell-maker-history' returns.")
-
 (defun shell-maker-prompt-regexp (_config)
   "Stub: return the prompt regexp of the current shell."
   agent-shell-test-prompt-regexp)
-
-(defun shell-maker-history ()
-  "Stub: return the current shell's history."
-  agent-shell-test-history)
 
 (defun shell-maker--re-search-forward-prompt (prompt-regexp &optional bound)
   "Search forward for a real prompt matching PROMPT-REGEXP before BOUND.
