@@ -333,7 +333,12 @@ where its state puts it; only the drawing asks `--section`.
 **The state view.** `agent-shell-vertico-sidebar-group-by` defaults to
 `state`, and `=` cycles flat, project and state. `--render` draws
 `--group-by-section` over the roots: a header for each non-empty section in
-`--sections` order, sessions in the user's sort within it. Each header is a
+`--sections` order, sessions in the user's sort within it. A child is drawn
+under its parent, so a root's section is its whole family's
+(`--family-section`): Pinned when the root is pinned, otherwise the earliest
+section among the bands of the root and every live descendant. A child
+waiting on the reader therefore draws its idle parent under Needs you, and a
+working child puts an idle family under Working. Each header is a
 fold in `--section-folds`, seeded from
 `agent-shell-vertico-sidebar-folded-sections`; an open header carries no
 count, since its rows are the count, and a folded one counts what it hides,
@@ -345,8 +350,8 @@ instead of a row counting it, since both take one line. The project view puts
 a Pinned section above the projects (`--split-pinned`), and the flat view
 relies on `--compare-buffers` sorting pinned sessions first.
 `--display-order`, `--reveal-session`, `--view-level` and `--set-view-level`
-each have a state arm, so stepping, revealing and `S-TAB` see the sections the
-render draws.
+each have a state arm, and each asks `--family-section` of a root, so
+stepping, revealing and `S-TAB` see the sections the render draws.
 
 **The detail line and the age.** Every row is a title line and a detail line,
 as the agent view draws a job. `--detail-for` picks the line as Claude Code
@@ -368,12 +373,17 @@ row has one height. Since every row carries an age, `--ensure-age-refresh`
 runs whenever the sidebar is visible and has sessions.
 
 **The header and the mode line.** `--header-line-for` counts the snapshots by
-`:band`, the field that also places rows in sections, so the header and the
-sections cannot disagree. It writes words (`1 need you · 2 working · 3 idle`)
-when they fit beside the view's name, and coloured digits with the words in
-tooltips otherwise; the name keeps the right edge through an `:align-to`
-space, because the header spans the fringes and margins the render's width
-leaves out. The "need you" count names its sessions in its tooltip and runs
+`:band`, each session in its own band, children included. The state view
+places a family by its most urgent band, so a session is drawn in its own
+band's section or an earlier one, never a later one: whoever the header says
+needs the reader sits under Needs you unless its family is pinned, and a
+project header (`--project-summary`) counts the attention band across each
+root's family for the same reason. It writes words
+(`1 need you · 2 working · 3 idle`) when they fit beside the view's name, and
+coloured digits with the words in tooltips otherwise; the name keeps the right
+edge through an `:align-to` space, because the header spans the fringes and
+margins the render's width leaves out. The "need you" count names its
+sessions in its tooltip and runs
 `agent-shell-vertico-sidebar-jump` on a click. The jump visits
 `--needs-attention-p`, which also takes an unread idle session the band does
 not count: the two answer different questions, and the jump was left as it
@@ -534,8 +544,11 @@ live buffer set into `roots` (everything with no live parent, via
 recurses over `--children-of` sorted by the same
 `agent-shell-vertico-sidebar-sort-by`, one level deeper each time — so a
 parent's children sort among themselves and never affect where the parent
-lands among its own siblings. Grouping and the top-level sort never see a
-child at all: both run over `roots`, exactly as before this feature.
+lands among its own siblings. Grouping and the top-level sort run over
+`roots` only, exactly as before this feature, with one exception: the state
+view files a root by the most urgent band in its family (`--family-section`),
+so a child's state can move its parent's section but never its place in the
+sort.
 Indentation, which used to be a boolean (`nested`, under a project header or
 not), is now a depth count, since a child under a project-grouped parent
 needs two steps and a project's own sessions still need one; `--content-width`

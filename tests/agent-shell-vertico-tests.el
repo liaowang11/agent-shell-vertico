@@ -4056,6 +4056,104 @@ counts each in its band."
                        (list waiting)))
                      "✻ 1")))))
 
+(defmacro agent-shell-vertico-tests--with-family (statuses &rest body)
+  "Evaluate BODY in a state-view sidebar holding PARENT, CHILD and OTHER.
+
+CHILD is PARENT's side conversation; OTHER is a root of its own, named
+to sort last.  STATUSES is the `agent-shell-test-statuses' alist, and
+every session it leaves out is ready, so idle."
+  (declare (indent 1) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((parent "Codex Agent @ parent" "/work/a/"
+                '((:session . ((:id . "p") (:title . "Parent")))))
+        (child "Codex Agent @ child" "/work/a/"
+               '((:session . ((:id . "c") (:title . "Child")))))
+        (other "Codex Agent @ other" "/work/a/"
+               '((:session . ((:id . "o") (:title . "Zeta other"))))))
+     (agent-shell-vertico-tests--with-side-links (list (cons child parent))
+       (let ((agent-shell-test-buffers (list parent child other))
+             (agent-shell-test-statuses ,statuses)
+             (agent-shell-vertico-sidebar-group-by 'state)
+             (agent-shell-vertico-sidebar-sort-by 'name)
+             (agent-shell-vertico-sidebar-folded-sections nil))
+         (with-temp-buffer
+           (agent-shell-vertico-sidebar-mode)
+           (agent-shell-vertico-sidebar--render)
+           ,@body)))))
+
+(defun agent-shell-vertico-tests--section-headers ()
+  "Return the current sidebar's section header lines."
+  (seq-filter (lambda (line) (string-match-p "\\`[▼▶] " line))
+              (agent-shell-vertico-tests--lines)))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-files-family-by-its-wait ()
+  "A child waiting on the reader draws its idle parent under Needs you.
+
+The header still counts each session in its own band, and the Needs you
+section it counts is drawn, holding the family."
+  (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("▼ Needs you" "▼ Idle")))
+    (should (string-prefix-p " 1 need you · 2 idle "
+                             (agent-shell-vertico-tests--header-text)))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list parent child other)))
+    (goto-char (point-min))
+    (search-forward "▼ Idle")
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) 'idle))
+    (forward-line 1)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) other))
+    (should (equal (agent-shell-vertico-sidebar--display-order)
+                   (list parent child other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-files-family-by-its-work ()
+  "A working child draws its idle parent under Working, not Idle."
+  (agent-shell-vertico-tests--with-family (list (cons child 'busy))
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("▼ Working" "▼ Idle")))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list parent child other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-keeps-a-pinned-family ()
+  "A pinned parent keeps its family in Pinned, whatever its child waits on."
+  (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
+    (agent-shell-vertico-sidebar--set parent 'pinned 1.0)
+    (agent-shell-vertico-sidebar--render)
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("▼ Pinned" "▼ Idle")))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list parent child other)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-folds-by-family ()
+  "Folding, revealing and the view level all find a family where it is drawn.
+
+With Idle empty but for OTHER and folded, Needs you is the only section
+showing a session, so folding it leaves nothing but headers."
+  (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
+    (agent-shell-vertico-sidebar--set-section-folded 'idle t)
+    (agent-shell-vertico-sidebar--set-section-folded 'attention t)
+    (agent-shell-vertico-sidebar--render)
+    (let ((headers (agent-shell-vertico-tests--section-headers)))
+      (should (= (length headers) 2))
+      (should (string-match-p "\\`▶ Needs you +2\\'" (nth 0 headers)))
+      (should (string-match-p "\\`▶ Idle +1\\'" (nth 1 headers))))
+    (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+    (agent-shell-vertico-sidebar--reveal-session child)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) child))
+    (should-not (agent-shell-vertico-sidebar--section-folded-p 'attention))
+    (should (agent-shell-vertico-sidebar--section-folded-p 'idle))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-count-includes-children ()
+  "A project header counts a waiting child, as the mode line does."
+  (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
+    (should (equal (substring-no-properties
+                    (agent-shell-vertico-sidebar--mode-line-text))
+                   " 1 need you"))
+    (should (equal (substring-no-properties
+                    (agent-shell-vertico-sidebar--project-summary
+                     (list parent other)))
+                   "✻ 1"))))
+
 (ert-deftest agent-shell-vertico-sidebar-pin-is-bound-to-capital-p ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "P"))
               #'agent-shell-vertico-sidebar-pin))

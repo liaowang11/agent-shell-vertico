@@ -1022,13 +1022,34 @@ SNOOZED is the session's snooze time as drawn.  The plist holds
   "Return the band BUFFER is counted in, pinned or not."
   (agent-shell-vertico-sidebar--job-field buffer :band))
 
-(defun agent-shell-vertico-sidebar--group-by-section (buffers)
-  "Group BUFFERS by state section, in section order.
+(defun agent-shell-vertico-sidebar--family (buffer)
+  "Return BUFFER and its live descendants, BUFFER first."
+  (cons buffer
+        (seq-mapcat #'agent-shell-vertico-sidebar--family
+                    (agent-shell-vertico-sidebar--children-of buffer))))
 
-Return an alist of each section holding a buffer and its buffers, which
-keep the order they had in BUFFERS."
-  (let ((groups (seq-group-by #'agent-shell-vertico-sidebar--section
-                              buffers)))
+(defun agent-shell-vertico-sidebar--family-section (root)
+  "Return the state section ROOT and its descendants are drawn in.
+
+A child is drawn under its parent, so the family takes one section: the
+Pinned one when ROOT is pinned, and otherwise the earliest in
+`--sections' among the bands of ROOT and every live descendant.  A child
+waiting on the reader thus draws its idle parent under Needs you, where
+the header that counts it says it is."
+  (if (eq (agent-shell-vertico-sidebar--section root) 'pinned)
+      'pinned
+    (let ((bands (mapcar #'agent-shell-vertico-sidebar--band
+                         (agent-shell-vertico-sidebar--family root))))
+      (seq-find (lambda (section) (memq section bands))
+                (mapcar #'car agent-shell-vertico-sidebar--sections)))))
+
+(defun agent-shell-vertico-sidebar--group-by-section (roots)
+  "Group ROOTS by the state section of their family, in section order.
+
+Return an alist of each section holding a root and its roots, which
+keep the order they had in ROOTS."
+  (let ((groups (seq-group-by #'agent-shell-vertico-sidebar--family-section
+                              roots)))
     (seq-keep (pcase-lambda (`(,section . ,_))
                 (when-let* ((members (alist-get section groups)))
                   (cons section members)))
@@ -2227,11 +2248,13 @@ Only the sessions that need the reader are counted, the header's
 attention band, and a project with none gets no count at all.  The
 other bands are the whole sidebar's header, and every status is on the
 session row that has it, so a project header states only what asks for
-a reply."
+a reply.  BUFFERS are the roots drawn under the header, and each one's
+live descendants are counted too, since they are drawn there as well."
   (let ((count (seq-count (lambda (buffer)
                             (eq (agent-shell-vertico-sidebar--band buffer)
                                 'attention))
-                          buffers)))
+                          (seq-mapcat #'agent-shell-vertico-sidebar--family
+                                      buffers))))
     (when (> count 0)
       (agent-shell-vertico-sidebar--count-text
        "✻" count 'agent-shell-vertico-sidebar-blocked))))
@@ -2376,8 +2399,7 @@ Folding also puts back the limit on the section's rows."
 
 (defun agent-shell-vertico-sidebar--family-size (buffer)
   "Return how many rows BUFFER and its live descendants take."
-  (1+ (apply #'+ (mapcar #'agent-shell-vertico-sidebar--family-size
-                         (agent-shell-vertico-sidebar--children-of buffer)))))
+  (length (agent-shell-vertico-sidebar--family buffer)))
 
 (defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
   "Insert LINE as the one-line node NODE of KIND, drawn in FACE."
@@ -3833,7 +3855,7 @@ default."
   "Return non-nil when any state section holding a session shows it."
   (seq-some (lambda (buffer)
               (not (agent-shell-vertico-sidebar--section-folded-p
-                    (agent-shell-vertico-sidebar--section buffer))))
+                    (agent-shell-vertico-sidebar--family-section buffer))))
             (seq-remove #'agent-shell-vertico-sidebar--parent-of
                         (seq-filter #'buffer-live-p (agent-shell-buffers)))))
 
@@ -4001,13 +4023,16 @@ count names its sessions in the tooltip and jumps to them on a click."
 (defun agent-shell-vertico-sidebar--header-line-for (snapshots width)
   "Return the header counting SNAPSHOTS by band, made to fit WIDTH columns.
 
-The bands are the ones `--band-for' gives, which also places each row
-in the state view, so the header and the sections cannot disagree.  A
-band with no sessions is left out.  The counts are in words when they
-fit with the view's name, and in coloured digits otherwise; the name
-goes last when even the digits do not fit.  It keeps the right edge
-through an `:align-to' space, since the header spans the fringes and
-margins that WIDTH leaves out."
+Each session is counted in its own band, the one `--band-for' gives.
+The state view draws a child under its parent, in the section of the
+family's most urgent band (`--family-section'), so a session counted in
+a band is drawn in that band's section or in an earlier one, never a
+later one: whoever the header says needs the reader sits under Needs
+you, unless the family is pinned.  A band with no sessions is left out.
+The counts are in words when they fit with the view's name, and in
+coloured digits otherwise; the name goes last when even the digits do
+not fit.  It keeps the right edge through an `:align-to' space, since
+the header spans the fringes and margins that WIDTH leaves out."
   (let* ((groups (seq-group-by (lambda (snapshot)
                                  (plist-get snapshot :band))
                                snapshots))
@@ -5255,8 +5280,8 @@ recently before it instead, leaving the sidebar open."
 
 A child is drawn under its topmost live ancestor, whatever its own
 directory or state, so the group to unfold is that ancestor's.  In the
-state view that means its section and the rows past the section's
-limit."
+state view that means its family's section (`--family-section') and the
+rows past the section's limit."
   (let ((node (cons 'session session)))
     (unless (agent-shell-vertico-sidebar--goto-node node)
       (let ((top session))
@@ -5273,7 +5298,8 @@ limit."
            (agent-shell-vertico-sidebar--render)
            (agent-shell-vertico-sidebar--goto-node node))
           ('state
-           (let ((section (agent-shell-vertico-sidebar--section top)))
+           (let ((section
+                  (agent-shell-vertico-sidebar--family-section top)))
              (agent-shell-vertico-sidebar--set-section-folded section nil)
              (cl-pushnew section agent-shell-vertico-sidebar--open-tails)
              (agent-shell-vertico-sidebar--render)
