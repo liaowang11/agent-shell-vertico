@@ -170,28 +170,9 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-buffer-query-count) 0)
                     ((symbol-value 'agent-shell-test-status-query-count) 0)
                     ((symbol-value 'agent-shell-test-subscriptions) nil)
-                    ((symbol-value
-                      'agent-shell-vertico-sidebar--busy-since-times)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--unread)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--failed)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--snoozed)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value
-                      'agent-shell-vertico-sidebar--background-since)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value
-                      'agent-shell-vertico-sidebar--background-at-turn-end)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--activity)
+                    ((symbol-value 'agent-shell-vertico-sidebar--sessions)
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--out-of-turn)
-                     (make-hash-table :test #'eq))
-                    ((symbol-value 'agent-shell-vertico-sidebar--messages)
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
                     ((symbol-value 'agent-shell-test-viewport-buffer) nil)
@@ -413,10 +394,10 @@ a session outside its own family."
       ;; Priority orders working sessions oldest first: the turn that
       ;; entered the busy state earliest leads.  Streaming chunks can
       ;; arrive in either order and must not reorder them.
-      (puthash older 100.0 agent-shell-vertico-sidebar--busy-since-times)
-      (puthash newer 200.0 agent-shell-vertico-sidebar--busy-since-times)
-      (puthash older 300.0 agent-shell-vertico-sidebar--activity)
-      (puthash newer 150.0 agent-shell-vertico-sidebar--activity)
+      (agent-shell-vertico-sidebar--set older 'busy-since 100.0)
+      (agent-shell-vertico-sidebar--set newer 'busy-since 200.0)
+      (agent-shell-vertico-sidebar--set older 'updated-at 300.0)
+      (agent-shell-vertico-sidebar--set newer 'updated-at 150.0)
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list newer older) 'priority)
                      (list older newer))))))
@@ -431,10 +412,8 @@ a session outside its own family."
                                            (cons newer 'ready))))
       ;; The longest-waiting attention mark leads the list, matching what
       ;; `agent-shell-vertico-sidebar-jump' visits.
-      (puthash older 100.0
-               agent-shell-vertico-sidebar--unread)
-      (puthash newer 200.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set older 'unread 100.0)
+      (agent-shell-vertico-sidebar--set newer 'unread 200.0)
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list newer older) 'priority)
                      (list older newer))))))
@@ -449,8 +428,8 @@ a session outside its own family."
                                            (cons beta 'ready))))
       ;; Ready sessions order by their latest activity, not by title: a
       ;; session that finished work recently stays above a staler one.
-      (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
-      (puthash beta 200.0 agent-shell-vertico-sidebar--activity)
+      (agent-shell-vertico-sidebar--set alpha 'updated-at 100.0)
+      (agent-shell-vertico-sidebar--set beta 'updated-at 200.0)
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list alpha beta) 'priority)
                      (list beta alpha))))))
@@ -463,10 +442,9 @@ a session outside its own family."
               '((:session . ((:id . "p") (:title . "Apple"))))))
     (let ((agent-shell-test-statuses (list (cons zebra 'ready)
                                            (cons apple 'ready))))
-      (puthash zebra 300.0 agent-shell-vertico-sidebar--activity)
-      (puthash apple 100.0 agent-shell-vertico-sidebar--activity)
-      (puthash zebra 300.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set zebra 'updated-at 300.0)
+      (agent-shell-vertico-sidebar--set apple 'updated-at 100.0)
+      (agent-shell-vertico-sidebar--set zebra 'unread 300.0)
       ;; Unread, the finished session leads the list.
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list apple zebra) 'priority)
@@ -486,8 +464,8 @@ a session outside its own family."
               '((:session . ((:id . "z") (:title . "Zebra"))))))
     (let ((agent-shell-test-statuses (list (cons apple 'ready)
                                            (cons zebra 'ready))))
-      (puthash apple 150.0 agent-shell-vertico-sidebar--activity)
-      (puthash zebra 150.0 agent-shell-vertico-sidebar--activity)
+      (agent-shell-vertico-sidebar--set apple 'updated-at 150.0)
+      (agent-shell-vertico-sidebar--set zebra 'updated-at 150.0)
       ;; Equal times fall back to the title, where case never decides.
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list zebra apple) 'priority)
@@ -505,18 +483,15 @@ a session outside its own family."
                  (lambda (&optional _time) (pop times))))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . input-submitted)))
-        (should (= (gethash alpha
-                            agent-shell-vertico-sidebar--busy-since-times)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'busy-since)
                    10.0))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
-        (should (= (gethash alpha
-                            agent-shell-vertico-sidebar--busy-since-times)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'busy-since)
                    10.0))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . turn-complete)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-priority-sorts-project-groups ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -580,8 +555,7 @@ a session outside its own family."
                 '((:session . ((:id . "w") (:title . "Working"))))))
     (let ((agent-shell-test-statuses (list (cons ready 'ready)
                                            (cons working 'busy))))
-      (puthash ready 2.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set ready 'unread 2.0)
       (should (equal (agent-shell-vertico-sidebar--sort-buffers
                       (list ready working) 'status)
                      (list working ready))))))
@@ -1503,13 +1477,11 @@ root would open the wrong group and leave its row hidden."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--set alpha 'busy-since (float-time))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . permission-request)))
         (should (agent-shell-vertico-sidebar--unread-p alpha))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-error-event-marks-failed ()
   "An error fails the session, marks it unread, and stops its busy clock."
@@ -1518,14 +1490,12 @@ root would open the wrong group and leave its row hidden."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--set alpha 'busy-since (float-time))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . error)))
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
         (should (agent-shell-vertico-sidebar--unread-p alpha))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-permission-response-keeps-waiting ()
   "Answering one request leaves a session blocked by the next one.
@@ -1542,8 +1512,7 @@ a session that is blocked again asking for a reply."
          alpha '((:event . permission-response)))
         (should-not (agent-shell-vertico-sidebar--unread-p alpha))
         (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-permission-response-restarts-busy-clock ()
   "A granted permission that resumes work clears the mark and times the turn."
@@ -1556,9 +1525,8 @@ a session that is blocked again asking for a reply."
         (agent-shell-vertico-sidebar--mark-unread-at alpha (float-time))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . permission-response)))
-        (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
-        (should (gethash alpha
-                         agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+        (should (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-idle-event-stops-busy-clock ()
   "An idle event ends the turn without marking the session."
@@ -1567,13 +1535,10 @@ a session that is blocked again asking for a reply."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--busy-since-times)
+        (agent-shell-vertico-sidebar--set alpha 'busy-since (float-time))
         (agent-shell-vertico-sidebar--handle-event alpha '((:event . idle)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--unread))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))))))
 
 (ert-deftest agent-shell-vertico-sidebar-clean-up-event-forgets-the-session ()
   "Cleaning up drops every record the sidebar keeps for the session."
@@ -1582,16 +1547,12 @@ a session that is blocked again asking for a reply."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--busy-since-times)
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar--set alpha 'busy-since (float-time))
+        (agent-shell-vertico-sidebar--set alpha 'unread (float-time))
         (agent-shell-vertico-sidebar--handle-event alpha '((:event . clean-up)))
-        (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--activity))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'updated-at))))))
 
 (ert-deftest agent-shell-vertico-sidebar-watches-each-session-once ()
   "Every live session is subscribed to exactly once."
@@ -1648,15 +1609,13 @@ a session that is blocked again asking for a reply."
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--with-sidebar
         (agent-shell-vertico-sidebar--watch-existing)
-        (puthash alpha (float-time)
-                 agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar--set alpha 'unread (float-time))
         (should (= (length agent-shell-test-subscriptions) 1))
         (kill-buffer alpha)
         (should-not agent-shell-test-subscriptions)
         (should (zerop (hash-table-count
                         agent-shell-vertico-sidebar--subscriptions)))
-        (should (zerop (hash-table-count
-                        agent-shell-vertico-sidebar--unread)))))))
+        (should-not (gethash alpha agent-shell-vertico-sidebar--sessions))))))
 
 (ert-deftest agent-shell-vertico-sidebar-prunes-dead-subscriptions ()
   "A session killed without running its hook is pruned on the next pass."
@@ -1667,13 +1626,12 @@ a session that is blocked again asking for a reply."
       (agent-shell-vertico-tests--with-sidebar
         (let ((orphan (generate-new-buffer " *agent-shell-vertico-orphan*")))
           (puthash orphan 'stale agent-shell-vertico-sidebar--subscriptions)
-          (puthash orphan (float-time) agent-shell-vertico-sidebar--activity)
+          (agent-shell-vertico-sidebar--set orphan 'updated-at (float-time))
           (kill-buffer orphan)
           (agent-shell-vertico-sidebar--watch-existing)
           (should-not (gethash orphan
                                agent-shell-vertico-sidebar--subscriptions))
-          (should-not (gethash orphan
-                               agent-shell-vertico-sidebar--activity)))))))
+          (should-not (agent-shell-vertico-sidebar--get orphan 'updated-at)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-next-row-moves-past-detail-lines ()
   "Next-row moves to the following row's first line, not the current details."
@@ -2712,7 +2670,7 @@ turn unread."
       (unwind-protect
           (let ((agent-shell-test-buffers (list alpha))
                 (agent-shell-test-viewport-buffer viewport)
-                (agent-shell-vertico-sidebar--unread
+                (agent-shell-vertico-sidebar--sessions
                  (make-hash-table :test #'eq)))
             (agent-shell-vertico-tests--with-frame-focus t
               (save-window-excursion
@@ -2720,8 +2678,7 @@ turn unread."
                 (agent-shell-vertico-sidebar--handle-event
                  alpha '((:event . turn-complete)))
                 (should-not
-                 (gethash alpha
-                          agent-shell-vertico-sidebar--unread)))))
+                 (agent-shell-vertico-sidebar--get alpha 'unread)))))
         (kill-buffer viewport)))))
 
 (ert-deftest agent-shell-vertico-sidebar-selected-session-counts-as-seen ()
@@ -2730,15 +2687,14 @@ turn unread."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (agent-shell-vertico-tests--with-frame-focus t
         (save-window-excursion
           (set-window-buffer (selected-window) alpha)
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . turn-complete)))
-          (should-not (gethash alpha
-                               agent-shell-vertico-sidebar--unread)))))))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-unselected-window-keeps-unread ()
   "A turn finishing in a window the reader has not selected stays unread.
@@ -2749,7 +2705,7 @@ nobody has read the output yet."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (agent-shell-vertico-tests--with-frame-focus t
         (save-window-excursion
@@ -2768,7 +2724,7 @@ application and has not seen the output."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (agent-shell-vertico-tests--with-frame-focus nil
         (save-window-excursion
@@ -2786,7 +2742,7 @@ application and has not seen the output."
       (unwind-protect
           (let ((agent-shell-test-buffers (list alpha))
                 (agent-shell-test-viewport-buffer viewport)
-                (agent-shell-vertico-sidebar--unread
+                (agent-shell-vertico-sidebar--sessions
                  (make-hash-table :test #'eq)))
             (agent-shell-vertico-tests--with-frame-focus nil
               (save-window-excursion
@@ -2806,7 +2762,7 @@ finished turn unread for terminal users."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (cl-letf (((symbol-function 'display-graphic-p)
                  (lambda (&optional _) nil))
@@ -2816,8 +2772,7 @@ finished turn unread for terminal users."
           (set-window-buffer (selected-window) alpha)
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . turn-complete)))
-          (should-not (gethash alpha
-                               agent-shell-vertico-sidebar--unread)))))))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-selecting-viewport-marks-seen ()
   "Selecting a session's viewport clears its unread mark."
@@ -2828,14 +2783,12 @@ finished turn unread for terminal users."
       (unwind-protect
           (let ((agent-shell-test-buffers (list alpha))
                 (agent-shell-test-viewport-buffer viewport)
-                (agent-shell-vertico-sidebar--unread
+                (agent-shell-vertico-sidebar--sessions
                  (make-hash-table :test #'eq)))
-            (puthash alpha 10.0
-                     agent-shell-vertico-sidebar--unread)
+            (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
             (with-current-buffer viewport
               (agent-shell-vertico-sidebar--window-selection-change))
-            (should-not (gethash alpha
-                                 agent-shell-vertico-sidebar--unread)))
+            (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))
         (kill-buffer viewport)))))
 
 (ert-deftest agent-shell-vertico-sidebar-selection-change-reads-its-frame ()
@@ -2849,18 +2802,16 @@ soon as a second frame is involved."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash alpha 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
       (save-window-excursion
         (set-window-buffer (selected-window) alpha)
         (with-temp-buffer
           (should-not (eq (current-buffer) alpha))
           (agent-shell-vertico-sidebar--window-selection-change
            (selected-frame)))
-        (should-not (gethash alpha
-                            agent-shell-vertico-sidebar--unread))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))))))
 
 (ert-deftest agent-shell-vertico-sidebar-current-session-is-in-selected-window ()
   "The session the selected window shows is current."
@@ -3479,13 +3430,11 @@ unrelated GUI focus change clear its unread mark."
           (gui-frame (make-symbol "gui-frame"))
           (terminal-frame (make-symbol "terminal-frame"))
           (gui-window (make-symbol "gui-window"))
-          (terminal-window (make-symbol "terminal-window"))
-          (unread (make-hash-table :test #'eq)))
+          (terminal-window (make-symbol "terminal-window")))
       (unwind-protect
           (let ((agent-shell-test-buffers (list alpha))
-                (agent-shell-test-viewport-buffer viewport)
-                (agent-shell-vertico-sidebar--unread unread))
-            (puthash alpha 10.0 unread)
+                (agent-shell-test-viewport-buffer viewport))
+            (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
             (cl-letf (((symbol-function 'frame-list)
                        (lambda () (list gui-frame terminal-frame)))
                       ((symbol-function 'frame-live-p)
@@ -3509,7 +3458,7 @@ unrelated GUI focus change clear its unread mark."
                              other
                            viewport))))
               (agent-shell-vertico-sidebar--focus-change)
-              (should (gethash alpha unread))))
+              (should (agent-shell-vertico-sidebar--get alpha 'unread))))
         (kill-buffer viewport)
         (kill-buffer other)))))
 
@@ -3523,16 +3472,14 @@ to the frame is the moment it is read.  No window is selected then, so
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash alpha 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
       (agent-shell-vertico-tests--with-frame-focus t
         (save-window-excursion
           (set-window-buffer (selected-window) alpha)
           (agent-shell-vertico-sidebar--focus-change)
-          (should-not (gethash alpha
-                              agent-shell-vertico-sidebar--unread)))))))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-regained-focus-marks-viewport-seen ()
   "Returning to a frame showing a viewport marks its session seen."
@@ -3543,17 +3490,15 @@ to the frame is the moment it is read.  No window is selected then, so
       (unwind-protect
           (let ((agent-shell-test-buffers (list alpha))
                 (agent-shell-test-viewport-buffer viewport)
-                (agent-shell-vertico-sidebar--unread
+                (agent-shell-vertico-sidebar--sessions
                  (make-hash-table :test #'eq)))
-            (puthash alpha 10.0
-                     agent-shell-vertico-sidebar--unread)
+            (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
             (agent-shell-vertico-tests--with-frame-focus t
               (save-window-excursion
                 (set-window-buffer (selected-window) viewport)
                 (agent-shell-vertico-sidebar--focus-change)
                 (should-not
-                 (gethash alpha
-                          agent-shell-vertico-sidebar--unread)))))
+                 (agent-shell-vertico-sidebar--get alpha 'unread)))))
         (kill-buffer viewport)))))
 
 (ert-deftest agent-shell-vertico-sidebar-lost-focus-keeps-unread ()
@@ -3565,10 +3510,9 @@ now in another application."
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash alpha 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
       (agent-shell-vertico-tests--with-frame-focus nil
         (save-window-excursion
           (set-window-buffer (selected-window) alpha)
@@ -3722,14 +3666,13 @@ the command to refuse."
     ;; Submitting a new prompt means the user has seen whatever the previous
     ;; turn produced, and starts a turn of their own, so neither how the
     ;; last one ended nor whether it was read still describes the session.
-    (let ((agent-shell-vertico-sidebar--unread (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar--failed (make-hash-table :test #'eq)))
-      (puthash alpha 10.0 agent-shell-vertico-sidebar--unread)
-      (puthash alpha t agent-shell-vertico-sidebar--failed)
+    (let ((agent-shell-vertico-sidebar--sessions (make-hash-table :test #'eq)))
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
+      (agent-shell-vertico-sidebar--set alpha 'error t)
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . input-submitted)))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--failed)))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'error)))))
 
 (ert-deftest agent-shell-vertico-sidebar-failed-icon-differs-from-blocked ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -3738,12 +3681,10 @@ the command to refuse."
        (blocked "Claude Agent @ blocked" "/work/blocked/"
                 '((:session . ((:id . "b") (:title . "Blocked"))))))
     (let ((agent-shell-test-statuses (list (cons blocked 'blocked)))
-          (agent-shell-vertico-sidebar--unread
-           (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar--failed
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash failed t agent-shell-vertico-sidebar--failed)
-      (puthash failed 10.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'unread 10.0)
       (should (equal (agent-shell-vertico-sidebar--icon failed) "✖"))
       (should (equal (agent-shell-vertico-sidebar--icon blocked) "?"))
       ;; An unread failure sorts into the attention tier.
@@ -3754,9 +3695,9 @@ the command to refuse."
       ((failed "Codex Agent @ failed" "/work/failed/"
                '((:session . ((:id . "f") (:title . "Failed run"))))))
     (let ((agent-shell-test-buffers (list failed))
-          (agent-shell-vertico-sidebar--failed
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash failed t agent-shell-vertico-sidebar--failed)
+      (agent-shell-vertico-sidebar--set failed 'error t)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -3774,10 +3715,9 @@ what says a ready session holds output nobody has read."
              '((:session . ((:id . "r") (:title . "Read"))))))
     (let ((agent-shell-test-statuses (list (cons finished 'ready)
                                            (cons read 'ready)))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (puthash finished 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set finished 'unread 10.0)
       (should (equal (agent-shell-vertico-sidebar--icon finished) "✓"))
       (should (equal (agent-shell-vertico-sidebar--icon read) "✓"))
       (should (eq (get-text-property
@@ -3804,7 +3744,7 @@ question mark says what kind of answer."
       ((waiting "Claude Agent @ waiting" "/work/waiting/"
                 '((:session . ((:id . "w") (:title . "Waiting"))))))
     (let ((agent-shell-test-statuses (list (cons waiting 'blocked)))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (should (equal (agent-shell-vertico-sidebar--icon waiting) "?"))
       (should (eq (get-text-property
@@ -3951,15 +3891,12 @@ question mark says what kind of answer."
           (agent-shell-test-statuses (list (cons failed 'ready)
                                            (cons waiting 'blocked)
                                            (cons finished 'ready)))
-          (agent-shell-vertico-sidebar--unread
-           (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar--failed
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil))
-      (puthash failed t agent-shell-vertico-sidebar--failed)
-      (puthash failed 10.0 agent-shell-vertico-sidebar--unread)
-      (puthash finished 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'unread 10.0)
+      (agent-shell-vertico-sidebar--set finished 'unread 10.0)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         ;; Every count uses the icon its own rows use.
@@ -4000,7 +3937,7 @@ question mark says what kind of answer."
     (let ((agent-shell-test-buffers (list waiting ready))
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons ready 'ready)))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
@@ -4029,7 +3966,7 @@ question mark says what kind of answer."
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'busy)))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
@@ -4049,7 +3986,7 @@ question mark says what kind of answer."
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'blocked)))
-          (agent-shell-vertico-sidebar--unread
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
@@ -4080,16 +4017,13 @@ header has room for one count."
           (agent-shell-test-statuses (list (cons failed 'ready)
                                            (cons waiting 'blocked)
                                            (cons finished 'ready)))
-          (agent-shell-vertico-sidebar--unread
-           (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar--failed
+          (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
           (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
-      (puthash failed t agent-shell-vertico-sidebar--failed)
-      (puthash failed 10.0 agent-shell-vertico-sidebar--unread)
-      (puthash finished 10.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set failed 'error t)
+      (agent-shell-vertico-sidebar--set failed 'unread 10.0)
+      (agent-shell-vertico-sidebar--set finished 'unread 10.0)
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
@@ -10300,7 +10234,7 @@ after the test has already finished.  Tests call
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
         (should (equal (agent-shell-vertico-sidebar--status-name alpha)
                        "Working"))
-        (should (= (gethash alpha agent-shell-vertico-sidebar--busy-since-times)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'busy-since)
                    10.0))))))
 
 (ert-deftest agent-shell-vertico-sidebar-out-of-turn-burst-keeps-its-start ()
@@ -10317,10 +10251,9 @@ after the test has already finished.  Tests call
            alpha '((:event . agent-message-chunk)))
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . tool-call-update))))
-        (should (= (gethash alpha agent-shell-vertico-sidebar--busy-since-times)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'busy-since)
                    10.0))
-        (should (= (plist-get (gethash alpha
-                                       agent-shell-vertico-sidebar--out-of-turn)
+        (should (= (plist-get (agent-shell-vertico-sidebar--get alpha 'out-of-turn)
                               :time)
                    20.0))))))
 
@@ -10335,15 +10268,14 @@ after the test has already finished.  Tests call
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
-        (should (equal (gethash alpha agent-shell-vertico-sidebar--unread)
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'unread)
                        10.0))
         ;; The burst left the session idle and ready; what it left behind
         ;; is unread output, not a status.
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))
         (should (equal (agent-shell-vertico-sidebar--status-name alpha)
                        "Ready"))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--busy-since-times))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-clears-when-seen ()
   "The unread mark is an ordinary `done', so reading the session clears it."
@@ -10356,8 +10288,7 @@ after the test has already finished.  Tests call
          alpha '((:event . agent-message-chunk)))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (agent-shell-vertico-sidebar--mark-seen alpha)
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--unread))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))))))
 
 (ert-deftest agent-shell-vertico-sidebar-in-turn-chunk-is-not-out-of-turn ()
   "A chunk from a running turn belongs to that turn, not to a burst."
@@ -10368,8 +10299,7 @@ after the test has already finished.  Tests call
       (let ((agent-shell-test-statuses (list (cons alpha 'busy))))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--out-of-turn))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))))))
 
 (ert-deftest agent-shell-vertico-sidebar-steering-round-trip-is-not-out-of-turn ()
   "A steered prompt's own request is in flight, so its updates are in turn."
@@ -10381,8 +10311,7 @@ after the test has already finished.  Tests call
       (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--out-of-turn))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-skips-read-session ()
@@ -10398,8 +10327,7 @@ after the test has already finished.  Tests call
           (save-window-excursion
             (set-window-buffer (selected-window) alpha)
             (agent-shell-vertico-sidebar--out-of-turn-settled alpha)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--unread))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-keeps-blocked ()
   "A burst that settles while the session is blocked leaves it blocked.
@@ -10429,8 +10357,7 @@ is unread output on top of that."
          alpha '((:event . agent-message-chunk)))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . input-submitted)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--out-of-turn))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'ready))))))
 
 (ert-deftest agent-shell-vertico-sidebar-turn-complete-cancels-out-of-turn-settle ()
@@ -10444,8 +10371,7 @@ is unread output on top of that."
          alpha '((:event . agent-message-chunk)))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . turn-complete)))
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--out-of-turn))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))))))
 
 (ert-deftest agent-shell-vertico-sidebar-out-of-turn-sorts-into-working-tier ()
   "A burst puts its session above idle ones under priority sorting."
@@ -10457,7 +10383,7 @@ is unread output on top of that."
     (agent-shell-vertico-tests--with-settled-timers
       (let ((agent-shell-test-statuses (list (cons quiet 'ready)
                                              (cons streaming 'ready))))
-        (puthash quiet 100.0 agent-shell-vertico-sidebar--activity)
+        (agent-shell-vertico-sidebar--set quiet 'updated-at 100.0)
         (agent-shell-vertico-sidebar--handle-event
          streaming '((:event . agent-message-chunk)))
         (should (equal (agent-shell-vertico-sidebar--sort-buffers
@@ -10493,7 +10419,7 @@ session is doing now, and the session is working."
         ;; The row ages from this burst, not from the mark it holds.
         (should (= (agent-shell-vertico-sidebar--priority-time alpha) 20.0))
         ;; The record itself survives the burst.
-        (should (= (gethash alpha agent-shell-vertico-sidebar--unread)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'unread)
                    10.0))))))
 
 (ert-deftest agent-shell-vertico-sidebar-settled-burst-returns-deferred-mark ()
@@ -10568,7 +10494,7 @@ the burst's own time rather than the cleared mark's."
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
         (agent-shell-vertico-sidebar--mark-seen alpha)
-        (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))))))
 
@@ -11046,10 +10972,8 @@ and a page number would land on the turn before the one it names."
           (agent-shell-test-statuses (list (cons alpha 'ready)
                                            (cons beta 'ready))))
       ;; The longest-waiting session is the one to answer first.
-      (puthash beta 100.0
-               agent-shell-vertico-sidebar--unread)
-      (puthash alpha 200.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set beta 'unread 100.0)
+      (agent-shell-vertico-sidebar--set alpha 'unread 200.0)
       (agent-shell-vertico-sidebar-jump)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
@@ -11062,8 +10986,7 @@ and a page number would land on the turn before the one it names."
     (let ((agent-shell-test-buffers (list alpha beta))
           (agent-shell-test-statuses (list (cons alpha 'busy)
                                            (cons beta 'ready))))
-      (puthash beta 100.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set beta 'unread 100.0)
       (agent-shell-vertico-sidebar-jump)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
@@ -11081,8 +11004,8 @@ finished since, so ranking it by age alone would pin every jump to it."
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons unread 'ready))))
       ;; The blocked session has been read, and has been waiting longer.
-      (puthash waiting 100.0 agent-shell-vertico-sidebar--activity)
-      (puthash unread 200.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set waiting 'updated-at 100.0)
+      (agent-shell-vertico-sidebar--set unread 'unread 200.0)
       (should (= (agent-shell-vertico-sidebar--status-rank unread) 0))
       (should (= (agent-shell-vertico-sidebar--status-rank waiting) 1))
       (should (equal (agent-shell-vertico-sidebar--attention-sessions)
@@ -11115,7 +11038,7 @@ settles nothing and would strand every other session behind it."
     (let ((agent-shell-test-buffers (list waiting unread))
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons unread 'ready))))
-      (puthash unread 200.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set unread 'unread 200.0)
       (cl-letf (((symbol-function
                   'agent-shell-vertico-sidebar--session-focused-p)
                  (lambda (buffer) (eq buffer waiting))))
@@ -11148,11 +11071,10 @@ settles nothing and would strand every other session behind it."
               '((:session . ((:id . "a") (:title . "Alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready))))
-      (puthash alpha 100.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
       (agent-shell-vertico-sidebar-jump)
       (should (eq agent-shell-test-displayed-buffer alpha))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--unread)))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-keeps-waiting-mark ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -11214,8 +11136,7 @@ settles nothing and would strand every other session behind it."
                                          (buffer-name beta))
                                    #'string<)))
               (buffer-name beta))))
-      (puthash alpha 100.0
-               agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
       (agent-shell-vertico-sidebar-jump t)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
@@ -11317,7 +11238,7 @@ the label is drawn where it belongs."
                                            (cons beta 'ready)))
           (agent-shell-vertico-sidebar-sort-by 'priority))
       ;; Unread beta leads the priority order, so it is session 1.
-      (puthash beta 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set beta 'unread 100.0)
       (agent-shell-vertico-sidebar-jump-to-index 1)
       (should (eq agent-shell-test-displayed-buffer beta))
       ;; And that jump read beta, which drops it out of the attention
@@ -11354,7 +11275,7 @@ the label is drawn where it belongs."
               '((:session . ((:id . "a") (:title . "Alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready))))
-      (puthash alpha 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
       (agent-shell-vertico-sidebar-jump-to-index 1)
       (should (eq agent-shell-test-displayed-buffer alpha))
       (should-not (agent-shell-vertico-sidebar--unread-p alpha)))))
@@ -11537,7 +11458,7 @@ still counts, since the step opens no sidebar and draws nothing."
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready))))
       (agent-shell-vertico-tests--with-jump-history
-        (puthash alpha 100.0 agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
         (agent-shell-vertico-sidebar-next-session)
         (should (eq agent-shell-test-displayed-buffer alpha))
         (should-not (agent-shell-vertico-sidebar--unread-p alpha))))))
@@ -11579,7 +11500,7 @@ still counts, since the step opens no sidebar and draws nothing."
           (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
           seen spans)
       ;; Unread beta leads the priority order, so it takes the first key.
-      (puthash beta 100.0 agent-shell-vertico-sidebar--unread)
+      (agent-shell-vertico-sidebar--set beta 'unread 100.0)
       (agent-shell-vertico-tests--with-jump-by-key
           (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown)
                        spans (agent-shell-vertico-tests--jump-label-spans))
@@ -11939,7 +11860,7 @@ without the reader being told why."
               '((:session . ((:id . "a") (:title . "Alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready))))
-      (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
+      (agent-shell-vertico-sidebar--set alpha 'updated-at 100.0)
       (with-temp-buffer
         (agent-shell-vertico-sidebar--jump-mark-unread alpha)
         (should (agent-shell-vertico-sidebar--unread-p alpha))
@@ -12377,14 +12298,14 @@ icon font of the mark it is drawn over."
           (agent-shell-vertico-sidebar-group-by nil)
           (inhibit-message t))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha 100.0 agent-shell-vertico-sidebar--activity)
+        (agent-shell-vertico-sidebar--set alpha 'updated-at 100.0)
         (agent-shell-vertico-sidebar--render)
         (goto-char (point-min))
         (search-forward "Review alpha")
         (agent-shell-vertico-sidebar-mark-unread)
         ;; The mark carries the session's own last activity time rather
         ;; than now, so the attention tier still runs oldest first.
-        (should (equal (gethash alpha agent-shell-vertico-sidebar--unread)
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'unread)
                        100.0))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-the-current-session ()
@@ -12428,7 +12349,7 @@ a `done' mark on a running turn would report it as finished."
       (with-current-buffer alpha
         (should-error (agent-shell-vertico-sidebar-mark-unread)
                       :type 'user-error))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--unread)))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-keeps-its-time ()
   "A session already unread keeps the time it has.
@@ -12444,7 +12365,7 @@ move it behind the ones that have waited less."
       (agent-shell-vertico-sidebar--mark-unread-at alpha 100.0)
       (with-current-buffer alpha
         (agent-shell-vertico-sidebar-mark-unread))
-      (should (equal (gethash alpha agent-shell-vertico-sidebar--unread)
+      (should (equal (agent-shell-vertico-sidebar--get alpha 'unread)
                      100.0)))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-needs-a-session ()
@@ -12455,7 +12376,7 @@ move it behind the ones that have waited less."
       (with-temp-buffer
         (should-error (agent-shell-vertico-sidebar-mark-unread)
                       :type 'user-error))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--unread)))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-is-bound ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "u"))
@@ -12475,14 +12396,12 @@ move it behind the ones that have waited less."
           (agent-shell-vertico-sidebar-group-by nil)
           (inhibit-message t))
       (agent-shell-vertico-tests--with-sidebar
-        (puthash alpha 100.0
-                 agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar--set alpha 'unread 100.0)
         (agent-shell-vertico-sidebar--render)
         (goto-char (point-min))
         (search-forward "Review alpha")
         (agent-shell-vertico-sidebar-mark-read)
-        (should-not (gethash alpha
-                             agent-shell-vertico-sidebar--unread))))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-read-clears-the-current-session ()
   "Reading a session without visiting it works from the session buffer too."
@@ -12492,11 +12411,11 @@ move it behind the ones that have waited less."
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-test-statuses (list (cons alpha 'ready)))
           (inhibit-message t))
-      (puthash alpha t agent-shell-vertico-sidebar--failed)
+      (agent-shell-vertico-sidebar--set alpha 'error t)
       (agent-shell-vertico-sidebar--mark-unread-at alpha 100.0)
       (with-current-buffer alpha
         (agent-shell-vertico-sidebar-mark-read))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--unread))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
       ;; Reading a failure does not pretend the turn succeeded.
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed)))))
 
@@ -14109,7 +14028,7 @@ visited before GAMMA; snoozed, neither is visited at all."
         (should (eq agent-shell-test-displayed-buffer gamma))
         ;; With GAMMA read, only snoozed sessions are left to ask.
         (setq agent-shell-test-displayed-buffer nil)
-        (remhash gamma agent-shell-vertico-sidebar--unread)
+        (agent-shell-vertico-sidebar--set gamma 'unread nil)
         (agent-shell-vertico-sidebar-jump)
         (should-not agent-shell-test-displayed-buffer)))))
 
@@ -14300,7 +14219,7 @@ The output is still recorded, and nobody is told about it."
     (setf (alist-get alpha agent-shell-test-statuses) 'busy)
     (should-error (agent-shell-vertico-tests--snooze alpha)
                   :type 'user-error)
-    (should-not (gethash alpha agent-shell-vertico-sidebar--snoozed))))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-wakes-a-snooze ()
   "Asking for a session again ends its snooze; reading it does not."
@@ -14427,7 +14346,7 @@ BETA is live and idle beside it."
       (setf (alist-get alpha agent-shell-test-statuses) status)
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) status)))
     (setf (alist-get alpha agent-shell-test-statuses) 'ready)
-    (puthash alpha t agent-shell-vertico-sidebar--failed)
+    (agent-shell-vertico-sidebar--set alpha 'error t)
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-ranks-below-working ()
@@ -14477,7 +14396,7 @@ BETA is live and idle beside it."
       (setq-local agent-shell--state
                   (assq-delete-all :native-subagents agent-shell--state)))
     (agent-shell-vertico-sidebar--raw-status beta)
-    (should-not (gethash beta agent-shell-vertico-sidebar--background-since))))
+    (should-not (agent-shell-vertico-sidebar--get beta 'background-since))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-unread-is-attention ()
   "A finished turn with work still running is unread like any other."
@@ -14491,7 +14410,7 @@ BETA is live and idle beside it."
                  (agent-shell-vertico-sidebar--mark alpha))
                 'agent-shell-vertico-sidebar-attention))
     (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
-    (remhash alpha agent-shell-vertico-sidebar--unread)
+    (agent-shell-vertico-sidebar--set alpha 'unread nil)
     (should (eq (agent-shell-vertico-sidebar--mark-face
                  (agent-shell-vertico-sidebar--mark alpha))
                 'agent-shell-vertico-sidebar-background))))
@@ -14507,14 +14426,14 @@ BETA is live and idle beside it."
                  (:data . ((:text-chunk . "Found three files.")))))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . tool-call-update))))
-      (should-not (gethash alpha agent-shell-vertico-sidebar--out-of-turn))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
       (should-not (agent-shell-vertico-sidebar--last-message alpha))
       ;; The root's own words still count.
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . agent-message-chunk)
                (:data . ((:text-chunk . "All done.")))))
-      (should (gethash alpha agent-shell-vertico-sidebar--out-of-turn))
+      (should (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
       (should (equal (agent-shell-vertico-sidebar--last-message alpha)
                      "All done.")))))
 
@@ -14621,11 +14540,10 @@ burst on an unread mark is otherwise silent."
         `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . turn-complete)))
-      (should (gethash alpha
-                       agent-shell-vertico-sidebar--background-at-turn-end))
+      (should (agent-shell-vertico-sidebar--get alpha 'background-at-turn-end))
       (agent-shell-vertico-sidebar--handle-event alpha `((:event . ,event)))
       (should-not
-       (gethash alpha agent-shell-vertico-sidebar--background-at-turn-end)))))
+       (agent-shell-vertico-sidebar--get alpha 'background-at-turn-end)))))
 
 (ert-deftest agent-shell-vertico-sidebar-subagents-opens-the-list ()
   "`S' lists the subagents of the session at point, in that session."
