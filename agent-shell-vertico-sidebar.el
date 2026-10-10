@@ -3887,22 +3887,24 @@ list has no header level, so it never returns `projects'."
 (defun agent-shell-vertico-sidebar--set-view-level (level)
   "Show every row at fold LEVEL, discarding per-row fold overrides.
 
-In the state view the header level folds every section; the other
-levels put back each section's default fold and row limit."
-  (pcase agent-shell-vertico-sidebar-group-by
-    ('project
-     (setq agent-shell-vertico-sidebar-expand-by-default
-           (not (eq level 'projects)))
-     (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
-       (clrhash agent-shell-vertico-sidebar--expanded-projects)))
-    ('state
-     (when (hash-table-p agent-shell-vertico-sidebar--section-folds)
-       (clrhash agent-shell-vertico-sidebar--section-folds))
-     (setq agent-shell-vertico-sidebar--open-tails nil)
-     (when (eq level 'projects)
+In the state view the header level folds every section and the other
+levels unfold every section, each with its default row limit.  Putting
+back each section's default fold instead would leave a sidebar whose
+sessions all sit in a section that starts folded showing headers alone
+at every level.  The project view folds or unfolds its Pinned section
+with the projects, for the same reason."
+  (let ((folded (eq level 'projects)))
+    (pcase agent-shell-vertico-sidebar-group-by
+      ('project
+       (setq agent-shell-vertico-sidebar-expand-by-default (not folded))
+       (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
+         (clrhash agent-shell-vertico-sidebar--expanded-projects))
+       (agent-shell-vertico-sidebar--set-section-folded 'pinned folded))
+      ('state
+       (setq agent-shell-vertico-sidebar--open-tails nil)
        (dolist (section agent-shell-vertico-sidebar--sections)
          (agent-shell-vertico-sidebar--set-section-folded
-          (car section) t)))))
+          (car section) folded)))))
   (setq agent-shell-vertico-sidebar-show-details (eq level 'details))
   (when (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)
     (clrhash agent-shell-vertico-sidebar--expanded-sessions)))

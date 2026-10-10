@@ -3982,6 +3982,60 @@ how many more it holds."
       (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
       (should (agent-shell-vertico-sidebar--session-rows)))))
 
+(ert-deftest agent-shell-vertico-sidebar-state-view-cycles-folded-sections ()
+  "S-TAB reaches every level when each session sits in a folded section."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((snoozed "Codex Agent @ snoozed" "/work/a/"
+                '((:session . ((:id . "s") (:title . "Snoozed one"))))))
+    (let ((agent-shell-test-buffers (list snoozed))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-folded-sections '(snoozed))
+          (agent-shell-vertico-sidebar-show-details nil))
+      (agent-shell-vertico-sidebar--set snoozed 'snoozed 100.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+        (should-not (agent-shell-vertico-sidebar--session-rows))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list snoozed)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+        (should (agent-shell-vertico-sidebar--session-rows))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+        (should-not (agent-shell-vertico-sidebar--session-rows))))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-view-cycles-folded-pinned ()
+  "S-TAB shows pinned rows at the session level even when Pinned starts
+folded, and folds them with the projects at the header level."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((pinned "Codex Agent @ pinned" "/work/a/"
+               '((:session . ((:id . "p") (:title . "Pinned one"))))))
+    (let ((agent-shell-test-buffers (list pinned))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-folded-sections '(pinned))
+          (agent-shell-vertico-sidebar-show-details nil))
+      (agent-shell-vertico-sidebar--set pinned 'pinned 100.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (agent-shell-vertico-sidebar--session-rows))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list pinned)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+        (should-not (agent-shell-vertico-sidebar--session-rows))))))
+
 (ert-deftest agent-shell-vertico-sidebar-header-falls-back-to-digits ()
   "A header too narrow for the words keeps the coloured counts alone."
   (agent-shell-vertico-tests--with-state-view
