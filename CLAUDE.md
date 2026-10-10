@@ -774,8 +774,12 @@ otherwise, which is a stopped turn or a session nobody has prompted. Purple
 because grey was taken: `-snoozed` inherits `link-visited` for its colour
 alone, and the row's title recedes into `-snoozed-title` (`shadow`) so the
 rows still asking stand out. Unread is not a colour: it is a bold title
-(`-unread-title`), so it reads the same in a terminal, and a snoozed session
-holding unread output is both purple and bold. Every mark is a plain
+(`-unread-title`) and a `•` before the age (`--title-suffix`, face
+`-unread-dot` over the mark's face), so it reads the same in a terminal, and a
+snoozed session holding unread output is both purple and bold. The dot exists
+because the `priority` sort still lists unread sessions first, so the flat and
+project views put a green finished row far above another one; a bold title
+alone did not say why. Every mark is a plain
 character, so no icon font is needed and a terminal draws what a graphical
 frame does. The other glyphs are slots in `--icons` drawn by `--slot-icon`:
 `⌂` project, `↳` message, `◇` subagents, `$` tasks, and the `▼`/`▶` folds.

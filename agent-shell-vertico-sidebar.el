@@ -614,6 +614,12 @@ asking for input."
   "Face for the title of a session holding output nobody has read."
   :group 'agent-shell-vertico-sidebar)
 
+(defface agent-shell-vertico-sidebar-unread-dot
+  '((t :inherit bold))
+  "Face for the dot on the title line of a session holding unread output.
+Its colour comes from the session's mark, unless this face sets one."
+  :group 'agent-shell-vertico-sidebar)
+
 (defface agent-shell-vertico-sidebar-snoozed
   '((t :inherit link-visited :underline nil :weight normal))
   "Face for the mark of a session the reader has snoozed.
@@ -2060,6 +2066,21 @@ property; nothing else reads it."
   (propertize (concat icon " ")
               'agent-shell-vertico-sidebar-mark-field t))
 
+(defun agent-shell-vertico-sidebar--title-suffix (buffer snapshot)
+  "Return what ends BUFFER's title line: an unread dot and the age.
+
+The dot is drawn in the mark's colour.  Unread output does not change a
+session's colour or band, so without it an unread finished row looks
+like a read one, though the `priority' sort lists it far above."
+  (let ((dot (and (agent-shell-vertico-sidebar--unread-p buffer)
+                  (propertize
+                   "•" 'face
+                   (list 'agent-shell-vertico-sidebar-unread-dot
+                         (agent-shell-vertico-sidebar--mark-face snapshot)))))
+        (age (agent-shell-vertico-sidebar--age-text snapshot)))
+    (and (or dot age)
+         (string-join (delq nil (list dot age)) " "))))
+
 (defun agent-shell-vertico-sidebar--whole-title (title)
   "Return TITLE on one line, its runs of whitespace made single spaces."
   (string-trim (replace-regexp-in-string "[[:space:]]+" " " (or title ""))))
@@ -2119,7 +2140,7 @@ parent-child relationship."
          (snapshot (agent-shell-vertico-sidebar--snapshot buffer))
          (title (agent-shell-vertico-sidebar--title buffer))
          (icon (agent-shell-vertico-sidebar--icon buffer))
-         (age (agent-shell-vertico-sidebar--age-text snapshot))
+         (age (agent-shell-vertico-sidebar--title-suffix buffer snapshot))
          (title-width (if age
                           (max 1 (- content-width (string-width age) 1))
                         content-width))

@@ -4426,6 +4426,27 @@ is a still disc, so a working mark still differs in shape."
                           (ensure-list
                            (get-text-property (1- (point)) 'face))))))))
 
+(ert-deftest agent-shell-vertico-sidebar-unread-row-has-a-dot ()
+  "An unread row ends in a dot before its age, in the mark's colour."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by nil))
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (let ((title (car (agent-shell-vertico-tests--lines))))
+          (should (string-match-p "\\`✻ Review alpha +• [0-9a-z]+\\'" title)))
+        (goto-char (point-min))
+        (search-forward "•")
+        (let ((face (ensure-list (get-text-property (1- (point)) 'face))))
+          (should (memq 'agent-shell-vertico-sidebar-unread-dot face))
+          (should (memq 'agent-shell-vertico-sidebar-ready face)))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (string-match-p
+                     "•" (car (agent-shell-vertico-tests--lines))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-busy-frames-are-claude-codes ()
   "A working mark cycles through Claude Code's spinner, in its colour."
   (should (equal (eval (car (get 'agent-shell-vertico-sidebar-busy-frames
@@ -4583,8 +4604,9 @@ line is the detail alone; the flat view starts it with the status."
         (agent-shell-vertico-sidebar--render)
         (let ((lines (agent-shell-vertico-tests--lines)))
           (should (equal (cdr lines)
+                         ;; Nobody saw the turn end, so it is unread.
                          (list (concat "✻ Review alpha"
-                                       (make-string 12 ?\s) "5m")
+                                       (make-string 10 ?\s) "• 5m")
                                "Fixed the quit"))))
         (let ((agent-shell-vertico-sidebar-group-by nil))
           (agent-shell-vertico-sidebar--render)

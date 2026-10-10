@@ -155,8 +155,11 @@ starting its agent session counts as working: its star is blue and spins.  A
 working star spins through Claude Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
 `agent-shell-vertico-sidebar-animate-busy` off it is a still `●`.  A session
 whose agent process has exited is a dot, `∙`.  Output you have not read makes
-the title bold; it does not change the colour or the section, so a finished turn
-nobody has read is Idle, exactly as in the agent view.
+the title bold and puts a `•` before the age, in the star's colour; it does not
+change the colour or the section, so a finished turn nobody has read is Idle,
+exactly as in the agent view.  The dot is what tells an unread finished row
+from a read one in the flat and project views, where the `priority` sort lists
+unread sessions first.
 
 The detail line is the one line that matters for the state.  A waiting session
 says what it waits for (`Allow: Run make check`), a working one shows its
