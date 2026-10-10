@@ -3744,7 +3744,7 @@ session that finished a turn is."
   "A `result:' line is the turn's result, else its last non-empty line."
   (agent-shell-vertico-tests--with-alpha
     (agent-shell-vertico-tests--stream
-     alpha "Looked at it.\nresult: Fixed the paging\nTwo tests added.\n\n")
+     alpha "Looked at it.\nTwo tests added.\nresult: Fixed the paging\n\n")
     (agent-shell-vertico-tests--end-turn alpha)
     (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
                    "Fixed the paging"))
@@ -3754,6 +3754,41 @@ session that finished a turn is."
     (agent-shell-vertico-tests--end-turn alpha)
     (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
                    "Done for now."))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-counts-only-as-last-line ()
+  "A marker line is read only when it is the message's last line.
+
+An ordinary reply can say `Blocked:' or `Failed:' in a summary; that
+does not make the turn wait for the reader or fail."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--stream
+     alpha (concat "Passed: 40\nBlocked: 2 jobs waiting on a runner\n"
+                   "All done.\n"))
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'needs))
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                   "All done."))
+    (agent-shell-vertico-sidebar--mark-seen alpha)
+    (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . input-submitted) (:data . ((:prompt . "again")))))
+    (agent-shell-vertico-tests--stream alpha "Failed: 3\nPassed: 37\n")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'error))
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                   "Passed: 37"))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-last-line-skips-fences ()
+  "The last line outside code fences is the one read for a marker."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--stream
+     alpha "needs input: which branch?\n```\nresult: echoed\n```\n\n")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+    (should (equal (agent-shell-vertico-sidebar--get alpha 'needs)
+                   "which branch?"))))
 
 (ert-deftest agent-shell-vertico-sidebar-turn-ends-stamp-terminal-times ()
   "The first turn end is kept; the latest one moves with every end."

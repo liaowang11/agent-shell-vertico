@@ -153,9 +153,11 @@ The detail line is the one line that matters for the state.  A waiting session
 says what it waits for (`Allow: Run make check`), a working one shows its
 newest entry (the prompt it was sent, then the last line it streamed, or
 `✗ title` for a tool call that failed), and a failed one says why.  A finished
-turn shows its `result:` line when it ends on one, and its last line
-otherwise; a turn that ends on `needs input:` or `blocked:` waits for you, and
-one that ends on `failed:` failed.  A session nobody has prompted says `Send a
+turn shows its last line.  Only that last line is read for a marker: when it
+is a `result:` line the row shows what follows the colon, when it is a `needs
+input:` or `blocked:` line the session waits for you, and when it is a
+`failed:` line the turn failed.  The same words earlier in a reply are plain
+text and change nothing.  A session nobody has prompted says `Send a
 prompt to start`.  In the project and flat views the line starts with the
 status word, such as `Waiting · Allow: Run make check`, since there is no
 section header to say it.

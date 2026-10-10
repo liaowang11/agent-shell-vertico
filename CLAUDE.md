@@ -302,13 +302,16 @@ does while it waits, not an answer to it.
 **How a turn ended.** A cancelled turn is `stopped`, and a stop reason other
 than `end_turn` (a refusal, a limit) is `failed` in agent-shell's own words.
 A turn that ran to its end is read by `--classify-message` as Claude Code
-reads a background job's last message: the last `result:`, `needs input:`,
-`blocked:` or `failed:` line (`--marker-regexp`, case-insensitive, outside
-code fences, within the last `--marker-window` characters) makes it `done`
-with that `result`, `blocked` with that `needs`, or `failed` with that
-`error`. With no marker it is `done`, and its last non-empty line is the
-result. There is no model step, as there is in Claude Code; the markers are
-the whole convention.
+reads a background job's last message. A marker counts only when it is the
+message's last non-empty line outside code fences: a `result:`, `needs
+input:`, `blocked:` or `failed:` line there (`--marker-regexp`,
+case-insensitive) makes it `done` with that `result`, `blocked` with that
+`needs`, or `failed` with that `error`. The same words on any earlier line
+are ordinary text, because a reply's summary such as `Blocked: 2 jobs`
+followed by `All done.` would otherwise park a finished session in Needs you
+until the next prompt. When the last line is no marker the turn is `done`,
+and that line is the result. There is no model step, as there is in Claude
+Code; the markers are the whole convention.
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,

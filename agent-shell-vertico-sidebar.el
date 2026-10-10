@@ -3153,47 +3153,37 @@ so a long message costs no more than its end."
   "^[ \t]*\\(result\\|needs input\\|blocked\\|failed\\):[ \t]*\\(.+?\\)[ \t]*$"
   "A line a turn can end on to say how it ended, read case-insensitively.")
 
-(defconst agent-shell-vertico-sidebar--marker-window 800
-  "How many characters at the end of a message the markers are read in.")
-
 (defun agent-shell-vertico-sidebar--classify-message (text)
   "Return (STATE . LINE) for agent message TEXT, read as Claude Code does.
 
 Claude Code asks its background sessions to end a turn on a `result:',
 `needs input:' or `failed:' line, and reads the end of the message for
-one before it asks a model.  The same lines are read here, outside code
-fences and in the message's last
-`agent-shell-vertico-sidebar--marker-window' characters, and the last
-one wins; there is no model step.  `needs input:' and `blocked:' give
-`blocked', `failed:' gives `failed', and `result:' gives `done'.  LINE
-is what follows the colon.  With no marker the turn is done, and LINE is
-the message's last non-empty line, or nil when there is no message."
-  (let* ((text (or text ""))
-         (window-start (max 0 (- (length text)
-                                 agent-shell-vertico-sidebar--marker-window)))
-         (case-fold-search t)
-         (position 0)
-         fenced marker last-line)
-    (dolist (line (split-string text "\n"))
-      (let ((end (+ position (length line))))
-        (setq position (1+ end))
-        (cond
-         ((string-match-p "\\`[ \t]*```" line) (setq fenced (not fenced)))
-         (fenced nil)
-         (t
-          (let ((trimmed (string-trim line)))
+one before it asks a model.  Here a marker counts only when it is the
+message's last non-empty line outside code fences, where Claude Code
+puts it, so a `Blocked:' or `Failed:' line in the middle of an ordinary
+summary is just text.  There is no model step.  `needs input:' and
+`blocked:' give `blocked', `failed:' gives `failed', and `result:'
+gives `done'; LINE is what follows the colon.  When the last line is no
+marker the turn is done, and LINE is that line, or nil when there is no
+message."
+  (let ((case-fold-search t)
+        fenced last-line)
+    (dolist (line (split-string (or text "") "\n"))
+      (cond
+       ((string-match-p "\\`[ \t]*```" line) (setq fenced (not fenced)))
+       (fenced nil)
+       (t (let ((trimmed (string-trim line)))
             (unless (string-empty-p trimmed)
-              (setq last-line trimmed)))
-          (when (and (> end window-start)
-                     (string-match agent-shell-vertico-sidebar--marker-regexp
-                                   line))
-            (setq marker
-                  (cons (pcase (downcase (match-string 1 line))
-                          ("result" 'done)
-                          ("failed" 'failed)
-                          (_ 'blocked))
-                        (match-string 2 line))))))))
-    (or marker (cons 'done last-line))))
+              (setq last-line trimmed))))))
+    (if (and last-line
+             (string-match agent-shell-vertico-sidebar--marker-regexp
+                           last-line))
+        (cons (pcase (downcase (match-string 1 last-line))
+                ("result" 'done)
+                ("failed" 'failed)
+                (_ 'blocked))
+              (match-string 2 last-line))
+      (cons 'done last-line))))
 
 (defun agent-shell-vertico-sidebar--stamp-terminal (buffer time)
   "Record that a turn of BUFFER ended at TIME."
