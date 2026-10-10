@@ -3701,11 +3701,75 @@ now in another application."
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'new))
       (should (equal (agent-shell-vertico-sidebar--status-name alpha) "New"))
       (should (equal (agent-shell-vertico-sidebar--job-state alpha)
-                     '(working idle "Send a prompt to start")))
+                     '(working blocked "Send a prompt to start")))
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
       (agent-shell-vertico-tests--end-turn alpha)
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done)))))
+
+;; A session nobody has prompted: the sidebar saw it start, so it is new.
+(defmacro agent-shell-vertico-tests--with-fresh (&rest body)
+  "Evaluate BODY with FRESH, an unprompted session, and WAITING, blocked.
+Both live in the same project and are the only live sessions."
+  (declare (indent 0) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((fresh "Codex Agent @ fresh" "/work/a/"
+               '((:session . ((:id . "f") (:title . "Fresh")))))
+        (waiting "Codex Agent @ waiting" "/work/a/"
+                 '((:session . ((:id . "w") (:title . "Waiting"))))))
+     (let ((agent-shell-test-buffers (list fresh waiting))
+           (agent-shell-test-statuses (list (cons fresh 'ready)
+                                            (cons waiting 'blocked))))
+       (agent-shell-vertico-sidebar--set fresh 'fresh t)
+       (agent-shell-vertico-sidebar--set fresh 'created-at 5.0)
+       ,@body)))
+
+(ert-deftest agent-shell-vertico-sidebar-new-session-needs-input ()
+  "An unprompted session is in Needs input, yellow, asking for a prompt.
+This is Claude Code's rule for a fresh session."
+  (agent-shell-vertico-tests--with-fresh
+    (should (eq (agent-shell-vertico-sidebar--raw-status fresh) 'new))
+    (should (equal (agent-shell-vertico-sidebar--status-name fresh) "New"))
+    (should (eq (agent-shell-vertico-sidebar--band fresh) 'attention))
+    (let ((snapshot (agent-shell-vertico-sidebar--session-snapshot fresh)))
+      (should (eq (plist-get snapshot :band) 'attention))
+      (should (eq (agent-shell-vertico-sidebar--mark-face snapshot)
+                  'agent-shell-vertico-sidebar-blocked))
+      (should (equal (agent-shell-vertico-sidebar--detail-for snapshot)
+                     "Send a prompt to start"))
+      ;; Its wait ages from when the sidebar saw it start.
+      (should (equal (agent-shell-vertico-sidebar--state-since snapshot)
+                     5.0)))))
+
+(ert-deftest agent-shell-vertico-sidebar-new-session-asks-nobody ()
+  "An unprompted session is left out of every count of who waits."
+  (agent-shell-vertico-tests--with-fresh
+    (should-not (agent-shell-vertico-sidebar--needs-attention-p fresh))
+    (should (equal (agent-shell-vertico-sidebar--attention-sessions)
+                   (list waiting)))
+    (should (equal (agent-shell-vertico-sidebar--attention-titles)
+                   '("Waiting")))
+    (let ((text (agent-shell-vertico-sidebar--mode-line-text)))
+      (should (equal (substring-no-properties text) " 1 need you"))
+      (should-not (string-match-p
+                   "Fresh" (get-text-property 1 'help-echo text))))
+    (should (equal (substring-no-properties
+                    (agent-shell-vertico-sidebar--project-summary
+                     (list fresh waiting)))
+                   "✻ 1"))
+    (should-not (agent-shell-vertico-sidebar--project-summary (list fresh)))
+    (setq agent-shell-test-buffers (list fresh))
+    (should-not (agent-shell-vertico-sidebar--mode-line-text))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-skips-a-new-session ()
+  "The jump does not visit a session nobody has prompted."
+  (agent-shell-vertico-tests--with-fresh
+    (setq agent-shell-test-buffers (list fresh))
+    (agent-shell-vertico-sidebar-jump)
+    (should-not agent-shell-test-displayed-buffer)
+    (setq agent-shell-test-buffers (list fresh waiting))
+    (agent-shell-vertico-sidebar-jump)
+    (should (eq agent-shell-test-displayed-buffer waiting))))
 
 (ert-deftest agent-shell-vertico-sidebar-session-of-unknown-history-is-done ()
   "A session already running when the sidebar first saw it is not new.
@@ -3865,8 +3929,9 @@ does not make the turn wait for the reader or fail."
                '(:state done :tempo idle :unread 5.0))
               'idle))
   (should (eq (agent-shell-vertico-sidebar--band-for
-               '(:state working :tempo idle :needs "Send a prompt to start"))
-              'idle))
+               '(:state working :tempo blocked
+                 :needs "Send a prompt to start"))
+              'attention))
   (should (eq (agent-shell-vertico-sidebar--band-for
                '(:state failed :tempo idle))
               'idle))
@@ -4389,9 +4454,9 @@ is a still disc, so a working mark still differs in shape."
                     agent-shell-vertico-sidebar-ready)
                    ((:state stopped :tempo idle)
                     agent-shell-vertico-sidebar-detail)
-                   ((:state working :tempo idle
+                   ((:state working :tempo blocked
                      :needs "Send a prompt to start")
-                    agent-shell-vertico-sidebar-detail)))
+                    agent-shell-vertico-sidebar-blocked)))
     (should (eq (agent-shell-vertico-sidebar--mark-face snapshot) face))))
 
 (ert-deftest agent-shell-vertico-sidebar-dead-agent-is-a-dot ()
@@ -4489,7 +4554,7 @@ is a still disc, so a working mark still differs in shape."
                     "Fixed it")
                    ((:state done :tempo idle :detail "last line")
                     "last line")
-                   ((:state working :tempo idle
+                   ((:state working :tempo blocked
                      :needs "Send a prompt to start")
                     "Send a prompt to start")
                    ((:state done :tempo idle) nil)))
@@ -11593,6 +11658,19 @@ session is doing now, and the session is working."
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (equal (agent-shell-vertico-tests--axes alpha)
                        '(failed t nil)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-new-session-is-not-reported ()
+  "Output settling on an unprompted session notifies nobody."
+  (agent-shell-vertico-tests--with-fresh
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-sidebar--handle-event
+         fresh '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--out-of-turn-settled fresh)
+        (should (eq (agent-shell-vertico-sidebar--raw-status fresh) 'new))
+        (should-not notifications)))))
 
 (ert-deftest agent-shell-vertico-sidebar-deferred-mark-notifies-once ()
   "A burst arriving on top of unread output announces nothing new."

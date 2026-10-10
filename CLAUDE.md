@@ -318,9 +318,12 @@ the three fields Claude Code keeps for every job: STATE (`working`,
 `blocked`, `done`, `failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
 reader is asked: `Allow: TITLE` from the pending tool call, or the `needs
 input:` line). They are derived from the status rather than stored, so the two
-cannot disagree. A session nobody has prompted is working and idle, with NEEDS
-`Send a prompt to start`: Claude Code calls it blocked, which would put a
-shell the reader has just opened among the sessions waiting for them.
+cannot disagree. A session nobody has prompted follows Claude Code's rule: it
+is working and blocked, with NEEDS `Send a prompt to start`, so it is filed in
+the attention band and drawn yellow. A shell the reader has just opened asks
+them nothing, though, so `--waits-p` leaves it out of the mode-line count and
+a project header's count, `--needs-attention-p` leaves it out of the jump, and
+`--notify` never reports it.
 `--band-for` files a snapshot into a band, first match wins as in Claude
 Code: snoozed and not active is `snoozed`; active is `working`; blocked is
 `attention`; in flight (`background`) is `working`; anything else is `idle`.

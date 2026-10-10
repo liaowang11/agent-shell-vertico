@@ -966,15 +966,16 @@ it works, `blocked' while it waits for the reader, `idle' otherwise.
 NEEDS is what the reader is asked for, or nil.  Claude Code keeps these
 three fields for every job; here they are read off the status, so the
 two can never disagree.  A session nobody has prompted is working and
-idle: Claude Code calls it blocked, which would put a shell the reader
-has just opened among the sessions waiting for them.
+blocked, waiting for its first prompt, as Claude Code has it.  It asks
+the reader nothing, though, so `--waits-p' leaves it out of the counts
+of who waits, and neither the jump nor a notification visits it.
 
 STATUS is BUFFER's `--raw-status' when the caller has already read it."
   (let ((status (or status (agent-shell-vertico-sidebar--raw-status buffer))))
     (pcase status
       ((or 'busy 'starting) (list 'working 'active nil))
       ('background (list 'working 'idle nil))
-      ('new (list 'working 'idle agent-shell-vertico-sidebar--new-needs))
+      ('new (list 'working 'blocked agent-shell-vertico-sidebar--new-needs))
       ('blocked
        (list (or (agent-shell-vertico-sidebar--get buffer 'state) 'done)
              'blocked
@@ -1003,8 +1004,8 @@ Pinned has none: it is no band, so its dot takes the header's colour.")
   "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
 
 Unread output does not change the band: a finished session is idle,
-read or not.  A session nobody has prompted is idle too, though it
-names what it waits for.  Work behind a prompt, a subagent or a task
+read or not.  A session nobody has prompted waits for its first prompt,
+so it is in the attention band.  Work behind a prompt, a subagent or a task
 still running, is working, as Claude Code files it."
   (let ((tempo (plist-get snapshot :tempo)))
     (cond
@@ -1060,6 +1061,15 @@ answers."
 (defun agent-shell-vertico-sidebar--band (buffer)
   "Return the band BUFFER is counted in, pinned or not."
   (agent-shell-vertico-sidebar--job-field buffer :band))
+
+(defun agent-shell-vertico-sidebar--waits-p (buffer)
+  "Return non-nil when BUFFER is in the attention band and asks something.
+
+A session nobody has prompted is in the band, as Claude Code files it,
+but a shell the reader has just opened asks them nothing, so the counts
+of who waits leave it out."
+  (and (eq (agent-shell-vertico-sidebar--band buffer) 'attention)
+       (not (eq (agent-shell-vertico-sidebar--raw-status buffer) 'new))))
 
 (defun agent-shell-vertico-sidebar--family (buffer)
   "Return BUFFER and its live descendants, BUFFER first."
@@ -1165,7 +1175,10 @@ the whole answer and no record can go stale.
 
 A working session asks for nobody, whatever it is holding: see
 `agent-shell-vertico-sidebar--unread-for'.  Neither does a snoozed one,
-because the reader has said when they will come back to it."
+because the reader has said when they will come back to it.  A session
+nobody has prompted is in the attention band, but its status is `new',
+not `blocked': no decision is pending, so it asks for the reader only
+once it holds unread output."
   (and (not (agent-shell-vertico-sidebar--snoozed-p buffer))
        (or (agent-shell-vertico-sidebar--unread-p buffer)
            (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked))))
@@ -1349,10 +1362,10 @@ repeating those queries during one redisplay."
 (defun agent-shell-vertico-sidebar--detail-for (snapshot)
   "Return the one-line detail for SNAPSHOT, as Claude Code picks it.
 
-A waiting session says what it waits for and a working one its newest
-entry.  A failure says why, and a stopped turn only that it stopped.
-Otherwise the turn's `result:' line, else its newest entry; a session
-nobody has prompted says what it needs."
+A waiting session says what it waits for, which for a session nobody
+has prompted is a prompt, and a working one its newest entry.  A
+failure says why, and a stopped turn only that it stopped.  Otherwise
+NEEDS, else the turn's `result:' line, else its newest entry."
   (pcase-let (((map :state :tempo :needs :detail :result :error) snapshot))
     (cond ((eq tempo 'blocked) needs)
           ((eq tempo 'active) detail)
@@ -1758,7 +1771,8 @@ session whose agent process is gone is a dot."
 
 Purple is what the reader has put off, yellow what waits for the
 reader, blue what works, red a failure and green a finished turn.  A
-stopped session and one nobody has prompted are grey.  Unread output
+session nobody has prompted waits for its first prompt, so it is yellow
+too.  A stopped session is grey.  Unread output
 does not colour the mark: it makes the title bold."
   (pcase-let (((map :state :tempo :snoozed :in-flight) snapshot))
     (cond (snoozed 'agent-shell-vertico-sidebar-snoozed)
@@ -2373,16 +2387,15 @@ already applies, so it adds no columns of its own either."
 (defun agent-shell-vertico-sidebar--project-summary (buffers)
   "Return the count shown at the right of a project header for BUFFERS.
 
-Only the sessions that need the reader are counted, the attention band,
-and a project with none gets no count at all.  The project's sessions
-and its unread ones are counted after its name (`--header-counts'), and
-every status is on the session row that has it, so the right edge
-states only what asks for a reply.  BUFFERS are the roots drawn under
-the header, and each one's live descendants are counted too, since they
-are drawn there as well."
-  (let ((count (seq-count (lambda (buffer)
-                            (eq (agent-shell-vertico-sidebar--band buffer)
-                                'attention))
+Only the sessions that need the reader are counted, the attention band
+less the sessions nobody has prompted (`--waits-p'), and a project with
+none gets no count at all.  The project's sessions and its unread ones
+are counted after its name (`--header-counts'), and every status is on
+the session row that has it, so the right edge states only what asks
+for a reply.  BUFFERS are the roots drawn under the header, and each
+one's live descendants are counted too, since they are drawn there as
+well."
+  (let ((count (seq-count #'agent-shell-vertico-sidebar--waits-p
                           (seq-mapcat #'agent-shell-vertico-sidebar--family
                                       buffers))))
     (when (> count 0)
@@ -3371,10 +3384,12 @@ the turn failed."
 The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
 this after the unread mark and the status are in place, since both are
 read back from the session.  A snoozed session is not reported: the
-events that end a snooze end it before they get here."
+events that end a snooze end it before they get here.  Nor is one
+nobody has prompted, which asks the reader nothing yet."
   (when (and agent-shell-vertico-sidebar-notify-function
              (buffer-live-p buffer)
              (not (agent-shell-vertico-sidebar--snoozed-p buffer))
+             (not (eq (agent-shell-vertico-sidebar--raw-status buffer) 'new))
              (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
     (pcase-let ((`(,state ,_tempo ,needs)
                  (agent-shell-vertico-sidebar--job-state buffer)))
@@ -4120,11 +4135,10 @@ EVENT is the area clicked in, such as `mode-line'; nil is buffer text."
     map))
 
 (defun agent-shell-vertico-sidebar--attention-titles ()
-  "Return the titles of the live sessions in the attention band."
+  "Return the titles of the live sessions that wait, by `--waits-p'."
   (delq nil
         (mapcar (lambda (buffer)
-                  (when (eq (agent-shell-vertico-sidebar--band buffer)
-                            'attention)
+                  (when (agent-shell-vertico-sidebar--waits-p buffer)
                     (agent-shell-vertico-sidebar--title buffer)))
                 (seq-filter #'buffer-live-p (agent-shell-buffers)))))
 
@@ -4134,8 +4148,9 @@ EVENT is the area clicked in, such as `mode-line'; nil is buffer text."
 (defun agent-shell-vertico-sidebar--mode-line-text ()
   "Return how many sessions need the reader, for the mode line, or nil.
 
-The count is the header's attention band, read from the live sessions
-because the sidebar need not be open."
+The count is the header's attention band less the sessions nobody has
+prompted (`--waits-p'), read from the live sessions because the sidebar
+need not be open."
   (when-let* ((titles (agent-shell-vertico-sidebar--attention-titles)))
     (propertize (format " %d need you" (length titles))
                 'face 'agent-shell-vertico-sidebar-blocked
