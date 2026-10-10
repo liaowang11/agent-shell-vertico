@@ -178,8 +178,9 @@ levels and sets this default to the level it reaches."
 
 Each selected symbol contributes one value, and values are packed two per
 compact row.  In the state and flat views, `project' is also shown as the
-session's compact working-directory context line.  Available symbols are `agent', `status',
-`activity', `project', `model', `mode', and `last-user-message'.
+session's compact working-directory context line.  Available symbols are
+`agent', `status', `activity', `project', `model', `mode', and
+`last-user-message'.
 
 The agent value names the configuration the session runs; activating it
 starts a new session with that agent in this session's project.  `status'

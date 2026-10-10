@@ -364,7 +364,8 @@ and flat views add a third, the `⌂ project` line: `--insert-section` passes
 `nested` nil to `--insert-sessions`, so `--session-lines` draws it there as in
 the flat view, because a section header does not name the project; only a
 project header suppresses it, and so does leaving `project` out of
-`agent-shell-vertico-sidebar-extra-info` (`--flat-project-line`). `--detail-for` picks the line as Claude Code does:
+`agent-shell-vertico-sidebar-extra-info` (`--flat-project-line`).
+`--detail-for` picks the line as Claude Code does:
 NEEDS while blocked, the newest entry while active, `Failed: REASON` or
 `Stopped` for a turn that ended that way, and otherwise NEEDS, then the result,
 then the newest entry. The newest entry is the `detail` slot: `> PROMPT` from
