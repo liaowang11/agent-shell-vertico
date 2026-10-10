@@ -174,18 +174,6 @@ carries the status, and a prompt is usually visible in the session itself."
                          (const :tag "Last user message" last-user-message)))
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-use-nerd-icons 'auto
-  "Whether the sidebar draws its status marks with nerd-icons.
-
-`auto' uses icons when the `nerd-icons' package can be loaded and the
-plain characters otherwise.  `t' always asks nerd-icons to draw them, and
-nil always uses the characters.  Project folds keep their characters
-either way."
-  :type '(choice (const :tag "When nerd-icons is available" auto)
-                 (const :tag "Always" t)
-                 (const :tag "Never" nil))
-  :group 'agent-shell-vertico-sidebar)
-
 (defcustom agent-shell-vertico-sidebar-marker-method 'fringe
   "Where the sidebar draws the marker on a session that is on screen.
 
@@ -217,15 +205,13 @@ the still glyph."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-busy-frames 'dots
-  "The frames a working session's mark cycles through.
+(defcustom agent-shell-vertico-sidebar-busy-frames
+  '("·" "✢" "✳" "✶" "✻" "✽")
+  "The one-column characters a working session's mark cycles through.
 
-`dots' is a ring of eight dots, drawn as an SVG image where one can be
-drawn and as the braille characters it is modelled on everywhere else.
-A list of one-column strings is used as those characters are, on every
-frame, which is also how to keep the spin and drop the image."
-  :type '(choice (const :tag "Ring of dots" dots)
-                 (repeat :tag "Characters" string))
+The default is Claude Code's own spinner, which grows a dot into the
+star every other session is drawn with."
+  :type '(repeat string)
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-busy-frame-interval 0.1
@@ -548,36 +534,39 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
   "Face for state section headers in the agent-shell sidebar."
   :group 'agent-shell-vertico-sidebar)
 
-(defface agent-shell-vertico-sidebar-attention
-  '((t :inherit error :weight bold))
-  "Face for a session holding output nobody has read."
+(defface agent-shell-vertico-sidebar-failed
+  '((t :inherit error))
+  "Face for the mark of a session whose last turn failed."
   :group 'agent-shell-vertico-sidebar)
 
-(defface agent-shell-vertico-sidebar-unresolved
+(defface agent-shell-vertico-sidebar-blocked
   '((t :inherit warning))
-  "Face for a session the reader has seen and not finished with.
+  "Face for a session waiting for the reader.
 
-A permission request still waiting for its answer, or a failed turn
-nobody has started again."
+A permission request still waiting for its answer, or a turn that ended
+asking for input."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-unread-title
+  '((t :inherit bold))
+  "Face for the title of a session holding output nobody has read."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-snoozed
   '((t :inherit link-visited :underline nil :weight normal))
   "Face for the mark of a session the reader has snoozed.
 
-Every other colour on a mark names a status or asks for the reader, and
-grey is already a session starting, so a snooze takes the one hue left:
-the purple a visited link is drawn in, without the link's underline or
-weight.  The glyph still names the status, and is filled when the
-session holds output nobody has read."
+Every other colour on a mark names a state, and grey is already a
+session stopped or not yet prompted, so a snooze takes the one hue
+left: the purple a visited link is drawn in, without the link's
+underline or weight."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-snoozed-title
   '((t :inherit shadow))
   "Face for the title of a session the reader has snoozed.
 
-The row recedes so the sessions still asking for the reader stand out,
-while the mark beside it says what the session is."
+The row recedes so the sessions still asking for the reader stand out."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-snoozed-rule
@@ -590,16 +579,8 @@ otherwise take each glyph's own colour and change hue along the row."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-working
-  '((t :inherit ansi-color-magenta :background "unspecified-bg"))
-  "Face for working sessions."
-  :group 'agent-shell-vertico-sidebar)
-
-(defface agent-shell-vertico-sidebar-background
-  '((t :inherit ansi-color-cyan :background "unspecified-bg"))
-  "Face for a session with work running behind a prompt it would take.
-
-Cyan is the one colour no other mark uses, and it sits beside the
-working magenta the way the two statuses sit beside each other."
+  '((t :inherit ansi-color-blue :background "unspecified-bg"))
+  "Face for a working session, or one with work behind a prompt."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-ready
@@ -662,10 +643,8 @@ carry no key are dimmed, so red means a key and only a key.  The
 action list keeps its own colour, as `aw-key-face' does, because in the
 echo area there is nothing to be confused with.
 
-The key replaces a mark that may be a nerd-icons glyph, whose face
-carries the icon font's family and height.  `default' is inherited
-last to specify both again, and to hand back the ordinary background:
-the key is drawn in the frame's own font, at its own size, and coloured
+`default' is inherited last to hand back the ordinary background: the
+key is drawn in the frame's own font, at its own size, and coloured
 rather than highlighted."
   :group 'agent-shell-vertico-sidebar)
 
@@ -1174,6 +1153,15 @@ their places.  See
     ('starting "Starting")
     (_ "Unknown")))
 
+(defun agent-shell-vertico-sidebar--live-p (buffer)
+  "Return nil when BUFFER's agent process has started and is gone.
+
+A session with no client yet, or a client not started yet, is live:
+only a process that ran and stopped says the agent is gone."
+  (let* ((client (map-elt (agent-shell-vertico--state buffer) :client))
+         (process (and client (map-elt client :process))))
+    (or (null process) (process-live-p process))))
+
 (defun agent-shell-vertico-sidebar--session-snapshot (buffer)
   "Return one render snapshot for live session BUFFER.
 
@@ -1211,7 +1199,7 @@ repeating those queries during one redisplay."
            (agent-shell-vertico-sidebar--status-name-for status)
            :status-rank (agent-shell-vertico-sidebar--status-rank-for
                          status (and unread t) (and snoozed t))
-           :mark (agent-shell-vertico-sidebar--mark-for status unread snoozed)
+           :live (agent-shell-vertico-sidebar--live-p buffer)
            :raw-status-rank
            (agent-shell-vertico-sidebar--status-sort-rank-for status)
            :unread unread
@@ -1436,7 +1424,7 @@ its own icon, so a subagent reads apart from a shell at a glance."
           (let ((icon (agent-shell-vertico-sidebar--slot-icon slot)))
             (push (concat (if parts
                               (concat icon
-                                      (agent-shell-vertico-sidebar--icon-gap))
+                                      " ")
                             (agent-shell-vertico-sidebar--mark-field icon))
                           (format "%d %s%s" count noun (if (= count 1) "" "s")))
                   parts))))
@@ -1514,326 +1502,80 @@ default in `agent-shell-vertico-sidebar-show-details'."
   "Fit STRING to WIDTH columns, adding an ellipsis when needed."
   (truncate-string-to-width (or string "") (max 1 width) 0 nil "…"))
 
-(defconst agent-shell-vertico-sidebar--status-icons
-  '((failed   "nf-md-close_circle"
-              "nf-md-close_circle_outline"  "✖")
-    (blocked  "nf-md-help_circle"
-              "nf-md-help_circle_outline"   "?")
-    (busy     "nf-md-dots_circle"
-              "nf-md-dots_circle"           "◆")
-    (background "nf-md-clock"
-                "nf-md-clock_outline"       "◔")
-    (done     "nf-md-check_circle"
-              "nf-md-check_circle_outline"  "✓")
-    (stopped  "nf-md-stop_circle"
-              "nf-md-stop_circle_outline"   "■")
-    (new      "nf-md-circle_outline"
-              "nf-md-circle_outline"        "○")
-    (starting "nf-md-circle_outline"
-              "nf-md-circle_outline"        "○"))
-  "Status, filled and outline nerd-icons names, and plain character.
-
-One glyph per status, so a mark says what the session is: an empty
-circle has produced nothing yet, dots are working, a check has finished,
-a question mark is asking the reader something, a clock has work
-still running behind a prompt it would take, and a cross failed.  The
-filled variant marks unread output, which the colour says too.  A
-terminal has no filled twin for a check or a question mark, so its plain
-character is the same read or unread and the colour carries it alone.
-Working and starting have nothing a reader could be behind on: a session
-still running or not yet begun has produced nothing to miss, and
-`agent-shell-vertico-sidebar--unread-for' holds a working session's mark
-back until it stops.  Their filled names are never drawn, and are the
-same glyph as their outline ones.")
-
-(defconst agent-shell-vertico-sidebar--status-order
-  '(failed blocked busy background done stopped new starting)
-  "Order in which status counts appear in headers.")
-
 (defconst agent-shell-vertico-sidebar--icons
-  '((project   "nf-cod-root_folder"       "⌂")
-    (message   "nf-cod-arrow_small_right" "↳")
-    (sessions  "nf-cod-layers"            "⧉")
-    (snoozed   "nf-md-sleep"              "z")
-    (subagents "nf-md-robot_outline"      "◇")
-    (tasks     "nf-md-console"            "$")
-    (expanded  nil                        "▼")
-    (collapsed nil                        "▶"))
-  "Slot, nerd-icons name, and plain character for each mark that is not
-a status.
+  '((project   . "⌂")
+    (message   . "↳")
+    (subagents . "◇")
+    (tasks     . "$")
+    (expanded  . "▼")
+    (collapsed . "▶"))
+  "Slot and character for each mark that is not a session's.
 
-Slots with no nerd-icons name always draw their character.  The
-`sessions' layers mark stands for the total count in a header.  The fold
-triangles match the ones `agent-shell' uses for its own collapsible
-fragments.")
-
-(defvar agent-shell-vertico-sidebar--nerd-icons-available 'unknown
-  "Whether the `nerd-icons' package could be loaded.
-
-`unknown' until the first look, so a missing package is searched for once
-rather than on every drawn icon.")
-
-(defun agent-shell-vertico-sidebar--nerd-icons-p ()
-  "Return non-nil when the sidebar should draw nerd-icons glyphs."
-  (pcase agent-shell-vertico-sidebar-use-nerd-icons
-    ('auto (when (eq agent-shell-vertico-sidebar--nerd-icons-available
-                     'unknown)
-             (setq agent-shell-vertico-sidebar--nerd-icons-available
-                   (and (require 'nerd-icons nil t) t)))
-           agent-shell-vertico-sidebar--nerd-icons-available)
-    (value value)))
-
-(defun agent-shell-vertico-sidebar--draw-icon (name text &optional face)
-  "Return NAME's nerd-icons glyph, or TEXT without them, drawn in FACE."
-  (let ((drawer (when name
-                  (if (string-prefix-p "nf-md-" name)
-                      'nerd-icons-mdicon
-                    'nerd-icons-codicon))))
-    (if (and drawer
-             (agent-shell-vertico-sidebar--nerd-icons-p)
-             (fboundp drawer))
-        (if face
-            (funcall drawer name :face face)
-          (funcall drawer name))
-      (if face (propertize text 'face face) text))))
+The fold triangles match the ones `agent-shell' uses for its own
+collapsible fragments.")
 
 (defun agent-shell-vertico-sidebar--slot-icon (slot &optional face)
   "Return the mark for SLOT, drawn in FACE."
-  (pcase-let ((`(,_ ,name ,text) (assq slot
-                                       agent-shell-vertico-sidebar--icons)))
-    (agent-shell-vertico-sidebar--draw-icon name text face)))
-
-(defun agent-shell-vertico-sidebar--status-icon (status unread &optional face)
-  "Return the mark for STATUS, filled when UNREAD, drawn in FACE."
-  (pcase-let ((`(,_ ,filled ,outline ,text)
-               (or (assq status agent-shell-vertico-sidebar--status-icons)
-                   (assq 'starting
-                         agent-shell-vertico-sidebar--status-icons))))
-    (agent-shell-vertico-sidebar--draw-icon
-     (if unread filled outline) text face)))
-
-(defun agent-shell-vertico-sidebar--icon-frame ()
-  "Return the frame showing the sidebar, or nil for the selected frame."
-  (when-let ((window (get-buffer-window
-                      (or (get-buffer "*Agent Shell Sessions*")
-                          (current-buffer))
-                      t)))
-    (window-frame window)))
-
-(defun agent-shell-vertico-sidebar--icon-gap ()
-  "Return the spacing between a mark and the text after it.
-
-Nerd-icons glyphs fill their cell, so they need more room than a plain
-character does.  A terminal can only widen the gap by whole columns; a
-graphical frame takes a fraction of one instead."
-  (cond
-   ((not (agent-shell-vertico-sidebar--nerd-icons-p)) " ")
-   ((display-graphic-p (agent-shell-vertico-sidebar--icon-frame))
-    (concat " " (propertize " " 'display '(space :width 0.5))))
-   (t "  ")))
-
-(defconst agent-shell-vertico-sidebar--busy-characters
-  '("⣷" "⣯" "⣟" "⡿" "⢿" "⣻" "⣽" "⣾")
-  "Characters a working mark cycles through when no image is drawn.
-
-The braille ring the drawn one is modelled on: dots orbiting a circle,
-one column wide, and the same picture a terminal can show.")
-
-(defconst agent-shell-vertico-sidebar--busy-frame-count 8
-  "How many frames a full turn of the drawn ring takes.
-
-One per dot, so a frame turns the ring exactly onto the next dot and the
-cycle has no seam.")
-
-(defvar agent-shell-vertico-sidebar--busy-images
-  (make-hash-table :test #'equal)
-  "Cache of drawn working marks, keyed by colour, size and frame.
-
-A theme change asks for a colour that is not in the table yet, so the
-key is the whole answer and nothing has to be invalidated.")
-
-(defun agent-shell-vertico-sidebar--busy-color ()
-  "Return the working face's foreground as a colour SVG understands.
-
-Face colours are Emacs names as often as they are hex, and librsvg
-knows only CSS, so the name is resolved here rather than passed on.
-
-Both questions are put to the frame showing the sidebar, as
-`--busy-size' puts its own: a theme can answer differently per frame,
-and `color-values' answers in the frame's own palette, so a beat that
-fell while a terminal frame was selected would otherwise colour the
-image a graphical sidebar draws.  Nil is the selected frame, which is
-the same fallback `--busy-size' spells out."
-  (let* ((frame (agent-shell-vertico-sidebar--icon-frame))
-         (color (face-attribute 'agent-shell-vertico-sidebar-working
-                                :foreground frame 'default))
-         ;; `color-values' signals rather than returning nil where no
-         ;; frame can answer about colours, which is every batch session.
-         (values (and (stringp color)
-                      (ignore-errors (color-values color frame)))))
-    (cond
-     (values (apply #'format "#%02x%02x%02x"
-                    (mapcar (lambda (value) (ash value -8)) values)))
-     ((and (stringp color) (string-prefix-p "#" color)) color)
-     (t "#888888"))))
-
-(defun agent-shell-vertico-sidebar--busy-size ()
-  "Return the pixel side of the drawn working mark.
-
-Two columns wide, so the ring carries the weight the icons beside it
-have, and never taller than a line, so no row grows to fit it."
-  (let ((frame (or (agent-shell-vertico-sidebar--icon-frame)
-                   (selected-frame))))
-    (min (* 2 (frame-char-width frame)) (frame-char-height frame))))
-
-(defun agent-shell-vertico-sidebar--busy-svg (angle color size)
-  "Return a ring of eight dots turned ANGLE degrees, in COLOR, SIZE px square.
-
-Drawn rather than taken from a font: the loading circles nerd-icons
-offers are one glyph each, meant to be spun by whoever draws them, and
-Emacs spins images and not text.  Drawing it also means the ring takes
-the face's colour and needs no font to be installed.
-
-The dots reach the edge of the box, because the nerd glyphs beside them
-draw at nearly the full two columns and a ring inside a margin reads as
-the smaller mark.  They stay small, and grow and brighten around the
-ring: that gradient is what says which way it turns, which a ring of
-even dots could not."
-  (format (concat "<svg xmlns='http://www.w3.org/2000/svg'"
-                  " width='%d' height='%d' viewBox='0 0 24 24'>"
-                  "<g transform='rotate(%d 12 12)'>%s</g></svg>")
-          size size angle
-          (mapconcat
-           (lambda (index)
-             (format (concat "<circle cx='%.2f' cy='%.2f' r='%.2f'"
-                             " fill='%s' fill-opacity='%.2f'/>")
-                     (+ 12 (* 8.6 (cos (* index (/ float-pi 4)))))
-                     (+ 12 (* 8.6 (sin (* index (/ float-pi 4)))))
-                     (+ 1.8 (* 1.2 (/ index 7.0)))
-                     color
-                     (+ 0.35 (* 0.65 (/ index 7.0)))))
-           (number-sequence 0 7) "")))
-
-(defun agent-shell-vertico-sidebar--busy-image (frame)
-  "Return the image for FRAME of the ring, or nil when it cannot be drawn.
-
-Nothing is drawn without SVG support or on a terminal.  Which frame is
-asked is the sidebar's, matching the gap: a buffer shown on a graphical
-and a text frame at once is drawn one way for both."
-  (when (and (image-type-available-p 'svg)
-             (display-graphic-p (agent-shell-vertico-sidebar--icon-frame)))
-    (let* ((color (agent-shell-vertico-sidebar--busy-color))
-           (size (agent-shell-vertico-sidebar--busy-size))
-           (key (list color size frame)))
-      (or (gethash key agent-shell-vertico-sidebar--busy-images)
-          (puthash key
-                   (create-image
-                    (agent-shell-vertico-sidebar--busy-svg
-                     (/ (* 360 frame)
-                        agent-shell-vertico-sidebar--busy-frame-count)
-                     color size)
-                    'svg t :ascent 'center)
-                   agent-shell-vertico-sidebar--busy-images)))))
+  (let ((text (alist-get slot agent-shell-vertico-sidebar--icons)))
+    (if face (propertize text 'face face) text)))
 
 (defun agent-shell-vertico-sidebar--busy-frame (tick &optional face)
-  "Return what a working mark shows on TICK, drawn in FACE.
-
-An image where one can be drawn, and a character otherwise, which is
-also what `agent-shell-vertico-sidebar-busy-frames' returns when it
-names its own characters.  An image carries its own colours, so FACE
-reaches only the characters."
+  "Return what a working mark shows on TICK, drawn in FACE."
   (let* ((frames agent-shell-vertico-sidebar-busy-frames)
-         (characters (if (and (consp frames) (seq-every-p #'stringp frames))
-                         frames
-                       agent-shell-vertico-sidebar--busy-characters)))
-    (or (and (eq frames 'dots)
-             (agent-shell-vertico-sidebar--busy-image
-              (mod tick agent-shell-vertico-sidebar--busy-frame-count)))
-        (let ((text (nth (mod tick (length characters)) characters)))
-          (if face (propertize text 'face face) text)))))
+         (text (nth (mod tick (length frames)) frames)))
+    (if face (propertize text 'face face) text)))
 
-(defun agent-shell-vertico-sidebar--busy-columns (value)
-  "Return how many of a row's characters VALUE is drawn over.
-
-A character takes the mark's own column.  An image is two columns wide,
-and the gap after a mark is a column and a half, so an image takes the
-mark and the space after it: the half-width space and the title are
-then where every other row has them."
-  (if (stringp value) 1 2))
-
-(defun agent-shell-vertico-sidebar--count-text (mark count &optional face)
-  "Return COUNT preceded by MARK, both drawn in FACE.
-
-MARK is a status mark, a status and whether it is unread, or one of the
-slots that is not a status.  The mark and the number are separated the
-same way a mark and a title are, so a glyph that fills its cell does not
-touch the digits after it."
-  (concat (if (consp mark)
-              (agent-shell-vertico-sidebar--mark-icon mark face)
-            (agent-shell-vertico-sidebar--slot-icon mark face))
-          (agent-shell-vertico-sidebar--icon-gap)
-          (let ((count (number-to-string count)))
-            (if face (propertize count 'face face) count))))
+(defun agent-shell-vertico-sidebar--count-text (glyph count face)
+  "Return COUNT preceded by GLYPH, both drawn in FACE."
+  (propertize (format "%s %d" glyph count) 'face face))
 
 (defun agent-shell-vertico-sidebar--content-width (width depth)
   "Return the columns left for text on a session row of WIDTH.
 
 DEPTH is how many levels the row is indented: 1 below a project header
 or a parent session, 2 below both."
-  (max 1 (- width
-            (* 2 (or depth 0))
-            1
-            (string-width (agent-shell-vertico-sidebar--icon-gap)))))
+  (max 1 (- width (* 2 (or depth 0)) 2)))
 
-(defun agent-shell-vertico-sidebar--mark-for (status unread
-                                                  &optional snoozed)
-  "Return the mark a session in STATUS gets, given UNREAD and SNOOZED.
+(defun agent-shell-vertico-sidebar--mark-glyph (snapshot)
+  "Return Claude Code's glyph for the session in SNAPSHOT.
 
-A mark is the list (STATUS UNREAD SNOOZED) the sidebar draws from: the
-status picks the glyph and the colour family, unread fills the glyph
-and turns it red, and snoozed greys it whatever else it says, so output
-that arrived while the session was put off still fills the glyph.
+Every session is the same star, and its face gives its state.  A
+working star is turned by the spinner overlay; without the spin it is
+a disc instead, so a working session still has a shape of its own.  A
+session whose agent process is gone is a dot."
+  (cond ((not (plist-get snapshot :live)) "∙")
+        ((and (eq (plist-get snapshot :tempo) 'active)
+              (not agent-shell-vertico-sidebar-animate-busy))
+         "●")
+        (t "✻")))
 
-The axes are not independent: a `busy' session is never unread or
-snoozed, because `agent-shell-vertico-sidebar--unread-for' and
-`--snoozed-for' hold both back until it stops working."
-  (list status (and unread t) (and snoozed t)))
+(defun agent-shell-vertico-sidebar--mark-face (snapshot)
+  "Return the face of the mark of SNAPSHOT, by Claude Code's colour table.
 
-(defun agent-shell-vertico-sidebar--mark (buffer)
-  "Return the mark drawn for BUFFER."
-  (or (agent-shell-vertico-sidebar--snapshot-field buffer :mark)
-      (agent-shell-vertico-sidebar--mark-for
-       (agent-shell-vertico-sidebar--raw-status buffer)
-       (agent-shell-vertico-sidebar--unread-p buffer)
-       (agent-shell-vertico-sidebar--snoozed-p buffer))))
+Purple is what the reader has put off, yellow what waits for the
+reader, blue what works, red a failure and green a finished turn.  A
+stopped session and one nobody has prompted are grey.  Unread output
+does not colour the mark: it makes the title bold."
+  (pcase-let (((map :state :tempo :snoozed :in-flight) snapshot))
+    (cond (snoozed 'agent-shell-vertico-sidebar-snoozed)
+          ((eq tempo 'blocked) 'agent-shell-vertico-sidebar-blocked)
+          ((or (eq tempo 'active) in-flight)
+           'agent-shell-vertico-sidebar-working)
+          ((eq state 'failed) 'agent-shell-vertico-sidebar-failed)
+          ((eq state 'done) 'agent-shell-vertico-sidebar-ready)
+          (t 'agent-shell-vertico-sidebar-detail))))
 
-(defun agent-shell-vertico-sidebar--mark-icon (mark &optional face)
-  "Return MARK's glyph, drawn in FACE."
-  (agent-shell-vertico-sidebar--status-icon (car mark) (nth 1 mark) face))
-
-(defun agent-shell-vertico-sidebar--mark-face (mark)
-  "Return the face MARK is drawn in.
-
-Grey is what the reader has put off, whatever it holds, since a snooze
-is the reader saying none of it is urgent.  Red is what nobody has
-read.  Yellow is what the reader has seen and still owes something: a
-permission decision, or a failure they have not started again.
-Everything else is drawn in its status colour."
-  (cond
-   ((nth 2 mark) 'agent-shell-vertico-sidebar-snoozed)
-   ((nth 1 mark) 'agent-shell-vertico-sidebar-attention)
-   ((memq (car mark) '(blocked failed))
-    'agent-shell-vertico-sidebar-unresolved)
-   ((eq (car mark) 'busy) 'agent-shell-vertico-sidebar-working)
-   ((eq (car mark) 'background) 'agent-shell-vertico-sidebar-background)
-   ((eq (car mark) 'done) 'agent-shell-vertico-sidebar-ready)
-   (t 'agent-shell-vertico-sidebar-detail)))
+(defun agent-shell-vertico-sidebar--snapshot (buffer)
+  "Return BUFFER's render snapshot, or a fresh one outside a render."
+  (or (and (hash-table-p agent-shell-vertico-sidebar--render-snapshots)
+           (gethash buffer agent-shell-vertico-sidebar--render-snapshots))
+      (agent-shell-vertico-sidebar--session-snapshot buffer)))
 
 (defun agent-shell-vertico-sidebar--icon (buffer)
   "Return the mark for BUFFER, drawn in its own face."
-  (let ((mark (agent-shell-vertico-sidebar--mark buffer)))
-    (agent-shell-vertico-sidebar--mark-icon
-     mark (agent-shell-vertico-sidebar--mark-face mark))))
+  (let ((snapshot (agent-shell-vertico-sidebar--snapshot buffer)))
+    (propertize (agent-shell-vertico-sidebar--mark-glyph snapshot)
+                'face (agent-shell-vertico-sidebar--mark-face snapshot))))
 
 (defun agent-shell-vertico-sidebar--compare-buffers (left right sort-by)
   "Return non-nil when LEFT sorts before RIGHT by SORT-BY.
@@ -2125,7 +1867,7 @@ the half-width display the gap carries alone.
 
 `agent-shell-vertico-sidebar--keep-point-off-marks' is what acts on the
 property; nothing else reads it."
-  (propertize (concat icon (agent-shell-vertico-sidebar--icon-gap))
+  (propertize (concat icon " ")
               'agent-shell-vertico-sidebar-mark-field t))
 
 (defun agent-shell-vertico-sidebar--session-lines
@@ -2157,12 +1899,14 @@ parent-child relationship."
           (when details-visible
             (agent-shell-vertico-sidebar--extra-info-lines
              buffer root content-width (not nested)))))
-    (when (agent-shell-vertico-sidebar--snoozed-p buffer)
-      ;; Prepended, so it wins over whatever face the title carries.
-      (dolist (line title-lines)
-        (add-face-text-property 0 (length line)
-                                'agent-shell-vertico-sidebar-snoozed-title
-                                nil line)))
+    (dolist (face (list (and (agent-shell-vertico-sidebar--unread-p buffer)
+                             'agent-shell-vertico-sidebar-unread-title)
+                        (and (agent-shell-vertico-sidebar--snoozed-p buffer)
+                             'agent-shell-vertico-sidebar-snoozed-title)))
+      (when face
+        ;; Prepended, so it wins over whatever face the title carries.
+        (dolist (line title-lines)
+          (add-face-text-property 0 (length line) face nil line))))
     (setq title-lines
           (cons (concat (agent-shell-vertico-sidebar--mark-field icon)
                         (car title-lines))
@@ -2340,22 +2084,16 @@ a reply."
                                 'attention))
                           buffers)))
     (when (> count 0)
-      (let ((mark (agent-shell-vertico-sidebar--mark-for 'blocked nil)))
-        (agent-shell-vertico-sidebar--count-text
-         mark count (agent-shell-vertico-sidebar--mark-face mark))))))
+      (agent-shell-vertico-sidebar--count-text
+       "✻" count 'agent-shell-vertico-sidebar-blocked))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
     (indicator name summary width)
   "Return a project header of WIDTH holding INDICATOR, NAME, and SUMMARY.
 
 SUMMARY, when there is one, keeps the right edge of the row, so a NAME too
-long for the remaining columns is the part that gets shortened.  A drawn
-glyph is wider than the one column it counts as, so a row using icons keeps
-a column of slack rather than pushing its count past the window edge."
-  (let* ((slack (if (and summary (agent-shell-vertico-sidebar--nerd-icons-p))
-                    1
-                  0))
-         (reserved (if summary (+ 2 (string-width summary) slack) 0))
+long for the remaining columns is the part that gets shortened."
+  (let* ((reserved (if summary (+ 2 (string-width summary)) 0))
          (name (agent-shell-vertico-sidebar--fit
                 name
                 (max 1 (- width (string-width indicator) 1 reserved)))))
@@ -2363,8 +2101,7 @@ a column of slack rather than pushing its count past the window edge."
             (when summary
               (concat (make-string
                        (max 2 (- width (string-width indicator) 1
-                                 (string-width name) (string-width summary)
-                                 slack))
+                                 (string-width name) (string-width summary)))
                        ?\s)
                       summary)))))
 
@@ -2856,10 +2593,10 @@ which is why nothing reflows and no row has to be built differently."
   (agent-shell-vertico-sidebar--clear-busy-overlays)
   (when agent-shell-vertico-sidebar-animate-busy
     (let ((working (seq-keep (lambda (snapshot)
-                               (when (eq (plist-get snapshot :status) 'busy)
+                               (when (eq (plist-get snapshot :tempo) 'active)
                                  (plist-get snapshot :buffer)))
                              snapshots))
-          (face (agent-shell-vertico-sidebar--mark-face '(busy nil nil))))
+          (face 'agent-shell-vertico-sidebar-working))
       (when working
         (pcase-dolist (`(,buffer . ,start)
                        (agent-shell-vertico-sidebar--session-rows))
@@ -2869,12 +2606,7 @@ which is why nothing reflows and no row has to be built differently."
                    (limit (save-excursion
                             (goto-char start)
                             (line-end-position)))
-                   (overlay (make-overlay
-                             start
-                             (min limit
-                                  (+ start
-                                     (agent-shell-vertico-sidebar--busy-columns
-                                      value))))))
+                   (overlay (make-overlay start (min limit (1+ start)))))
               (overlay-put overlay 'display value)
               (push overlay agent-shell-vertico-sidebar--busy-overlays))))))))
 
@@ -2883,25 +2615,16 @@ which is why nothing reflows and no row has to be built differently."
 
 Returns early while a jump is in progress, as the render does: a jump
 draws its keys over the same cells, and repainting under them would
-take a key off the screen the reader is choosing from.  A frame that
-would need a different number of columns than the overlay was given -
-the sidebar moved between a graphical and a text frame - is left to the
-render that re-places them."
+take a key off the screen the reader is choosing from."
   (unless agent-shell-vertico-sidebar--jump-in-progress
     (setq agent-shell-vertico-sidebar--busy-tick
           (1+ agent-shell-vertico-sidebar--busy-tick))
-    (let ((face (agent-shell-vertico-sidebar--mark-face '(busy nil nil)))
-          (rescale nil))
+    (let ((value (agent-shell-vertico-sidebar--busy-frame
+                  agent-shell-vertico-sidebar--busy-tick
+                  'agent-shell-vertico-sidebar-working)))
       (dolist (overlay agent-shell-vertico-sidebar--busy-overlays)
         (when (overlay-buffer overlay)
-          (let ((value (agent-shell-vertico-sidebar--busy-frame
-                        agent-shell-vertico-sidebar--busy-tick face)))
-            (if (= (agent-shell-vertico-sidebar--busy-columns value)
-                   (- (overlay-end overlay) (overlay-start overlay)))
-                (overlay-put overlay 'display value)
-              (setq rescale t)))))
-      (when rescale
-        (agent-shell-vertico-sidebar--schedule-refresh)))))
+          (overlay-put overlay 'display value))))))
 
 (defun agent-shell-vertico-sidebar--busy-animation-wanted-p (sidebar)
   "Return non-nil when SIDEBAR has a working mark on screen to redraw.
@@ -4006,7 +3729,7 @@ snoozed and background counts in that order."
   "What the header calls the sessions of each band, in header order.")
 
 (defconst agent-shell-vertico-sidebar--band-faces
-  '((attention . agent-shell-vertico-sidebar-unresolved)
+  '((attention . agent-shell-vertico-sidebar-blocked)
     (working . agent-shell-vertico-sidebar-working)
     (idle . agent-shell-vertico-sidebar-ready)
     (snoozed . agent-shell-vertico-sidebar-snoozed))
@@ -4108,7 +3831,7 @@ The count is the header's attention band, read from the live sessions
 because the sidebar need not be open."
   (when-let* ((titles (agent-shell-vertico-sidebar--attention-titles)))
     (propertize (format " %d need you" (length titles))
-                'face 'agent-shell-vertico-sidebar-unresolved
+                'face 'agent-shell-vertico-sidebar-blocked
                 'help-echo (agent-shell-vertico-sidebar--attention-tooltip
                             titles)
                 'mouse-face 'mode-line-highlight

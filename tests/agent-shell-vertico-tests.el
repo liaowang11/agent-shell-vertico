@@ -180,16 +180,6 @@ Each element in BINDINGS is of the form:
                       'agent-shell-vertico-read-session-function)
                      #'agent-shell-vertico--completing-read-session)
                     ((symbol-value 'agent-shell-agent-configs) nil)
-                    ;; Render assertions name the plain marks, so they must
-                    ;; not depend on whether nerd-icons happens to be
-                    ;; installed where the suite runs.  Tests about icons
-                    ;; bind these themselves.
-                    ((symbol-value
-                      'agent-shell-vertico-sidebar-use-nerd-icons)
-                     nil)
-                    ((symbol-value
-                      'agent-shell-vertico-sidebar--nerd-icons-available)
-                     'unknown)
                     ;; Tests that render name their view; the rest were
                     ;; written against the flat list.
                     ((symbol-value 'agent-shell-vertico-sidebar-group-by)
@@ -212,6 +202,14 @@ Each element in BINDINGS is of the form:
                (when (buffer-live-p buffer)
                  (kill-buffer buffer)))
              created))))
+
+(defun agent-shell-vertico-tests--axes (buffer)
+  "Return (STATUS UNREAD SNOOZED) for BUFFER, as the sidebar ranks it.
+The three axes the sidebar keeps apart for a session: what it is doing,
+whether it holds output nobody has read, and whether it is snoozed."
+  (list (agent-shell-vertico-sidebar--raw-status buffer)
+        (agent-shell-vertico-sidebar--unread-p buffer)
+        (agent-shell-vertico-sidebar--snoozed-p buffer)))
 
 (defmacro agent-shell-vertico-tests--with-side-links (links &rest body)
   "Evaluate BODY with `agent-shell-side' parent/child lookups faked.
@@ -787,7 +785,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "Codex · GPT-5")))))))
+                 '("✻ Review alpha" "Codex · GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-agent-value-is-identifiable ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -823,7 +821,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "-")))))))
+                 '("✻ Review alpha" "-")))))))
 
 (ert-deftest agent-shell-vertico-agent-name-prefers-mode-line-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -881,7 +879,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "↳ Find the failing test")))))))
+                 '("✻ Review alpha" "↳ Find the failing test")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -903,7 +901,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha" "Plan · Done" "GPT-5")))))))
+                 '("✻ Review alpha" "Plan · Done" "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -917,7 +915,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("✓ Review alpha")))))))
+                 '("✻ Review alpha")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-flat-rows-have-no-project-indent ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -976,7 +974,7 @@ A session still starting is working, as Claude Code files it."
         (should (eq (car-safe (agent-shell-vertico-tests--header-property
                                " state" 'display))
                     'space))
-        (should (memq 'agent-shell-vertico-sidebar-unresolved
+        (should (memq 'agent-shell-vertico-sidebar-blocked
                       (ensure-list
                        (agent-shell-vertico-tests--header-property
                         "1 need you" 'face))))
@@ -3969,6 +3967,105 @@ how many more it holds."
               'state)))
 
 
+(ert-deftest agent-shell-vertico-sidebar-mark-glyph-follows-claude-code ()
+  "Every session is a star, a dot once its agent process is gone.
+
+A working session's star is turned by the spinner; without the spin it
+is a still disc, so a working mark still differs in shape."
+  (should (equal (agent-shell-vertico-sidebar--mark-glyph
+                  '(:live t :tempo idle))
+                 "✻"))
+  (should (equal (agent-shell-vertico-sidebar--mark-glyph
+                  '(:live nil :tempo idle))
+                 "∙"))
+  (let ((agent-shell-vertico-sidebar-animate-busy t))
+    (should (equal (agent-shell-vertico-sidebar--mark-glyph
+                    '(:live t :tempo active))
+                   "✻")))
+  (let ((agent-shell-vertico-sidebar-animate-busy nil))
+    (should (equal (agent-shell-vertico-sidebar--mark-glyph
+                    '(:live t :tempo active))
+                   "●"))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-face-follows-claude-code ()
+  "The colour gives the state, by Claude Code's table; red means failed."
+  (pcase-dolist (`(,snapshot ,face)
+                 '(((:snoozed 1.0 :tempo blocked)
+                    agent-shell-vertico-sidebar-snoozed)
+                   ((:state done :tempo blocked)
+                    agent-shell-vertico-sidebar-blocked)
+                   ((:state working :tempo active)
+                    agent-shell-vertico-sidebar-working)
+                   ((:state working :tempo idle :in-flight t)
+                    agent-shell-vertico-sidebar-working)
+                   ((:state failed :tempo idle :unread 1.0)
+                    agent-shell-vertico-sidebar-failed)
+                   ((:state done :tempo idle :unread 1.0)
+                    agent-shell-vertico-sidebar-ready)
+                   ((:state stopped :tempo idle)
+                    agent-shell-vertico-sidebar-detail)
+                   ((:state working :tempo idle
+                     :needs "Send a prompt to start")
+                    agent-shell-vertico-sidebar-detail)))
+    (should (eq (agent-shell-vertico-sidebar--mark-face snapshot) face))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-is-a-dot ()
+  "A session whose agent process has exited draws a dot."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((process (make-process :name "asv-dead" :command '("true")
+                                 :noquery t)))
+      (while (process-live-p process)
+        (accept-process-output process 0.05))
+      (with-current-buffer alpha
+        (setq-local agent-shell--state
+                    `((:session . ((:id . "a") (:title . "Review alpha")))
+                      (:client . ((:process . ,process))))))
+      (should-not (plist-get (agent-shell-vertico-sidebar--session-snapshot
+                              alpha)
+                             :live))
+      (with-current-buffer alpha
+        (setq-local agent-shell--state
+                    '((:session . ((:id . "a") (:title . "Review alpha")))
+                      (:client . ((:process . nil))))))
+      (should (plist-get (agent-shell-vertico-sidebar--session-snapshot
+                          alpha)
+                         :live)))))
+
+(ert-deftest agent-shell-vertico-sidebar-unread-title-is-bold ()
+  "A session holding output nobody has read has a bold title."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (should (memq 'agent-shell-vertico-sidebar-unread-title
+                      (ensure-list (get-text-property (1- (point)) 'face))))
+        (goto-char (point-min))
+        (should (looking-at-p "✻ Review alpha"))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (agent-shell-vertico-sidebar--render)
+        (goto-char (point-min))
+        (search-forward "Review alpha")
+        (should-not (memq 'agent-shell-vertico-sidebar-unread-title
+                          (ensure-list
+                           (get-text-property (1- (point)) 'face))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-busy-frames-are-claude-codes ()
+  "A working mark cycles through Claude Code's spinner, in its colour."
+  (should (equal (eval (car (get 'agent-shell-vertico-sidebar-busy-frames
+                                 'standard-value))
+                       t)
+                 '("·" "✢" "✳" "✶" "✻" "✽")))
+  (let ((agent-shell-vertico-sidebar-busy-frames '("a" "b")))
+    (should (equal (agent-shell-vertico-sidebar--busy-frame 3) "b"))
+    (should (eq (get-text-property
+                 0 'face
+                 (agent-shell-vertico-sidebar--busy-frame 0 'bold))
+                'bold))))
+
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
   (agent-shell-vertico-tests--with-session-buffers
@@ -4108,7 +4205,8 @@ the command to refuse."
       (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
       (should-not (agent-shell-vertico-sidebar--get alpha 'error)))))
 
-(ert-deftest agent-shell-vertico-sidebar-failed-icon-differs-from-blocked ()
+(ert-deftest agent-shell-vertico-sidebar-failed-differs-from-blocked-in-face ()
+  "A failure and a waiting session share the star; red and yellow differ."
   (agent-shell-vertico-tests--with-session-buffers
       ((failed "Codex Agent @ failed" "/work/failed/"
                '((:session . ((:id . "f") (:title . "Failed")))))
@@ -4119,12 +4217,18 @@ the command to refuse."
            (make-hash-table :test #'eq)))
       (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (agent-shell-vertico-sidebar--set failed 'unread 10.0)
-      (should (equal (agent-shell-vertico-sidebar--icon failed) "✖"))
-      (should (equal (agent-shell-vertico-sidebar--icon blocked) "?"))
+      (should (equal (agent-shell-vertico-sidebar--icon failed) "✻"))
+      (should (equal (agent-shell-vertico-sidebar--icon blocked) "✻"))
+      (should (eq (get-text-property
+                   0 'face (agent-shell-vertico-sidebar--icon failed))
+                  'agent-shell-vertico-sidebar-failed))
+      (should (eq (get-text-property
+                   0 'face (agent-shell-vertico-sidebar--icon blocked))
+                  'agent-shell-vertico-sidebar-blocked))
       ;; An unread failure sorts into the attention tier.
       (should (= (agent-shell-vertico-sidebar--status-rank failed) 0)))))
 
-(ert-deftest agent-shell-vertico-sidebar-renders-error-icon ()
+(ert-deftest agent-shell-vertico-sidebar-renders-a-failure-in-red ()
   (agent-shell-vertico-tests--with-session-buffers
       ((failed "Codex Agent @ failed" "/work/failed/"
                '((:session . ((:id . "f") (:title . "Failed run"))))))
@@ -4135,13 +4239,13 @@ the command to refuse."
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (should (string-match-p "✖ Failed run" (buffer-string)))))))
+        (goto-char (point-min))
+        (should (looking-at-p "✻ Failed run"))
+        (should (eq (get-text-property (point) 'face)
+                    'agent-shell-vertico-sidebar-failed))))))
 
-(ert-deftest agent-shell-vertico-sidebar-unread-differs-only-in-face ()
-  "Unread and read sessions of one status share a plain character.
-
-Without nerd-icons there is no filled twin for a check, so the colour is
-what says a ready session holds output nobody has read."
+(ert-deftest agent-shell-vertico-sidebar-unread-keeps-the-mark-face ()
+  "Unread output does not colour the mark; the bold title says it."
   (agent-shell-vertico-tests--with-session-buffers
       ((finished "Codex Agent @ finished" "/work/finished/"
                  '((:session . ((:id . "f") (:title . "Finished")))))
@@ -4152,101 +4256,41 @@ what says a ready session holds output nobody has read."
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
       (agent-shell-vertico-sidebar--set finished 'unread 10.0)
-      (should (equal (agent-shell-vertico-sidebar--icon finished) "✓"))
-      (should (equal (agent-shell-vertico-sidebar--icon read) "✓"))
-      (should (eq (get-text-property
-                   0 'face (agent-shell-vertico-sidebar--icon finished))
-                  'agent-shell-vertico-sidebar-attention))
-      (should (eq (get-text-property
-                   0 'face (agent-shell-vertico-sidebar--icon read))
-                  'agent-shell-vertico-sidebar-ready)))))
+      (dolist (buffer (list finished read))
+        (should (equal (agent-shell-vertico-sidebar--icon buffer) "✻"))
+        (should (eq (get-text-property
+                     0 'face (agent-shell-vertico-sidebar--icon buffer))
+                    'agent-shell-vertico-sidebar-ready))))))
 
 (ert-deftest agent-shell-vertico-sidebar-working-has-no-colored-background ()
-  "The working face inherits magenta without painting a magenta block."
+  "The working face inherits blue without painting a blue block."
   (let ((face 'agent-shell-vertico-sidebar-working))
     (should (equal (face-attribute face :foreground nil t)
-                   (face-attribute 'ansi-color-magenta :foreground nil t)))
+                   (face-attribute 'ansi-color-blue :foreground nil t)))
     (should (equal (face-attribute face :background nil t)
                    "unspecified-bg"))))
 
-(ert-deftest agent-shell-vertico-sidebar-read-blocked-is-unresolved ()
-  "A permission request the reader has seen stops being red.
-
-It still owes an answer, which is what the warning face says, and the
-question mark says what kind of answer."
+(ert-deftest agent-shell-vertico-sidebar-blocked-is-yellow-read-or-not ()
+  "A session waiting for the reader is yellow until it stops waiting."
   (agent-shell-vertico-tests--with-session-buffers
       ((waiting "Claude Agent @ waiting" "/work/waiting/"
                 '((:session . ((:id . "w") (:title . "Waiting"))))))
     (let ((agent-shell-test-statuses (list (cons waiting 'blocked)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq)))
-      (should (equal (agent-shell-vertico-sidebar--icon waiting) "?"))
       (should (eq (get-text-property
                    0 'face (agent-shell-vertico-sidebar--icon waiting))
-                  'agent-shell-vertico-sidebar-unresolved))
+                  'agent-shell-vertico-sidebar-blocked))
       (agent-shell-vertico-sidebar--mark-unread-at waiting 10.0)
       (should (eq (get-text-property
                    0 'face (agent-shell-vertico-sidebar--icon waiting))
-                  'agent-shell-vertico-sidebar-attention)))))
+                  'agent-shell-vertico-sidebar-blocked)))))
 
-(ert-deftest agent-shell-vertico-sidebar-icons-fall-back-to-text ()
-  (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
-    (should-not (agent-shell-vertico-sidebar--nerd-icons-p))
-    (dolist (slot '((project . "⌂") (message . "↳") (sessions . "⧉")
-                    (expanded . "▼") (collapsed . "▶")))
-      (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
-                     (cdr slot))))
-    (dolist (status '((failed . "✖") (blocked . "?") (busy . "◆")
-                      (done . "✓") (starting . "○")))
-      (dolist (unread '(t nil))
-        (should (equal (agent-shell-vertico-sidebar--status-icon
-                        (car status) unread)
-                       (cdr status)))))))
-
-(ert-deftest agent-shell-vertico-sidebar-uses-nerd-icons-when-enabled ()
-  (cl-letf (((symbol-function 'nerd-icons-codicon)
-             (lambda (name &rest _) (format "<cod:%s>" name)))
-            ((symbol-function 'nerd-icons-mdicon)
-             (lambda (name &rest _) (format "<md:%s>" name))))
-    (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
-      (should (agent-shell-vertico-sidebar--nerd-icons-p))
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'project)
-                     "<cod:nf-cod-root_folder>"))
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'message)
-                     "<cod:nf-cod-arrow_small_right>"))
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'sessions)
-                     "<cod:nf-cod-layers>"))
-      ;; Every status is one circle of the Material set, filled when the
-      ;; session holds output nobody has read.
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'failed t)
-                     "<md:nf-md-close_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'failed nil)
-                     "<md:nf-md-close_circle_outline>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'blocked t)
-                     "<md:nf-md-help_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'blocked nil)
-                     "<md:nf-md-help_circle_outline>"))
-      ;; Working and starting have nothing to have missed, so both draw
-      ;; the same glyph whether or not the session holds unread output.
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'busy t)
-                     "<md:nf-md-dots_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'busy nil)
-                     "<md:nf-md-dots_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'done t)
-                     "<md:nf-md-check_circle>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'done nil)
-                     "<md:nf-md-check_circle_outline>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'starting t)
-                     "<md:nf-md-circle_outline>"))
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'starting nil)
-                     "<md:nf-md-circle_outline>"))
-      ;; A status the sidebar does not know draws the starting circle.
-      (should (equal (agent-shell-vertico-sidebar--status-icon 'unknown nil)
-                     "<md:nf-md-circle_outline>"))
-      ;; Folds keep their text characters whatever the icon setting.
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'expanded) "▼"))
-      (should (equal (agent-shell-vertico-sidebar--slot-icon 'collapsed)
-                     "▶")))))
+(ert-deftest agent-shell-vertico-sidebar-slot-icons-are-characters ()
+  (dolist (slot '((project . "⌂") (message . "↳") (subagents . "◇")
+                  (tasks . "$") (expanded . "▼") (collapsed . "▶")))
+    (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
+                   (cdr slot)))))
 
 (ert-deftest agent-shell-vertico-sidebar-indents-with-line-prefix ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -4280,38 +4324,11 @@ question mark says what kind of answer."
           (forward-line 1)
           (should (equal (get-text-property (point) 'line-prefix) "    ")))))))
 
-(ert-deftest agent-shell-vertico-sidebar-icon-gap-widens-for-nerd-icons ()
-  (cl-letf (((symbol-function 'nerd-icons-codicon)
-             (lambda (name &rest _) (format "<cod:%s>" name)))
-            ((symbol-function 'nerd-icons-mdicon)
-             (lambda (name &rest _) (format "<md:%s>" name))))
-    ;; Text characters sit comfortably one space from the title.
-    (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
-      (should (equal (agent-shell-vertico-sidebar--icon-gap) " ")))
-    (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
-      ;; A terminal can only widen the gap by whole columns.
-      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
-        (should (equal (agent-shell-vertico-sidebar--icon-gap) "  ")))
-      ;; A graphical frame gets a fraction of a column instead.
-      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
-        (let ((gap (agent-shell-vertico-sidebar--icon-gap)))
-          (should (equal (substring-no-properties gap) "  "))
-          (should (equal (get-text-property 1 'display gap)
-                         '(space :width 0.5))))))))
-
 (ert-deftest agent-shell-vertico-sidebar-content-width-accounts-for-gap ()
-  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
-    ;; Text mode: one column for the character, one for its space.
-    (let ((agent-shell-vertico-sidebar-use-nerd-icons nil))
-      (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 38))
-      (should (= (agent-shell-vertico-sidebar--content-width 40 1) 36))
-      (should (= (agent-shell-vertico-sidebar--content-width 40 2) 34)))
-    ;; Icons in a terminal spend one more column on the wider gap.
-    (cl-letf (((symbol-function 'nerd-icons-codicon)
-               (lambda (name &rest _) (format "<cod:%s>" name))))
-      (let ((agent-shell-vertico-sidebar-use-nerd-icons t))
-        (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 37))
-        (should (= (agent-shell-vertico-sidebar--content-width 40 1) 35))))))
+  "One column for the mark, one for its space, two for each level."
+  (should (= (agent-shell-vertico-sidebar--content-width 40 nil) 38))
+  (should (= (agent-shell-vertico-sidebar--content-width 40 1) 36))
+  (should (= (agent-shell-vertico-sidebar--content-width 40 2) 34)))
 
 (ert-deftest agent-shell-vertico-sidebar-project-header-marks-attention ()
   "A project header counts the sessions needing attention, and nothing else."
@@ -4325,7 +4342,6 @@ question mark says what kind of answer."
                                            (cons ready 'ready)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -4335,7 +4351,7 @@ question mark says what kind of answer."
                      (point) (line-end-position))))
           (should (string-prefix-p "▶ alpha " line))
           ;; The count holds the right edge of the row.
-          (should (string-suffix-p "? 1" line))
+          (should (string-suffix-p "✻ 1" line))
           ;; The session total is the whole sidebar's header, not a
           ;; project's; a project states only what is waiting on the reader.
           (should-not (string-match-p "⧉" line))
@@ -4355,7 +4371,6 @@ Unread output is not something to report: the session is idle."
                                            (cons beta 'busy)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
       (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
       (with-temp-buffer
@@ -4376,7 +4391,6 @@ Unread output is not something to report: the session is idle."
           (agent-shell-test-statuses (list (cons alpha 'blocked)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
@@ -4384,7 +4398,7 @@ Unread output is not something to report: the session is idle."
         (goto-char (point-min))
         (let ((line (buffer-substring-no-properties
                      (point) (line-end-position))))
-          (should (string-suffix-p "? 1" line))
+          (should (string-suffix-p "✻ 1" line))
           (should (string-match-p "…" line))
           (should (= (string-width line)
                      agent-shell-vertico-sidebar-width)))))))
@@ -4407,7 +4421,6 @@ and says so on its own row."
                                            (cons finished 'ready)))
           (agent-shell-vertico-sidebar--sessions
            (make-hash-table :test #'eq))
-          (agent-shell-vertico-sidebar-use-nerd-icons nil)
           (agent-shell-vertico-sidebar-group-by 'project))
       (agent-shell-vertico-sidebar--set failed 'state 'failed)
       (agent-shell-vertico-sidebar--set failed 'unread 10.0)
@@ -4418,7 +4431,7 @@ and says so on its own row."
         (goto-char (point-min))
         (let ((line (buffer-substring-no-properties
                      (point) (line-end-position))))
-          (should (string-suffix-p "? 1" line))
+          (should (string-suffix-p "✻ 1" line))
           (should-not (string-match-p "✖" line))
           (should-not (string-match-p "✓" line)))))))
 
@@ -10800,9 +10813,9 @@ session is doing now, and the session is working."
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
         (should-not (agent-shell-vertico-sidebar--unread-p alpha))
         (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
+        (should (equal (agent-shell-vertico-tests--axes alpha) '(busy nil nil)))
         (should (eq (agent-shell-vertico-sidebar--mark-face
-                     (agent-shell-vertico-sidebar--mark alpha))
+                     (agent-shell-vertico-sidebar--session-snapshot alpha))
                     'agent-shell-vertico-sidebar-working))
         ;; The row ages from this burst, not from the mark it holds.
         (should (= (agent-shell-vertico-sidebar--priority-time alpha) 20.0))
@@ -10826,7 +10839,7 @@ session is doing now, and the session is working."
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+        (should (equal (agent-shell-vertico-tests--axes alpha)
                        '(done t nil)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-burst-defers-a-failed-mark ()
@@ -10837,13 +10850,13 @@ session is doing now, and the session is working."
     (agent-shell-vertico-tests--with-settled-timers
       (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
         (agent-shell-vertico-sidebar--handle-event alpha '((:event . error)))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+        (should (equal (agent-shell-vertico-tests--axes alpha)
                        '(failed t nil)))
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
+        (should (equal (agent-shell-vertico-tests--axes alpha) '(busy nil nil)))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
-        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+        (should (equal (agent-shell-vertico-tests--axes alpha)
                        '(failed t nil)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-deferred-mark-notifies-once ()
@@ -10920,7 +10933,7 @@ the burst's own time rather than the cleared mark's."
         (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 100.0)))
           (agent-shell-vertico-sidebar--handle-event
            alpha '((:event . agent-message-chunk))))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
+        (should (equal (agent-shell-vertico-tests--axes alpha) '(busy nil nil)))
         (should (= (agent-shell-vertico-sidebar--priority-time alpha) 100.0))
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (should (= (agent-shell-vertico-sidebar--unread-time alpha) 20.0))))))
@@ -11003,7 +11016,7 @@ one the sidebar stopped pointing at."
         (agent-shell-vertico-sidebar--handle-event
          alpha '((:event . agent-message-chunk)))
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
-        (should (equal (agent-shell-vertico-sidebar--mark alpha)
+        (should (equal (agent-shell-vertico-tests--axes alpha)
                        '(blocked t nil)))
         (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))))
 
@@ -11895,7 +11908,7 @@ still counts, since the step opens no sidebar and draws nothing."
                  ?2)
         (agent-shell-vertico-sidebar-jump-by-key)
         (should (equal seen (list (cons ?1 beta) (cons ?2 alpha))))
-        (should (equal spans (list (cons ?1 ?✓) (cons ?2 ?✓))))
+        (should (equal spans (list (cons ?1 ?✻) (cons ?2 ?✻))))
         (should (equal agent-shell-vertico-tests--jump-prompt
                        "Jump to session: "))
         (should (eq agent-shell-test-displayed-buffer alpha))))))
@@ -12417,7 +12430,7 @@ and the frame's font specified around it."
       (set-face-attribute 'error nil :foreground original))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-key-is-not-a-status-colour ()
-  "Only the unread mark shares the key's red, and that mark is dimmed.
+  "Only the failed mark shares the key's red, and that mark is dimmed.
 
 The colour the action list uses is `font-lock-builtin-face', which the
 working status also inherits, and that collision is what moved the row
@@ -12429,13 +12442,13 @@ where each face takes its colour from instead."
   ;; The statuses a keyed row can show take their colour elsewhere.
   (dolist (status '(agent-shell-vertico-sidebar-working
                     agent-shell-vertico-sidebar-ready
-                    agent-shell-vertico-sidebar-unresolved
+                    agent-shell-vertico-sidebar-blocked
                     agent-shell-vertico-sidebar-detail))
     (let ((inherit (face-attribute status :inherit nil nil)))
       (should-not (memq 'error (if (listp inherit) inherit (list inherit))))))
-  ;; The unread mark is red as well, which is why a row with no key is
+  ;; The failed mark is red as well, which is why a row with no key is
   ;; dimmed rather than left to compete with the keys.
-  (let ((inherit (face-attribute 'agent-shell-vertico-sidebar-attention
+  (let ((inherit (face-attribute 'agent-shell-vertico-sidebar-failed
                                  :inherit nil nil)))
     (should (memq 'error (if (listp inherit) inherit (list inherit))))))
 
@@ -12654,7 +12667,7 @@ icon font of the mark it is drawn over."
         ;; one at point-min, which draws nothing while the read is still
         ;; waiting.  The overlay object survives that, so assert it still
         ;; spans its row's mark character.
-        (should (equal seen (list (cons ?1 ?✓) (cons ?2 ?✓))))
+        (should (equal seen (list (cons ?1 ?✻) (cons ?2 ?✻))))
         (should (memq agent-shell-test-displayed-buffer (list alpha beta)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-prompt-counts-unkeyed-sessions ()
@@ -13873,27 +13886,9 @@ the minibuffer is not the project the reader was asked about."
     count))
 
 (ert-deftest agent-shell-vertico-sidebar-busy-characters-are-one-column ()
-  "Every fallback frame takes exactly the column the mark reserves."
-  (dolist (character agent-shell-vertico-sidebar--busy-characters)
+  "Every spinner frame takes exactly the column the mark reserves."
+  (dolist (character agent-shell-vertico-sidebar-busy-frames)
     (should (= (string-width character) 1))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-frame-cycles-characters ()
-  "Without a graphical frame the mark spins as characters.
-
-The suite runs in batch, where there is nothing to draw an image on, so
-this is also what a terminal sees."
-  (let ((agent-shell-vertico-sidebar-busy-frames 'dots))
-    (should (equal (agent-shell-vertico-sidebar--busy-frame 0)
-                   (nth 0 agent-shell-vertico-sidebar--busy-characters)))
-    (should (equal (agent-shell-vertico-sidebar--busy-frame 1)
-                   (nth 1 agent-shell-vertico-sidebar--busy-characters)))
-    (should (equal (agent-shell-vertico-sidebar--busy-frame
-                    (length agent-shell-vertico-sidebar--busy-characters))
-                   (nth 0 agent-shell-vertico-sidebar--busy-characters)))
-    (should (eq (get-text-property
-                 0 'face (agent-shell-vertico-sidebar--busy-frame
-                          0 'agent-shell-vertico-sidebar-working))
-                'agent-shell-vertico-sidebar-working))))
 
 (ert-deftest agent-shell-vertico-sidebar-busy-frames-accept-characters ()
   "A list of characters replaces the drawn ring, image or no image."
@@ -13902,62 +13897,6 @@ this is also what a terminal sees."
               ((symbol-function 'image-type-available-p) (lambda (_) t)))
       (should (equal (agent-shell-vertico-sidebar--busy-frame 0) "|"))
       (should (equal (agent-shell-vertico-sidebar--busy-frame 5) "/")))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-frame-draws-an-svg-ring ()
-  "A graphical frame with SVG support gets the drawn ring of dots."
-  (let ((agent-shell-vertico-sidebar-busy-frames 'dots)
-        (agent-shell-vertico-sidebar--busy-images
-         (make-hash-table :test #'equal)))
-    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-              ((symbol-function 'image-type-available-p) (lambda (_) t))
-              ((symbol-function 'create-image)
-               (lambda (data type &rest _props) (list 'image :type type :data data))))
-      (let ((value (agent-shell-vertico-sidebar--busy-frame 0)))
-        (should (eq (car-safe value) 'image))
-        (should (eq (plist-get (cdr value) :type) 'svg))
-        (should (= 8 (agent-shell-vertico-tests--count-matches
-                      "<circle" (plist-get (cdr value) :data))))))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-colour-asks-the-sidebar-frame ()
-  "The colour is read from the frame showing the sidebar, not the selected one.
-
-`--busy-size' already measures that frame, and a beat falling while a
-terminal frame is selected would otherwise size the image for one frame
-and colour it from another.  Batch has no second frame to compare
-against, so what is pinned is which frame the two questions are put to."
-  (let ((asked nil))
-    (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--icon-frame)
-               (lambda () 'sidebar-frame))
-              ((symbol-function 'face-attribute)
-               (lambda (_face _attribute &optional frame &rest _)
-                 (push (cons :face frame) asked)
-                 "#fc4cb4"))
-              ((symbol-function 'color-values)
-               (lambda (_color &optional frame)
-                 (push (cons :values frame) asked)
-                 (list (ash #xfc 8) (ash #x4c 8) (ash #xb4 8)))))
-      (should (equal (agent-shell-vertico-sidebar--busy-color) "#fc4cb4"))
-      (should (equal (alist-get :face asked) 'sidebar-frame))
-      (should (equal (alist-get :values asked) 'sidebar-frame)))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-svg-rotates-by-frame ()
-  "Each frame turns the ring one eighth further."
-  (should (string-match-p
-           "rotate(0 12 12)"
-           (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))
-  (should (string-match-p
-           "rotate(45 12 12)"
-           (agent-shell-vertico-sidebar--busy-svg 45 "#ffffff" 16)))
-  (should (= 8 (agent-shell-vertico-tests--count-matches
-                "<circle"
-                (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-frame-falls-back-without-svg ()
-  "A graphical frame with no SVG support keeps the characters."
-  (let ((agent-shell-vertico-sidebar-busy-frames 'dots))
-    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-              ((symbol-function 'image-type-available-p) (lambda (_) nil)))
-      (should (stringp (agent-shell-vertico-sidebar--busy-frame 0))))))
 
 (ert-deftest agent-shell-vertico-sidebar-marks-working-rows-with-an-overlay ()
   "Only a working session's mark is animated, and the glyph stays under it."
@@ -13980,38 +13919,13 @@ against, so what is pinned is which frame the two questions are put to."
                                working
                                (agent-shell-vertico-sidebar--session-rows)))
                          start))
-          ;; One column, because batch draws characters rather than an image.
           (should (= (overlay-end overlay) (1+ start)))
-          (should (equal (buffer-substring-no-properties start (1+ start)) "◆"))
+          (should (equal (buffer-substring-no-properties start (1+ start))
+                         "✻"))
           (should (equal (overlay-get overlay 'display)
                          (agent-shell-vertico-sidebar--busy-frame
                           agent-shell-vertico-sidebar--busy-tick
                           'agent-shell-vertico-sidebar-working))))))))
-
-(ert-deftest agent-shell-vertico-sidebar-busy-image-covers-two-columns ()
-  "An image mark takes the mark and the space after it.
-
-The image is two columns wide and the gap a column and a half, so
-covering both leaves the half-width space and the title exactly where
-every other row has them."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((working "Codex Agent @ working" "/work/working/"
-                '((:session . ((:id . "w") (:title . "Working"))))))
-    (let ((agent-shell-test-buffers (list working))
-          (agent-shell-test-statuses (list (cons working 'busy)))
-          (agent-shell-vertico-sidebar-group-by nil)
-          (agent-shell-vertico-sidebar--busy-images
-           (make-hash-table :test #'equal)))
-      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
-                ((symbol-function 'image-type-available-p) (lambda (_) t))
-                ((symbol-function 'create-image)
-                 (lambda (data type &rest _props) (list 'image :type type :data data))))
-        (with-temp-buffer
-          (agent-shell-vertico-sidebar-mode)
-          (agent-shell-vertico-sidebar--render)
-          (let ((overlay (car agent-shell-vertico-sidebar--busy-overlays)))
-            (should (= (overlay-end overlay)
-                       (+ 2 (overlay-start overlay))))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-animating-advances-the-frame ()
   "A beat draws the next frame on every working mark."
@@ -14078,7 +13992,7 @@ every other row has them."
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should-not agent-shell-vertico-sidebar--busy-overlays)
-        (should (string-match-p "◆" (buffer-string)))))))
+        (should (string-match-p "●" (buffer-string)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-animation-needs-a-visible-sidebar ()
   "The beat only runs while the sidebar is on screen with work to draw."
@@ -14175,26 +14089,6 @@ every other row has them."
       (setq start (match-end 0)))
     (nreverse circles)))
 
-(ert-deftest agent-shell-vertico-sidebar-busy-ring-fills-its-box ()
-  "The ring reaches the edge of the box without spilling over it.
-
-The nerd glyphs beside it draw at nearly the full two columns, so a ring
-inside a margin reads as the smaller mark; a ring outside the box would
-be clipped instead."
-  (let ((circles (agent-shell-vertico-tests--busy-circles
-                  (agent-shell-vertico-sidebar--busy-svg 0 "#ffffff" 16)))
-        (reach 0))
-    (should (= (length circles) 8))
-    (pcase-dolist (`(,cx ,cy ,r) circles)
-      (should (>= (- cx r) 0))
-      (should (<= (+ cx r) 24))
-      (should (>= (- cy r) 0))
-      (should (<= (+ cy r) 24))
-      (setq reach (max reach
-                       (+ r (sqrt (+ (* (- cx 12) (- cx 12))
-                                     (* (- cy 12) (- cy 12))))))))
-    (should (> reach 11.5))))
-
 (ert-deftest agent-shell-vertico-sidebar-point-skips-a-session-mark ()
   "A mark and the gap after it are one field point is moved out of.
 
@@ -14213,7 +14107,7 @@ no cursor to say where point is."
                ;; The gap is a column and a half where icons are drawn
                ;; and one column where they are not, so the field is as
                ;; long as what was actually inserted.
-               (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+               (field 2))
           (dotimes (offset field)
             (should (agent-shell-vertico-sidebar--mark-field-p
                      (+ start offset))))
@@ -14263,7 +14157,7 @@ above answer for the row it moved to."
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (let ((rows (agent-shell-vertico-sidebar--session-rows))
-              (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+              (field 2))
           (goto-char (point-min))
           (agent-shell-vertico-sidebar-next-row)
           (should-not (agent-shell-vertico-sidebar--mark-field-p (point)))
@@ -14289,7 +14183,7 @@ above answer for the row it moved to."
         (goto-char (point-min))
         (should (search-forward "⌂" nil t))
         (let ((start (match-beginning 0))
-              (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+              (field 2))
           (dotimes (offset field)
             (should (agent-shell-vertico-sidebar--mark-field-p
                      (+ start offset))))
@@ -14314,7 +14208,7 @@ above answer for the row it moved to."
           (goto-char (point-min))
           (should (search-forward "↳" nil t))
           (let ((start (match-beginning 0))
-                (field (+ 1 (length (agent-shell-vertico-sidebar--icon-gap)))))
+                (field 2))
             (dotimes (offset field)
               (should (agent-shell-vertico-sidebar--mark-field-p
                        (+ start offset))))
@@ -14383,10 +14277,10 @@ under its point."
     ;; Snoozing puts off the output; it does not read it.
     (should (agent-shell-vertico-sidebar--unread-p alpha))
     (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
-    (should (equal (agent-shell-vertico-sidebar--mark alpha)
+    (should (equal (agent-shell-vertico-tests--axes alpha)
                    '(done t t)))
     (should (eq (agent-shell-vertico-sidebar--mark-face
-                 (agent-shell-vertico-sidebar--mark alpha))
+                 (agent-shell-vertico-sidebar--session-snapshot alpha))
                 'agent-shell-vertico-sidebar-snoozed))
     (should-not (agent-shell-vertico-sidebar--attention-sessions))
     (agent-shell-vertico-sidebar-jump)
@@ -14589,7 +14483,7 @@ The output is still recorded, and nobody is told about it."
     (setf (alist-get alpha agent-shell-test-statuses) 'busy)
     (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
     (should (= (agent-shell-vertico-sidebar--status-rank alpha) 2))
-    (should (equal (agent-shell-vertico-sidebar--mark alpha) '(busy nil nil)))
+    (should (equal (agent-shell-vertico-tests--axes alpha) '(busy nil nil)))
     (setf (alist-get alpha agent-shell-test-statuses) 'ready)
     (should (agent-shell-vertico-sidebar--snoozed-p alpha))))
 
@@ -14793,16 +14687,17 @@ BETA is live and idle beside it."
       `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
     (agent-shell-vertico-sidebar--handle-event
      alpha '((:event . turn-complete)))
-    (should (equal (agent-shell-vertico-sidebar--mark alpha)
+    (should (equal (agent-shell-vertico-tests--axes alpha)
                    '(background t nil)))
     (should (eq (agent-shell-vertico-sidebar--mark-face
-                 (agent-shell-vertico-sidebar--mark alpha))
-                'agent-shell-vertico-sidebar-attention))
+                 (agent-shell-vertico-sidebar--session-snapshot alpha))
+                'agent-shell-vertico-sidebar-working))
     (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    ;; Unread does not colour the mark: work behind a prompt is blue.
     (agent-shell-vertico-sidebar--set alpha 'unread nil)
     (should (eq (agent-shell-vertico-sidebar--mark-face
-                 (agent-shell-vertico-sidebar--mark alpha))
-                'agent-shell-vertico-sidebar-background))))
+                 (agent-shell-vertico-sidebar--session-snapshot alpha))
+                'agent-shell-vertico-sidebar-working))))
 
 (ert-deftest agent-shell-vertico-sidebar-subagent-output-is-not-a-burst ()
   "A subagent streaming is background work, not the root speaking."
