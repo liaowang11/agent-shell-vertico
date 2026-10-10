@@ -15,9 +15,10 @@ Four modules form a small dependency graph:
 - `agent-shell-vertico.el` — session completion table, annotations, Embark
   actions, and the conversation imenu index.
 - `agent-shell-vertico-sidebar.el` — a persistent side window listing live
-  sessions, driven by `agent-shell` event subscriptions; also owns which
-  sessions need attention, the command that jumps to them, and the
-  notification hook. Requires the core.
+  sessions in Claude Code's agent-view states, driven by `agent-shell` event
+  subscriptions; also owns which sessions need attention, pins and snoozes,
+  the peek window, the command that jumps to them, the mode-line count, and
+  the notification hook. Requires the core.
 - `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
   Markdown transcripts `agent-shell` writes; requires the core independently
   of the sidebar.
@@ -266,25 +267,138 @@ displayed. One setting covers the switch commands, the Embark actions and
 the sidebar, which is why it is a variable here rather than advice in a
 user's configuration.
 
+**One record per session.** Everything the sidebar remembers about a session
+that agent-shell does not keep is one `agent-shell-vertico-sidebar--session`
+struct per buffer, in `--sessions`, read with `--get`, written with `--set` and
+dropped with `--forget` when the buffer dies. The slot docstrings are the
+reference for what each slot means. Setting a slot to nil on a session with no
+record creates none, so the paths that tidy up after a killed buffer leave
+nothing behind. The record used to be one hash table per fact; where the text
+below names `unread`, `snoozed`, `pinned`, `state` and the like, it means a
+slot.
+
 **Status and unread are two axes.** What a session *is* and what it owes the
-*reader* are separate questions, and conflating them was a bug: a finished turn
-*used to report the status `Done`, so an idle session reported as busy-ish and a
-*failure could never be read away. `--raw-status` answers the first question
-*with `starting`, `ready`, `busy`, `background`, `blocked` or `failed`, taking
-*what `agent-shell-status` reports and overlaying what it does not. That
-*function answers about the turn in flight, so whatever outlives a turn is the
-*sidebar's own: `starting` is a session with no ACP session id yet, recorded
-*nowhere because the id's absence is the whole answer; `failed` is recorded in
-*`--failed` from the `error` event and dropped when a new turn starts, because
-*agent-shell reports what a session is doing and not how its last turn ended;
-*`busy` covers an out-of-turn burst; and `blocked` covers a permission request
-*from a task that outlived its turn, which `agent-shell-status` calls ready
-*because it asks for a turn in flight as well (`--permission-pending-p` puts
-*agent-shell's own question rather than repeating it, so the two cannot disagree
-*about what is pending). The overlays only apply to an otherwise idle session,
-*so a live `busy` or `blocked` always wins, and the pending decision is asked
-*first among them: a burst streaming beside it is work the session does while it
-*waits, not an answer to it.
+*reader* are separate questions, and conflating them was a bug: a finished
+turn used to report a status that was really a read state, so a failure could
+never be read away. `--raw-status` answers the first question with `starting`,
+`new`, `busy`, `background`, `blocked`, `done`, `failed` or `stopped`, taking
+what `agent-shell-status` reports and overlaying what it does not; its
+docstring gives the order. That function answers about the turn in flight, so
+whatever outlives a turn is the sidebar's own: `starting` is a session with no
+ACP session id yet, recorded nowhere because the id's absence is the whole
+answer; `new` is the `fresh` slot, a session the sidebar saw start that nobody
+has prompted; the `state` slot is how the last turn ended (see below), set by
+the `turn-complete` and `error` events and dropped when a new turn starts,
+because agent-shell reports what a session is doing and not how its last turn
+ended; `busy` covers an out-of-turn burst; and `blocked` covers a permission
+request from a task that outlived its turn, which `agent-shell-status` calls
+ready because it asks for a turn in flight as well (`--permission-pending-p`
+puts agent-shell's own question rather than repeating it, so the two cannot
+disagree about what is pending). The overlays only apply to an otherwise idle
+session, so a live `busy` or `blocked` always wins, and the pending decision
+is asked first among them: a burst streaming beside it is work the session
+does while it waits, not an answer to it.
+
+**How a turn ended.** A cancelled turn is `stopped`, and a stop reason other
+than `end_turn` (a refusal, a limit) is `failed` in agent-shell's own words.
+A turn that ran to its end is read by `--classify-message` as Claude Code
+reads a background job's last message: the last `result:`, `needs input:`,
+`blocked:` or `failed:` line (`--marker-regexp`, case-insensitive, outside
+code fences, within the last `--marker-window` characters) makes it `done`
+with that `result`, `blocked` with that `needs`, or `failed` with that
+`error`. With no marker it is `done`, and its last non-empty line is the
+result. There is no model step, as there is in Claude Code; the markers are
+the whole convention.
+
+**Claude Code's job fields and bands.** `--job-state` restates the status as
+the three fields Claude Code keeps for every job: STATE (`working`, `done`,
+`failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
+reader is asked: `Allow: TITLE` from the pending tool call, or the `needs
+input:` line). They are derived from the status rather than stored, so the two
+cannot disagree. A session nobody has prompted is working and idle, with NEEDS
+`Send a prompt to start`: Claude Code calls it blocked, which would put a
+shell the reader has just opened among the sessions waiting for them.
+`--band-for` files a snapshot into a band, first match wins as in Claude
+Code: snoozed and not active is `snoozed`; active is `working`; blocked is
+`attention`; in flight (`background`) is `working`; anything else is `idle`.
+Unread output does not change the band, so a finished turn nobody has read is
+idle, as in the agent view, and says so with a bold title (`-unread-title`)
+rather than a colour. `--section-for` is the band, unless the session is
+pinned. `--job-fields` computes all of it once per snapshot as `:state :tempo
+:needs :in-flight :band :pinned :section`, and `--band` and `--section` read
+one field back for a buffer outside a render. Counting asks `--band` (the
+header, the mode line, a project's count), so a pinned session still counts
+where its state puts it; only the drawing asks `--section`.
+
+**The state view.** `agent-shell-vertico-sidebar-group-by` defaults to
+`state`, and `=` cycles flat, project and state. `--render` draws
+`--group-by-section` over the roots: a header for each non-empty section in
+`--sections` order, sessions in the user's sort within it. Each header is a
+fold in `--section-folds`, seeded from
+`agent-shell-vertico-sidebar-folded-sections`; an open header carries no
+count, since its rows are the count, and a folded one counts what it hides,
+children included (`--family-size`). Idle stops after
+`agent-shell-vertico-sidebar-idle-rows` roots and ends on a `… N more` row, a
+`more` node that `show-more` opens by adding the section to `--open-tails`
+until it is folded or the view level is cycled. One hidden session is drawn
+instead of a row counting it, since both take one line. The project view puts
+a Pinned section above the projects (`--split-pinned`), and the flat view
+relies on `--compare-buffers` sorting pinned sessions first.
+`--display-order`, `--reveal-session`, `--view-level` and `--set-view-level`
+each have a state arm, so stepping, revealing and `S-TAB` see the sections the
+render draws.
+
+**The detail line and the age.** Every row is a title line and a detail line,
+as the agent view draws a job. `--detail-for` picks the line as Claude Code
+does: NEEDS while blocked, the newest entry while active, `Failed: REASON` or
+`Stopped` for a turn that ended that way, and otherwise NEEDS, then the
+result, then the newest entry. The newest entry is the `detail` slot: `>
+PROMPT` from `input-submitted`, the symbol `message` while chunks stream, or
+`✗ TITLE` for a failed tool call (`--record-tool-call`); subagent events
+never touch it. `message` is resolved when drawn by `--message-last-line`,
+which joins only as many of the newest chunks as hold a whole last line, so a
+long message costs no more than its end. In the project and flat views
+`--detail-line` starts with the status word in the mark's face, because no
+section header says it there. The title line ends in `--age-text`: time in
+the current band (`--state-since`), not the session's age, drawn yellow when
+`--stuck-p` says an active session has been silent for
+`agent-shell-vertico-sidebar-stuck-after` seconds. Titles stay one line, cut
+with `…`, unless `agent-shell-vertico-sidebar-wrap-titles` is set, so every
+row has one height. Since every row carries an age, `--ensure-age-refresh`
+runs whenever the sidebar is visible and has sessions.
+
+**The header and the mode line.** `--header-line-for` counts the snapshots by
+`:band`, the field that also places rows in sections, so the header and the
+sections cannot disagree. It writes words (`1 need you · 2 working · 3 idle`)
+when they fit beside the view's name, and coloured digits with the words in
+tooltips otherwise; the name keeps the right edge through an `:align-to`
+space, because the header spans the fringes and margins the render's width
+leaves out. The "need you" count names its sessions in its tooltip and runs
+`agent-shell-vertico-sidebar-jump` on a click. The jump visits
+`--needs-attention-p`, which also takes an unread idle session the band does
+not count: the two answer different questions, and the jump was left as it
+was. `agent-shell-vertico-sidebar-mode-line-mode` puts the same count into
+`global-mode-string` as an `(:eval ...)` entry, read from the live sessions
+because the sidebar need not be open, and cached for a second because a mode
+line redraws far more often than a session changes. `--session-statistics`
+and `--statistics-slots` remain only for the jump's message when nothing needs
+the reader.
+
+**Pinning a session.** `pinned` is the opposite of `snoozed`, and the two
+cancel: pinning wakes a session and snoozing unpins one.
+`--compare-buffers` asks whether a session is pinned before it asks whether it
+is snoozed, so whatever the sort a pinned session leads. The state and project
+views draw pinned sessions under a Pinned header; the band, and so the header
+count, is unchanged.
+
+**Peeking at a session.** `agent-shell-vertico-sidebar-peek` writes
+`--peek-text` (title, status, age, NEEDS, the last message) into `*Agent
+Shell Peek*` and shows it in a side window on the sidebar's side, slot 1,
+which it selects. Showing the message is reading it, so it calls
+`--mark-seen`. `r` reads one line and sends it with `agent-shell-insert
+:submit t :no-focus t :shell-buffer`, so the reader stays in the peek; `RET`
+opens the session through `--display-session`. The peek remembers its session
+in `--peek-session` and refuses once that buffer is dead.
 
 **Which session needs attention.** `--unread` is the second axis: a buffer to
 the time its unread output arrived, where presence is the whole record. It is
@@ -305,8 +419,9 @@ and `--unread-for` is where that is said: it holds the record back while
 `--raw-status` says `busy`, and hands it over again once the session goes quiet.
 Nothing is lost, because `--out-of-turn-settled` leaves an existing mark at its
 own time, so the row returns to the attention tier with the age it had. Without
-it, out-of-turn output arriving after a turn nobody read drew a red row saying
-Working — a mark asking for the reader on a session with nothing to read yet.
+it, out-of-turn output arriving after a turn nobody read drew an unread row
+saying Working — a mark asking for the reader on a session with nothing to read
+yet.
 `mark-unread` refuses a `busy` session for the same reason and said it first;
 `mark-read` reads and drops the record rather than the deferred mark, so it
 still works on a session that is working. The `priority` sort puts the attention
@@ -314,8 +429,7 @@ sessions first, and they are two tiers rather than one (`--status-rank-for`):
 unread output, then a `blocked` session the reader has already seen. Ranking
 them together oldest-first pinned every jump to the blocked one, whose wait
 always began before any turn that has finished since, and arriving settles
-nothing that a permission decision does not; the split is also the order
-`--mark-face` draws, red rows above yellow. Both tiers run oldest-first, as the
+nothing that a permission decision does not. Both tiers run oldest-first, as the
 working and snoozed ones do (`--oldest-first-rank-p`), so
 `agent-shell-vertico-sidebar-jump` visits the head of `--sort-buffers ...
 'priority'` and nothing else has to rank them again. The jump passes over a
@@ -324,7 +438,7 @@ be, and says so rather than not moving (`--attention-here-message`);
 `--statistics-slots` folds the two ranks back into the one attention count a
 header shows. `agent-shell-vertico-sidebar-mark-unread` is the only mark the
 reader sets by hand, and it writes the same record the events write, so status
-names, icons, ranks, counters and the jump order need no case for it. It stamps
+names, bold titles, ranks, counters and the jump order need no case for it. It stamps
 the session's last activity time, not the current time, so the oldest-first tier
 stays truthful; it refuses a `busy` session, whose turn has produced nothing to
 miss; and it leaves an existing mark at its own time. It deliberately does not
@@ -358,7 +472,9 @@ every motion and row count would have to step over. The newline carries it with
 `-snoozed-rule`, because a plain overline takes each glyph's colour. A terminal
 draws no overline, so there the split is the order alone. A project whose
 sessions are all snoozed sorts below the others, since `--sort-groups` compares
-groups by their first session. What ends a
+groups by their first session. In the state view the snoozed sessions are a
+section of their own, folded by default, and the rule is not drawn there: it
+marks a snoozed row only below an awake sibling. What ends a
 snooze is dealing with the session or a new ask: `input-submitted`, a
 `permission-request` or an `error` (the agent cannot go on without the reader),
 `mark-unread`, or the command again. Looking at it, `mark-read`, a finished turn
@@ -405,7 +521,9 @@ and tool calls as the root's events with nothing in them saying whose they are.
 than a Working burst, and never becomes the notification's `:last-message`.
 `--background-line` draws `2 subagents · 1 task` under the row whenever
 something runs, details shown or not, with the `subagents` and `tasks` slot
-icons, and `S` runs upstream's `agent-shell-subagents` in the session.
+icons, and `S` runs upstream's `agent-shell-subagents` in the session. In
+Claude Code's terms a session in the background is in flight, so `--band-for`
+files it as working, and its star is blue without spinning.
 
 **Nesting a side conversation under its parent.** A side conversation
 (`agent-shell-side`) is an ordinary `agent-shell` buffer, so without this it
@@ -454,12 +572,11 @@ label is an overlay whose `display' replaces the row's mark character, so
 nothing reflows. The face goes on the overlay rather than inside the display
 string, as `aw-leading-char-face' does: an overlay face beats both the faces
 the text carries and the dimming overlay below, which a face inside the string
-could not be relied on to do. A nerd-icons mark carries the icon font's family
-and height in its face, so the label face inherits `default' last to specify
-both again and to hand back the ordinary background; without that the digit is
-drawn in the icon font, on a block of colour. The colour is red, from `error',
-because `--dim-overlays' leaves nothing else on the list red: the only other
-red is the unread mark, and a row that carries no key is dimmed. The action
+could not be relied on to do. The label face inherits `default' last to hand
+back the ordinary background and the frame's own font and size. The colour is
+red, from `error', because `--dim-overlays' leaves nothing else in the mark
+column red: the only other red there is a failed session's star, which is the
+character a key replaces, and a row that carries no key is dimmed. The action
 list keeps `font-lock-builtin-face', as `aw-key-face' does, both because the
 echo area has nothing to confuse a colour with and because that colour is the
 working status on a row. What dims is the inverse of ace-window: a window is
@@ -607,28 +724,25 @@ action ignores the prefix. Most entries name the existing public
 own target instead, so `--jump-mark-unread` and `--jump-mark-read` run them
 with the session current and let `--attention-target` answer.
 
-**Drawing a session.** A row's mark is a `(STATUS UNREAD SNOOZED)` list, built
-by `--mark-for` and cached in the render snapshot as `:mark`. The status picks
-the glyph from `--status-icons`, which lists a filled and an outline nerd-icons
-name plus one plain character per status, and unread picks between the two. A
-`busy` mark is never unread and a `starting` one has nothing to have missed, so
-their filled names are never drawn. `--mark-face` colours it: purple
-(`-snoozed`) for a snoozed session whatever else it says, red (`-attention`) for
-unread, yellow (`-unresolved`) for a `blocked` or `failed` session already read,
-then the status colours. Red therefore means exactly `--needs-attention-p` minus
-the sessions the reader has already seen; a snoozed session still fills its
-glyph when it holds unread output, so what arrived while it was put off is
-visible in purple. Purple because grey is already `starting`: `-snoozed`
-inherits `link-visited` for its colour alone, and the row's title recedes into
-`-snoozed-title` (`shadow`) so the rows still asking stand out. The plain
-characters have no filled twin for a check or a question mark, so in a terminal
-the colour alone carries unread; that is a deliberate limit, not an oversight.
-`--mark-counts` groups the header and project-header counts by mark, unread
-first, so one status can be counted twice and `--mark-label` says which is which
-in the tooltip. Snoozed marks are left out of it: the header counts them once,
-as the `snoozed` slot, whatever their statuses. Slots that are not statuses
-(`project`, `message`, `sessions`, `snoozed`, the fold triangles) stay in
-`--icons` and are drawn by `--slot-icon`; both go through `--draw-icon`. The
+**Drawing a session.** Every session is Claude Code's star, and the face
+says the state; `--mark-glyph` and `--mark-face` read both from the
+snapshot. The glyph is `✻`, a still `●` for an active session when
+`agent-shell-vertico-sidebar-animate-busy` is off (so working keeps a shape
+of its own), and `∙` when `--live-p` says the agent process ran and exited.
+The face follows Claude Code's colour table, first match wins: purple
+(`-snoozed`) for a snoozed session, yellow (`-blocked`) while it waits for
+the reader, blue (`-working`) while active or in flight, red (`-failed`) for
+a failed turn, green (`-ready`) for a finished one, and grey (`-detail`)
+otherwise, which is a stopped turn or a session nobody has prompted. Purple
+because grey was taken: `-snoozed` inherits `link-visited` for its colour
+alone, and the row's title recedes into `-snoozed-title` (`shadow`) so the
+rows still asking stand out. Unread is not a colour: it is a bold title
+(`-unread-title`), so it reads the same in a terminal, and a snoozed session
+holding unread output is both purple and bold. Every mark is a plain
+character, so no icon font is needed and a terminal draws what a graphical
+frame does. The other glyphs are slots in `--icons` drawn by `--slot-icon`:
+`⌂` project, `↳` message, `◇` subagents, `$` tasks, and the `▼`/`▶` folds.
+The
 fringe marker for the sessions on screen is derived, not stored:
 `--current-sessions` lists every session, or viewport, a window of the selected
 frame shows, and nothing else. The selected window alone would be too narrow,
@@ -648,8 +762,8 @@ two tiers: `--focused-session` picks one out of `--current-sessions` and
 answered with two degrees, not two questions, so they share a hue family and
 differ in colour alone: `-focused-session` is `outline-1`, the one accent
 with no status meaning, and `-current-session` is `shadow`. Every other
-colour here already names a status, and a marker that borrowed red, yellow,
-magenta or green would say something untrue about the session; `shadow` is
+colour here already names a state, and a marker that borrowed blue, yellow,
+red, green or purple would say something untrue about the session; `shadow` is
 what the package already uses for what is present and not the answer. This
 is `gptel-highlight-mode`'s own pair, which separates a response from a tool
 call the same way, and one bitmap serves both: an earlier version drew the
@@ -700,49 +814,34 @@ after the configuration hook runs, so `window-size-change-functions` never
 sees a width the hook changed. Together they keep a workspace saved with no
 fringe from hiding the marker indefinitely.
 
-**Spinning a working mark.** A working session's mark is animated by an
-overlay over the still glyph, one per working row, placed at the end of
-`--render` from the snapshots it already has and redrawn by
-`--animate-busy` on a repeating timer. Overlaying rather than
-re-rendering is what makes it affordable: a full render erases the
-buffer, re-sorts, and re-anchors every window, while a beat only swaps
-each overlay's `display'. The still glyph stays underneath, so a sidebar
-that never animates — the setting off, no timer yet, a beat suppressed —
-reads exactly as it did before, and nothing about how a row is built had
-to change. `--busy-frame` answers what a mark shows on a given beat: an
-SVG ring of eight dots where one can be drawn, and the braille ring
-`⣷⣯⣟⡿⢿⣻⣽⣾` it is modelled on otherwise. The ring is drawn rather than
-taken from a font because the loading circles nerd-icons offers are one
-glyph each, meant to be spun by whoever draws them, and Emacs spins
-images and not text; drawing it also takes the face's colour and needs
-no font installed. `--busy-columns` is why the two kinds can share a
-row: an image is two columns and the gap after a mark is a column and a
-half, so an image takes the mark *and* the space after it, leaving the
-half-width space and the title where every other row has them. A beat
-that would need a different span than its overlay was given — the
-sidebar moved between a graphical and a text frame — schedules a render
-instead of drawing at the wrong width. The tick counter is one per
-sidebar, so every working mark spins in step; a per-session phase would
-have to come from `agent-shell''s heartbeat, which is its business
-rather than something to read a frame number out of. The dots reach the
-edge of their box and stay small: the nerd glyphs beside them draw at
-nearly the full two columns, so a ring inside a margin reads as the
-smaller mark, while dots heavy enough to match a glyph's ink read as a
-different shape altogether. Their size and opacity grow around the ring,
-which is what says which way it turns. A jump gives the cells up:
-`--read-jump-target` clears the overlays and cancels the timer before
-binding `--jump-in-progress`, because its keys are drawn over the same
-cells, and `--animate-busy` returns early under that flag the way
-`--render` does. The timer is armed by `--ensure-busy-refresh` from the
-same two questions that stop it — an overlay to animate and a window to
-see it in — following `--ensure-age-refresh`. Only rows spin: a header
-count is a census of what the sidebar holds rather than a report on one
-session, and a project summary reports only what asks for a reply, so
-both keep the still glyph.
+**Spinning a working mark.** An active session's star is animated by an
+overlay over the still glyph, one per row whose TEMPO is `active` (`busy` and
+`starting`), placed at the end of `--render` from the snapshots it already
+has and redrawn by `--animate-busy` on a repeating timer. Overlaying rather
+than re-rendering is what makes it affordable: a full render erases the
+buffer, re-sorts, and re-anchors every window, while a beat only swaps each
+overlay's `display'. The still glyph stays underneath, so a sidebar that never
+animates — the setting off, no timer yet, a beat suppressed — reads exactly as
+it did before. `--busy-frame` answers what a mark shows on a given beat, a
+string from `agent-shell-vertico-sidebar-busy-frames`, by default Claude
+Code's own spinner `· ✢ ✳ ✶ ✻ ✽`, which grows a dot into the star every other
+session is drawn with. Every frame is one column, the width of every other
+mark, so a beat never moves the title. The tick counter is one per sidebar,
+so every working mark spins in step; a per-session phase would have to come
+from `agent-shell''s heartbeat, which is its business rather than something
+to read a frame number out of. A jump gives the cells up: `--read-jump-target`
+clears the overlays and cancels the timer before binding
+`--jump-in-progress`, because its keys are drawn over the same cells, and
+`--animate-busy` returns early under that flag the way `--render` does. The
+timer is armed by `--ensure-busy-refresh` from the same two questions that
+stop it — an overlay to animate and a window to see it in — following
+`--ensure-age-refresh`. Only rows spin: header counts are words and digits,
+and a project's count reports only what asks for a reply.
 
 **Where point rests.** A row's leading icon and the gap after it are one
 field (`--mark-field`, the `agent-shell-vertico-sidebar-mark-field` text
-property): the status mark, a project's fold triangle, the home on a
+property): the status mark, a section's or project's fold triangle, the home
+on a
 flat row's project line, the arrow on a message line. Standing on one
 says nothing, and the sidebar draws no cursor to say where point is, so
 `--keep-point-off-marks` moves point past it from
@@ -767,8 +866,10 @@ with nothing after it to move point on to.
 **Notifications.** `agent-shell-vertico-sidebar-notify-function` is called
 wherever an attention mark is set, never for a focused session. It receives
 `:buffer`, `:agent` (the agent's display name), `:status` (the same word
-the sidebar shows for the session, never a read state), `:unread` (whether
-the session holds output nobody has read) and `:last-message`.
+the sidebar shows for the session, never a read state), `:state` and
+`:needs` (Claude Code's STATE and NEEDS from `--job-state`, so a channel can
+say what a waiting session asks), `:unread` (whether the session holds output
+nobody has read) and `:last-message`.
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
 streamed chunk and keeps none of them; any other event ends the message,

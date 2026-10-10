@@ -636,9 +636,9 @@ otherwise take each glyph's own colour and change hue along the row."
 
 The weaker of the two markers: this session is on the frame, beside
 whatever the reader is working in.  Grey rather than a colour, because
-every colour in this sidebar already names a status, red unread, yellow
-unresolved, magenta working, green ready, and a marker that borrowed one
-would say something untrue about the session.  `shadow' is
+every colour in this sidebar already names a state, blue working, yellow
+waiting, red failed, green done, purple snoozed, and a marker that
+borrowed one would say something untrue about the session.  `shadow' is
 already what this package uses for what is present and not the answer."
   :group 'agent-shell-vertico-sidebar)
 
@@ -675,8 +675,9 @@ for `ace-window'."
 
 A coloured character rather than a block of colour, which is how
 `ace-window' draws `aw-leading-char-face', and red for the same reason
-it is: nothing else on a list of sessions is red once the rows that
-carry no key are dimmed, so red means a key and only a key.  The
+it is: nothing else in the mark column is red once the rows that carry
+no key are dimmed, since a failed session's red star is the character
+the key replaces, so red there means a key and only a key.  The
 action list keeps its own colour, as `aw-key-face' does, because in the
 echo area there is nothing to be confused with.
 
