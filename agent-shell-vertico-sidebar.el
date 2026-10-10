@@ -353,6 +353,14 @@ agent-shell, and `agent-shell-vertico-sidebar--raw-status' puts the
 two together.")
   (needs nil :documentation "\
 The question a turn ended on, from its `needs input:' line.")
+  (waiting-since nil :documentation "\
+When the permission request the session waits on arrived, or nil.
+
+A waiting session's age is how long it has waited, and `unread' cannot
+say that: reading the request drops the mark while the session still
+waits.  Each request restamps it, since the newest one is what the
+session waits on.  A new prompt or the end of a turn clears it, so a
+turn that ends asking a question ages from its end instead.")
   (result nil :documentation "\
 The headline of the message a turn ended on.
 
@@ -1302,7 +1310,9 @@ repeating those queries during one redisplay."
            :updated-at (agent-shell-vertico-sidebar--get buffer 'updated-at)
            :created-at (agent-shell-vertico-sidebar--get buffer 'created-at)
            :last-terminal-at
-           (agent-shell-vertico-sidebar--get buffer 'last-terminal-at))
+           (agent-shell-vertico-sidebar--get buffer 'last-terminal-at)
+           :waiting-since
+           (agent-shell-vertico-sidebar--get buffer 'waiting-since))
      (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
 
 (defun agent-shell-vertico-sidebar--detail-for (snapshot)
@@ -1323,11 +1333,12 @@ nobody has prompted says what it needs."
 (defun agent-shell-vertico-sidebar--state-since (snapshot)
   "Return when the session in SNAPSHOT entered its band, or nil."
   (pcase-let (((map :band :snoozed :unread :busy-since-time
-                    :background-since :last-terminal-at :created-at)
+                    :background-since :last-terminal-at :created-at
+                    :waiting-since)
                snapshot))
     (pcase band
       ('snoozed snoozed)
-      ('attention (or unread last-terminal-at created-at))
+      ('attention (or waiting-since unread last-terminal-at created-at))
       ('working (or busy-since-time background-since created-at))
       (_ (or last-terminal-at created-at)))))
 
@@ -3186,8 +3197,10 @@ message."
       (cons 'done last-line))))
 
 (defun agent-shell-vertico-sidebar--stamp-terminal (buffer time)
-  "Record that a turn of BUFFER ended at TIME."
+  "Record that a turn of BUFFER ended at TIME.
+A wait for a permission request ends with the turn."
   (agent-shell-vertico-sidebar--set buffer 'last-terminal-at time)
+  (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
   (unless (agent-shell-vertico-sidebar--get buffer 'first-terminal-at)
     (agent-shell-vertico-sidebar--set buffer 'first-terminal-at time)))
 
@@ -3258,8 +3271,10 @@ events that end a snooze end it before they get here."
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
        ;; The request itself is news; the session reports itself blocked
        ;; for as long as it waits, so nothing records that part.  It is
-       ;; also a new ask, which no snooze put off.
+       ;; also a new ask, which no snooze put off.  The newest request
+       ;; is the one the session waits on, so the wait ages from it.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       (agent-shell-vertico-sidebar--set buffer 'waiting-since now)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        (agent-shell-vertico-sidebar--notify buffer))
       ('error
@@ -3296,6 +3311,7 @@ events that end a snooze end it before they get here."
        (agent-shell-vertico-sidebar--set buffer 'fresh nil)
        (agent-shell-vertico-sidebar--set buffer 'needs nil)
        (agent-shell-vertico-sidebar--set buffer 'error nil)
+       (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
        ;; What the last turn said is no answer to this prompt.
        (agent-shell-vertico-sidebar--set buffer 'message nil)
        (agent-shell-vertico-sidebar--set buffer 'result nil)

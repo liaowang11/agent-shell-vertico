@@ -4435,6 +4435,10 @@ is a still disc, so a working mark still differs in shape."
               '(:band attention :unread 7.0 :last-terminal-at 1.0))
              7.0))
   (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band attention :waiting-since 9.0 :unread 7.0
+                      :last-terminal-at 1.0))
+             9.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
               '(:band working :busy-since-time 8.0 :created-at 1.0))
              8.0))
   (should (= (agent-shell-vertico-sidebar--state-since
@@ -4447,6 +4451,47 @@ is a still disc, so a working mark still differs in shape."
               '(:band idle :created-at 1.0))
              1.0))
   (should-not (agent-shell-vertico-sidebar--state-since '(:band idle))))
+
+(ert-deftest agent-shell-vertico-sidebar-wait-ages-from-its-request ()
+  "A waiting session's age starts at the request it waits on.
+
+Reading the request drops the unread mark, and the age must not fall
+back to the previous turn's end then.  A turn that ends asking a
+question ages from its end, whatever an earlier request said."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((now 100.0)
+          (since (lambda ()
+                   (agent-shell-vertico-sidebar--state-since
+                    (agent-shell-vertico-sidebar--session-snapshot alpha)))))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _) now)))
+        (agent-shell-vertico-sidebar--set alpha 'created-at 100.0)
+        (setq now 200.0)
+        (agent-shell-vertico-tests--end-turn alpha)
+        (setq now 250.0)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+        (setq now 260.0)
+        (setq agent-shell-test-statuses (list (cons alpha 'blocked)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-request)))
+        (should (= (funcall since) 260.0))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should (eq (agent-shell-vertico-sidebar--band alpha) 'attention))
+        (should (= (funcall since) 260.0))
+        ;; The newest request is the one the session waits on.
+        (setq now 270.0)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . permission-request)))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should (= (funcall since) 270.0))
+        (setq agent-shell-test-statuses (list (cons alpha 'ready)))
+        (setq now 300.0)
+        (agent-shell-vertico-tests--stream alpha "needs input: which branch?")
+        (agent-shell-vertico-tests--end-turn alpha)
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should (eq (agent-shell-vertico-sidebar--band alpha) 'attention))
+        (should (= (funcall since) 300.0))))))
 
 (ert-deftest agent-shell-vertico-sidebar-row-shows-age-and-detail ()
   "A row is its title with an age at the right edge, then its detail.

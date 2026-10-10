@@ -370,10 +370,15 @@ long message costs no more than its end. In the project and flat views
 section header says it there. The title line ends in `--age-text`: time in
 the current band (`--state-since`), not the session's age, drawn yellow when
 `--stuck-p` says an active session has been silent for
-`agent-shell-vertico-sidebar-stuck-after` seconds. Titles stay one line, cut
-with `…`, unless `agent-shell-vertico-sidebar-wrap-titles` is set, so every
-row has one height. Since every row carries an age, `--ensure-age-refresh`
-runs whenever the sidebar is visible and has sessions.
+`agent-shell-vertico-sidebar-stuck-after` seconds. A wait on a permission
+request ages from the `waiting-since` slot, stamped by each
+`permission-request` and cleared by `input-submitted` and the turn's end
+(`--stamp-terminal`), because reading the request drops `unread` while the
+session still waits; a turn that ends on `needs input:` ages from its end.
+Titles stay one line, cut with `…`, unless
+`agent-shell-vertico-sidebar-wrap-titles` is set, so every row has one height.
+Since every row carries an age, `--ensure-age-refresh` runs whenever the
+sidebar is visible and has sessions.
 
 **The header and the mode line.** `--header-line-for` counts the snapshots by
 `:band`, each session in its own band, children included. The state view
