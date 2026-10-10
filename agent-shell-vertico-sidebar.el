@@ -97,12 +97,34 @@ current sidebar buffer."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-group-by nil
+(defcustom agent-shell-vertico-sidebar-group-by 'state
   "Grouping used by the agent-shell sidebar.
 
-`project' renders foldable project headers.  Nil renders one flat list."
-  :type '(choice (const :tag "Project" project)
+`state' renders a foldable section for each state: Needs you, Working,
+Idle and Snoozed, the buckets Claude Code's agent view uses.  `project'
+renders foldable project headers.  Nil renders one flat list."
+  :type '(choice (const :tag "State" state)
+                 (const :tag "Project" project)
                  (const :tag "Flat" nil))
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-folded-sections '(snoozed)
+  "State sections that start folded in the state view.
+
+An explicit fold or unfold of a section overrides this for the current
+sidebar buffer."
+  :type '(set (const :tag "Needs you" attention)
+              (const :tag "Working" working)
+              (const :tag "Idle" idle)
+              (const :tag "Snoozed" snoozed))
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-idle-rows 3
+  "How many sessions the Idle section shows before a \"more\" row.
+
+The rest are one `RET' away, on the row that counts them.  Nil shows
+every idle session."
+  :type '(choice (natnum :tag "Rows") (const :tag "All" nil))
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-sort-by 'priority
@@ -503,6 +525,14 @@ which is its business and not something to read a frame number out of.")
 (defvar-local agent-shell-vertico-sidebar--expanded-projects nil
   "Hash table of expanded project roots in the current sidebar buffer.")
 
+(defvar-local agent-shell-vertico-sidebar--section-folds nil
+  "Hash table of state sections folded or unfolded in this sidebar.
+
+An absent entry follows `agent-shell-vertico-sidebar-folded-sections'.")
+
+(defvar-local agent-shell-vertico-sidebar--open-tails nil
+  "State sections whose rows past the limit this sidebar shows.")
+
 (defvar-local agent-shell-vertico-sidebar--expanded-sessions nil
   "Hash table of session detail overrides in the current sidebar buffer.
 
@@ -511,6 +541,11 @@ An absent entry follows `agent-shell-vertico-sidebar-show-details'.")
 (defface agent-shell-vertico-sidebar-project
   '((t :inherit font-lock-keyword-face :weight bold))
   "Face for project headers."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-section
+  '((t :inherit agent-shell-vertico-sidebar-project))
+  "Face for state section headers in the agent-shell sidebar."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-attention
@@ -880,7 +915,7 @@ Claude Code's terms."
                                        :tool-calls))))
     (concat "Allow: " (or (map-elt (cdr call) :title) "a tool call"))))
 
-(defun agent-shell-vertico-sidebar--job-state (buffer)
+(defun agent-shell-vertico-sidebar--job-state (buffer &optional status)
   "Return (STATE TEMPO NEEDS) for BUFFER, in Claude Code's terms.
 
 STATE is how the work stands: `working', `blocked', `done', `failed' or
@@ -890,8 +925,10 @@ NEEDS is what the reader is asked for, or nil.  Claude Code keeps these
 three fields for every job; here they are read off the status, so the
 two can never disagree.  A session nobody has prompted is working and
 idle: Claude Code calls it blocked, which would put a shell the reader
-has just opened among the sessions waiting for them."
-  (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
+has just opened among the sessions waiting for them.
+
+STATUS is BUFFER's `--raw-status' when the caller has already read it."
+  (let ((status (or status (agent-shell-vertico-sidebar--raw-status buffer))))
     (pcase status
       ((or 'busy 'starting) (list 'working 'active nil))
       ('background (list 'working 'idle nil))
@@ -903,6 +940,69 @@ has just opened among the sessions waiting for them."
                  (agent-shell-vertico-sidebar--get buffer 'needs))))
       ((or 'done 'failed 'stopped) (list status 'idle nil))
       (_ (list 'working 'idle nil)))))
+
+(defconst agent-shell-vertico-sidebar--sections
+  '((attention . "Needs you") (working . "Working") (idle . "Idle")
+    (snoozed . "Snoozed"))
+  "State sections in display order, with their labels.")
+
+(defun agent-shell-vertico-sidebar--band-for (snapshot)
+  "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
+
+Unread output does not change the band: a finished session is idle,
+read or not.  A session nobody has prompted is idle too, though it
+names what it waits for.  Work behind a prompt, a subagent or a task
+still running, is working, as Claude Code files it."
+  (let ((tempo (plist-get snapshot :tempo)))
+    (cond
+     ((and (plist-get snapshot :snoozed) (not (eq tempo 'active))) 'snoozed)
+     ((eq tempo 'active) 'working)
+     ((eq tempo 'blocked) 'attention)
+     ((plist-get snapshot :in-flight) 'working)
+     (t 'idle))))
+
+(defun agent-shell-vertico-sidebar--section-for (snapshot)
+  "Return the state section SNAPSHOT is drawn in."
+  (plist-get snapshot :band))
+
+(defun agent-shell-vertico-sidebar--job-fields (buffer status snoozed)
+  "Return the job fields of BUFFER in STATUS as a plist.
+
+SNOOZED is the session's snooze time as drawn.  The plist holds
+`:state', `:tempo', `:needs', `:in-flight', `:band' and `:section',
+the part of a render snapshot that `--band-for' reads."
+  (pcase-let* ((`(,state ,tempo ,needs)
+                (agent-shell-vertico-sidebar--job-state buffer status))
+               (fields (list :state state :tempo tempo :needs needs
+                             :in-flight (eq status 'background)))
+               (band (agent-shell-vertico-sidebar--band-for
+                      (append (list :snoozed snoozed) fields))))
+    (append fields
+            (list :band band
+                  :section (agent-shell-vertico-sidebar--section-for
+                            (list :band band))))))
+
+(defun agent-shell-vertico-sidebar--section (buffer)
+  "Return the state section BUFFER is drawn in."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :section)
+      (let ((status (agent-shell-vertico-sidebar--raw-status buffer)))
+        (plist-get (agent-shell-vertico-sidebar--job-fields
+                    buffer status
+                    (agent-shell-vertico-sidebar--snoozed-for
+                     status (agent-shell-vertico-sidebar--get buffer 'snoozed)))
+                   :section))))
+
+(defun agent-shell-vertico-sidebar--group-by-section (buffers)
+  "Group BUFFERS by state section, in section order.
+
+Return an alist of each section holding a buffer and its buffers, which
+keep the order they had in BUFFERS."
+  (let ((groups (seq-group-by #'agent-shell-vertico-sidebar--section
+                              buffers)))
+    (seq-keep (pcase-lambda (`(,section . ,_))
+                (when-let* ((members (alist-get section groups)))
+                  (cons section members)))
+              agent-shell-vertico-sidebar--sections)))
 
 (defun agent-shell-vertico-sidebar--unread-for (status time)
   "Return TIME when a session in STATUS owes the reader that output.
@@ -1100,31 +1200,33 @@ repeating those queries during one redisplay."
                                              'buffer-display-time buffer)))
                              (float-time time))
                            0.0)))
-    (list :buffer buffer
-          :root root
-          :project-name project-name
-          :title (agent-shell-vertico-sidebar--title buffer)
-          :status status
-          :status-name
-          (agent-shell-vertico-sidebar--status-name-for status)
-          :status-rank (agent-shell-vertico-sidebar--status-rank-for
-                        status (and unread t) (and snoozed t))
-          :mark (agent-shell-vertico-sidebar--mark-for status unread snoozed)
-          :raw-status-rank
-          (agent-shell-vertico-sidebar--status-sort-rank-for status)
-          :unread unread
-          :snoozed snoozed
-          :activity-time activity-time
-          :busy-since-time busy-since-time
-          :background background
-          :background-since
-          (agent-shell-vertico-sidebar--get buffer 'background-since)
-          :recency-time recency-time
-          :model (agent-shell-vertico--model-name buffer)
-          :mode (agent-shell-vertico--mode-name buffer)
-          :agent (agent-shell-vertico--agent-name buffer)
-          :details-visible
-          (agent-shell-vertico-sidebar--session-details-expanded-p buffer))))
+    (append
+     (list :buffer buffer
+           :root root
+           :project-name project-name
+           :title (agent-shell-vertico-sidebar--title buffer)
+           :status status
+           :status-name
+           (agent-shell-vertico-sidebar--status-name-for status)
+           :status-rank (agent-shell-vertico-sidebar--status-rank-for
+                         status (and unread t) (and snoozed t))
+           :mark (agent-shell-vertico-sidebar--mark-for status unread snoozed)
+           :raw-status-rank
+           (agent-shell-vertico-sidebar--status-sort-rank-for status)
+           :unread unread
+           :snoozed snoozed
+           :activity-time activity-time
+           :busy-since-time busy-since-time
+           :background background
+           :background-since
+           (agent-shell-vertico-sidebar--get buffer 'background-since)
+           :recency-time recency-time
+           :model (agent-shell-vertico--model-name buffer)
+           :mode (agent-shell-vertico--mode-name buffer)
+           :agent (agent-shell-vertico--agent-name buffer)
+           :details-visible
+           (agent-shell-vertico-sidebar--session-details-expanded-p buffer))
+     (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
 
 (defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
   "Return FIELD from BUFFER's current render snapshot, when available."
@@ -2364,6 +2466,103 @@ draws no overline, so there the split is the order alone."
     (when expanded
       (agent-shell-vertico-sidebar--insert-sessions buffers width t 1))))
 
+(defun agent-shell-vertico-sidebar--section-folded-p (section)
+  "Return non-nil when state SECTION hides its rows in this sidebar."
+  (let ((unset (make-symbol "unset")))
+    (let ((value (if (hash-table-p agent-shell-vertico-sidebar--section-folds)
+                     (gethash section
+                              agent-shell-vertico-sidebar--section-folds
+                              unset)
+                   unset)))
+      (if (eq value unset)
+          (and (memq section agent-shell-vertico-sidebar-folded-sections) t)
+        value))))
+
+(defun agent-shell-vertico-sidebar--set-section-folded (section folded)
+  "Record in this sidebar that state SECTION is FOLDED or not.
+Folding also puts back the limit on the section's rows."
+  (unless (hash-table-p agent-shell-vertico-sidebar--section-folds)
+    (setq agent-shell-vertico-sidebar--section-folds
+          (make-hash-table :test #'eq)))
+  (puthash section folded agent-shell-vertico-sidebar--section-folds)
+  (when folded
+    (setq agent-shell-vertico-sidebar--open-tails
+          (delq section agent-shell-vertico-sidebar--open-tails))))
+
+(defun agent-shell-vertico-sidebar--section-limit (section)
+  "Return how many root rows state SECTION shows, or nil for all of them."
+  (and (eq section 'idle)
+       (not (memq section agent-shell-vertico-sidebar--open-tails))
+       agent-shell-vertico-sidebar-idle-rows))
+
+(defun agent-shell-vertico-sidebar--family-size (buffer)
+  "Return how many rows BUFFER and its live descendants take."
+  (1+ (apply #'+ (mapcar #'agent-shell-vertico-sidebar--family-size
+                         (agent-shell-vertico-sidebar--children-of buffer)))))
+
+(defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
+  "Insert LINE as the one-line node NODE of KIND, drawn in FACE."
+  (let ((start (point)))
+    (insert line "\n")
+    ;; Merged, so an icon keeps the font family in its own face.
+    (add-face-text-property start (1- (point)) face)
+    (add-text-properties
+     start (1- (point))
+     (list 'agent-shell-vertico-sidebar-node node
+           'agent-shell-vertico-sidebar-node-kind kind
+           'mouse-face 'highlight))
+    start))
+
+(defun agent-shell-vertico-sidebar--insert-section (section buffers width)
+  "Insert the header of state SECTION and, unless folded, its BUFFERS.
+
+An open header shows no count, since its rows are the count; a folded
+one says how many sessions it hides.  The Idle section stops after
+`agent-shell-vertico-sidebar-idle-rows' sessions and ends with a row
+counting the rest, which `RET' opens."
+  (let* ((folded (agent-shell-vertico-sidebar--section-folded-p section))
+         (line (agent-shell-vertico-sidebar--project-header-line
+                (agent-shell-vertico-sidebar--slot-icon
+                 (if folded 'collapsed 'expanded))
+                (alist-get section agent-shell-vertico-sidebar--sections)
+                (and folded
+                     (number-to-string
+                      (apply #'+ (mapcar
+                                  #'agent-shell-vertico-sidebar--family-size
+                                  buffers))))
+                width))
+         (start (agent-shell-vertico-sidebar--insert-node-line
+                 (agent-shell-vertico-sidebar--fit line width)
+                 'section section 'agent-shell-vertico-sidebar-section)))
+    ;; The fold triangle is a mark: point belongs on the label.
+    (put-text-property start (+ start 2)
+                       'agent-shell-vertico-sidebar-mark-field t)
+    (add-text-properties start (line-end-position 0)
+                         (list 'help-echo "TAB/RET/mouse-1: toggle section"
+                               'kbd-help "TAB/RET/mouse-1: toggle section"))
+    (unless folded
+      (let* ((limit (agent-shell-vertico-sidebar--section-limit section))
+             (shown (if (and limit (> (length buffers) (1+ limit)))
+                        (seq-take buffers limit)
+                      buffers))
+             (hidden (nthcdr (length shown) buffers)))
+        (agent-shell-vertico-sidebar--insert-sessions shown width nil 1)
+        (when hidden
+          (agent-shell-vertico-sidebar--insert-more
+           section
+           (apply #'+ (mapcar #'agent-shell-vertico-sidebar--family-size
+                              hidden))))))))
+
+(defun agent-shell-vertico-sidebar--insert-more (section count)
+  "Insert the row saying state SECTION hides COUNT more sessions."
+  (let ((start (agent-shell-vertico-sidebar--insert-node-line
+                (format "… %d more" count) 'more section
+                'agent-shell-vertico-sidebar-detail)))
+    (add-text-properties start (line-end-position 0)
+                         (list 'line-prefix "  " 'wrap-prefix "  "
+                               'help-echo "RET/mouse-1: show the rest"
+                               'kbd-help "RET/mouse-1: show the rest"))))
+
 (cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."
   (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
@@ -2442,17 +2641,26 @@ draws no overline, so there the split is the order alone."
           (if (null buffers)
               (insert (propertize "  No agent-shell sessions\n"
                                   'face 'agent-shell-vertico-sidebar-detail))
-            (if agent-shell-vertico-sidebar-group-by
-                (dolist (group
-                         (agent-shell-vertico-sidebar--sort-groups
-                          (agent-shell-vertico-sidebar--group-buffers roots)
-                          agent-shell-vertico-sidebar-sort-by))
-                  (agent-shell-vertico-sidebar--insert-project
-                   (car group) (cdr group) width))
-              (agent-shell-vertico-sidebar--insert-sessions
-               (agent-shell-vertico-sidebar--sort-buffers
-                roots agent-shell-vertico-sidebar-sort-by)
-               width nil 0)))
+            (pcase agent-shell-vertico-sidebar-group-by
+              ('state
+               (pcase-dolist (`(,section . ,members)
+                              (agent-shell-vertico-sidebar--group-by-section
+                               (agent-shell-vertico-sidebar--sort-buffers
+                                roots agent-shell-vertico-sidebar-sort-by)))
+                 (agent-shell-vertico-sidebar--insert-section
+                  section members width)))
+              ('project
+               (dolist (group
+                        (agent-shell-vertico-sidebar--sort-groups
+                         (agent-shell-vertico-sidebar--group-buffers roots)
+                         agent-shell-vertico-sidebar-sort-by))
+                 (agent-shell-vertico-sidebar--insert-project
+                  (car group) (cdr group) width)))
+              (_
+               (agent-shell-vertico-sidebar--insert-sessions
+                (agent-shell-vertico-sidebar--sort-buffers
+                 roots agent-shell-vertico-sidebar-sort-by)
+                width nil 0))))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -3492,15 +3700,50 @@ line, so the row point is in is never skipped."
              agent-shell-vertico-sidebar--expanded-projects)
     (agent-shell-vertico-sidebar--render)))
 
-(defun agent-shell-vertico-sidebar-open ()
-  "Open the session or toggle the project at point."
+(defun agent-shell-vertico-sidebar-toggle-section ()
+  "Toggle the state section fold at point."
   (interactive)
-  (if (agent-shell-vertico-sidebar--project-at-point)
-      (agent-shell-vertico-sidebar-toggle-project)
-    (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
-      (agent-shell-vertico-sidebar--mark-seen buffer)
-      (agent-shell-vertico--display-session (buffer-name buffer))
-      (agent-shell-vertico-sidebar-refresh))))
+  (unless (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section)
+    (user-error "Point is not on a section header"))
+  (let ((section (agent-shell-vertico-sidebar--node-at-point)))
+    (agent-shell-vertico-sidebar--set-section-folded
+     section (not (agent-shell-vertico-sidebar--section-folded-p section)))
+    (agent-shell-vertico-sidebar--render)))
+
+(defun agent-shell-vertico-sidebar-show-more ()
+  "Show the rest of the state section whose \"more\" row is at point.
+Folding the section puts the limit back."
+  (interactive)
+  (unless (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'more)
+    (user-error "Point is not on a \"more\" row"))
+  (let ((section (agent-shell-vertico-sidebar--node-at-point)))
+    (cl-pushnew section agent-shell-vertico-sidebar--open-tails)
+    (let ((first-hidden
+           (save-excursion
+             (forward-line -1)
+             (agent-shell-vertico-sidebar--node-at-point))))
+      (agent-shell-vertico-sidebar--render)
+      ;; The first newly shown row takes the place of the row that was
+      ;; read, so point stays where the reader was looking.
+      (when-let* ((next (cl-loop for (buffer . position)
+                                 in (agent-shell-vertico-sidebar--session-rows)
+                                 with seen = nil
+                                 if seen return position
+                                 if (eq buffer first-hidden) do (setq seen t))))
+        (goto-char (agent-shell-vertico-sidebar--row-point next))))))
+
+(defun agent-shell-vertico-sidebar-open ()
+  "Open the session, or toggle the project or section, at point."
+  (interactive)
+  (pcase (agent-shell-vertico-sidebar--node-kind-at-point)
+    ('project (agent-shell-vertico-sidebar-toggle-project))
+    ('section (agent-shell-vertico-sidebar-toggle-section))
+    ('more (agent-shell-vertico-sidebar-show-more))
+    (_
+     (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
+       (agent-shell-vertico-sidebar--mark-seen buffer)
+       (agent-shell-vertico--display-session (buffer-name buffer))
+       (agent-shell-vertico-sidebar-refresh)))))
 
 (defun agent-shell-vertico-sidebar-open-other-window ()
   "Open the session at point in another window."
@@ -3634,10 +3877,13 @@ configuration, so it runs alongside it rather than replacing it."
     (agent-shell-vertico-sidebar-refresh)))
 
 (defun agent-shell-vertico-sidebar-toggle-grouping ()
-  "Toggle between project-grouped and flat session views."
+  "Cycle the sidebar through the flat, project and state views."
   (interactive)
   (setq agent-shell-vertico-sidebar-group-by
-        (unless agent-shell-vertico-sidebar-group-by 'project))
+        (pcase agent-shell-vertico-sidebar-group-by
+          ('nil 'project)
+          ('project 'state)
+          (_ nil)))
   (agent-shell-vertico-sidebar-refresh))
 
 (defun agent-shell-vertico-sidebar-toggle-details ()
@@ -3652,26 +3898,47 @@ default."
     (clrhash agent-shell-vertico-sidebar--expanded-sessions))
   (agent-shell-vertico-sidebar-refresh))
 
+(defun agent-shell-vertico-sidebar--any-section-unfolded-p ()
+  "Return non-nil when any state section holding a session shows it."
+  (seq-some (lambda (buffer)
+              (not (agent-shell-vertico-sidebar--section-folded-p
+                    (agent-shell-vertico-sidebar--section buffer))))
+            (seq-remove #'agent-shell-vertico-sidebar--parent-of
+                        (seq-filter #'buffer-live-p (agent-shell-buffers)))))
+
 (defun agent-shell-vertico-sidebar--view-level ()
   "Return the fold level the whole sidebar currently shows.
 
-`projects' shows project headers only, `sessions' adds their session rows,
-and `details' adds each session's metadata lines.  A flat list has no
-project level, so it never returns `projects'."
+`projects' shows project or section headers only, `sessions' adds their
+session rows, and `details' adds each session's metadata lines.  A flat
+list has no header level, so it never returns `projects'."
   (cond
-   ((and agent-shell-vertico-sidebar-group-by
-         (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
+   ((pcase agent-shell-vertico-sidebar-group-by
+      ('project (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
+      ('state (not (agent-shell-vertico-sidebar--any-section-unfolded-p))))
     'projects)
    ((agent-shell-vertico-sidebar--any-session-details-visible-p) 'details)
    (t 'sessions)))
 
 (defun agent-shell-vertico-sidebar--set-view-level (level)
-  "Show every row at fold LEVEL, discarding per-row fold overrides."
-  (when agent-shell-vertico-sidebar-group-by
-    (setq agent-shell-vertico-sidebar-expand-by-default
-          (not (eq level 'projects)))
-    (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
-      (clrhash agent-shell-vertico-sidebar--expanded-projects)))
+  "Show every row at fold LEVEL, discarding per-row fold overrides.
+
+In the state view the header level folds every section; the other
+levels put back each section's default fold and row limit."
+  (pcase agent-shell-vertico-sidebar-group-by
+    ('project
+     (setq agent-shell-vertico-sidebar-expand-by-default
+           (not (eq level 'projects)))
+     (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
+       (clrhash agent-shell-vertico-sidebar--expanded-projects)))
+    ('state
+     (when (hash-table-p agent-shell-vertico-sidebar--section-folds)
+       (clrhash agent-shell-vertico-sidebar--section-folds))
+     (setq agent-shell-vertico-sidebar--open-tails nil)
+     (when (eq level 'projects)
+       (dolist (section agent-shell-vertico-sidebar--sections)
+         (agent-shell-vertico-sidebar--set-section-folded
+          (car section) t)))))
   (setq agent-shell-vertico-sidebar-show-details (eq level 'details))
   (when (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)
     (clrhash agent-shell-vertico-sidebar--expanded-sessions)))
@@ -3679,8 +3946,9 @@ project level, so it never returns `projects'."
 (defun agent-shell-vertico-sidebar-cycle-global-view ()
   "Cycle the whole sidebar to its next fold level.
 
-With project grouping the levels are project headers alone, then their
-session rows, then each session's metadata lines, then back to the headers.
+With project or state grouping the levels are the headers alone, then
+their session rows, then each session's metadata lines, then back to the
+headers.
 A flat list has no project level, so it alternates between hiding and
 showing the metadata lines.
 
@@ -3695,6 +3963,9 @@ the whole command runs there however it was called."
                    (or (get-buffer "*Agent Shell Sessions*")
                        (user-error "The agent-shell sidebar is not open")))))
     (with-current-buffer sidebar
+      ;; Refuse a foreign buffer before the fold settings change.
+      (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+        (user-error "The named sidebar buffer is not an agent-shell sidebar"))
       (agent-shell-vertico-sidebar--set-view-level
        (pcase (agent-shell-vertico-sidebar--view-level)
          ('projects 'sessions)
@@ -3716,10 +3987,12 @@ the whole command runs there however it was called."
     (agent-shell-vertico-sidebar--render)))
 
 (defun agent-shell-vertico-sidebar-toggle-at-point ()
-  "Toggle the project or session detail at point."
+  "Toggle the project, section or session detail at point."
   (interactive)
   (pcase (agent-shell-vertico-sidebar--node-kind-at-point)
     ('project (agent-shell-vertico-sidebar-toggle-project))
+    ('section (agent-shell-vertico-sidebar-toggle-section))
+    ('more (agent-shell-vertico-sidebar-show-more))
     ('session (agent-shell-vertico-sidebar-toggle-session-details))
     (_ (user-error "Point is not on a project or session row"))))
 
@@ -4010,6 +4283,8 @@ while normal and motion states get the same direct mnemonic commands."
               agent-shell-vertico-sidebar--last-rendered-width nil)
   (setq-local agent-shell-vertico-sidebar--expanded-projects
               (make-hash-table :test #'equal))
+  (setq-local agent-shell-vertico-sidebar--section-folds
+              (make-hash-table :test #'eq))
   (setq-local agent-shell-vertico-sidebar--expanded-sessions
               (make-hash-table :test #'eq))
   (add-hook 'pre-redisplay-functions
@@ -4371,22 +4646,31 @@ With OTHER-WINDOW, display the session in another window."
   "Return every live session in the order the sidebar draws its rows.
 
 This is the walk `--render' makes, without drawing: the sessions with no
-live parent, grouped by project when `agent-shell-vertico-sidebar-group-by'
-says so, each followed depth-first by its children.  A folded project
-still lists its sessions, because nothing is drawn for the reader to
-look at and a step should not depend on how the sidebar was left."
+live parent, grouped by state section or project when
+`agent-shell-vertico-sidebar-group-by' says so, each followed depth-first
+by its children.  A folded project or section, and the Idle rows past
+its limit, still list their sessions, because nothing is drawn for the
+reader to look at and a step should not depend on how the sidebar was
+left."
   (let* ((sort-by agent-shell-vertico-sidebar-sort-by)
          (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers)))
     (named-let walk ((buffers
-                      (if agent-shell-vertico-sidebar-group-by
-                          (seq-mapcat
-                           #'cdr
-                           (agent-shell-vertico-sidebar--sort-groups
-                            (agent-shell-vertico-sidebar--group-buffers roots)
-                            sort-by))
-                        (agent-shell-vertico-sidebar--sort-buffers
-                         roots sort-by))))
+                      (pcase agent-shell-vertico-sidebar-group-by
+                        ('state
+                         (seq-mapcat
+                          #'cdr
+                          (agent-shell-vertico-sidebar--group-by-section
+                           (agent-shell-vertico-sidebar--sort-buffers
+                            roots sort-by))))
+                        ('project
+                         (seq-mapcat
+                          #'cdr
+                          (agent-shell-vertico-sidebar--sort-groups
+                           (agent-shell-vertico-sidebar--group-buffers roots)
+                           sort-by)))
+                        (_ (agent-shell-vertico-sidebar--sort-buffers
+                            roots sort-by)))))
       (seq-mapcat (lambda (buffer)
                     (cons buffer
                           (walk (agent-shell-vertico-sidebar--sort-buffers
@@ -4812,21 +5096,30 @@ recently before it instead, leaving the sidebar open."
           (agent-shell-vertico-sidebar--reveal-session session))))))
 
 (defun agent-shell-vertico-sidebar--reveal-session (session)
-  "Move point to SESSION's row, unfolding its project group if needed.
+  "Move point to SESSION's row, unfolding its group if needed.
 
 A child is drawn under its topmost live ancestor, whatever its own
-directory, so the group to unfold is that ancestor's."
+directory or state, so the group to unfold is that ancestor's.  In the
+state view that means its section and the rows past the section's
+limit."
   (let ((node (cons 'session session)))
     (unless (agent-shell-vertico-sidebar--goto-node node)
-      (when (and agent-shell-vertico-sidebar-group-by
-                 (hash-table-p agent-shell-vertico-sidebar--expanded-projects))
-        (let ((top session))
-          (while-let ((parent (agent-shell-vertico-sidebar--parent-of top)))
-            (setq top parent))
-          (puthash (agent-shell-vertico-sidebar--project-root top) t
-                   agent-shell-vertico-sidebar--expanded-projects)
-          (agent-shell-vertico-sidebar--render)
-          (agent-shell-vertico-sidebar--goto-node node))))))
+      (let ((top session))
+        (while-let ((parent (agent-shell-vertico-sidebar--parent-of top)))
+          (setq top parent))
+        (pcase agent-shell-vertico-sidebar-group-by
+          ('project
+           (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
+             (puthash (agent-shell-vertico-sidebar--project-root top) t
+                      agent-shell-vertico-sidebar--expanded-projects)
+             (agent-shell-vertico-sidebar--render)
+             (agent-shell-vertico-sidebar--goto-node node)))
+          ('state
+           (let ((section (agent-shell-vertico-sidebar--section top)))
+             (agent-shell-vertico-sidebar--set-section-folded section nil)
+             (cl-pushnew section agent-shell-vertico-sidebar--open-tails)
+             (agent-shell-vertico-sidebar--render)
+             (agent-shell-vertico-sidebar--goto-node node))))))))
 
 (defun agent-shell-vertico-sidebar--window-configuration-change ()
   "Repair visible sidebar display settings and stop timers when hidden.

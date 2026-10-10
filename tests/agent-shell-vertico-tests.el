@@ -190,6 +190,10 @@ Each element in BINDINGS is of the form:
                     ((symbol-value
                       'agent-shell-vertico-sidebar--nerd-icons-available)
                      'unknown)
+                    ;; Tests that render name their view; the rest were
+                    ;; written against the flat list.
+                    ((symbol-value 'agent-shell-vertico-sidebar-group-by)
+                     nil)
                     ((symbol-value 'agent-shell-mode-hook) nil))
            (let ,(mapcar
                   (lambda (binding)
@@ -515,9 +519,6 @@ a session outside its own family."
         (should (equal (mapcar #'car groups)
                        '("/work/urgent/" "/work/quiet/")))
         (should (eq (cadr (car groups)) urgent-blocked))))))
-
-(ert-deftest agent-shell-vertico-sidebar-defaults-to-flat ()
-  (should-not (default-value 'agent-shell-vertico-sidebar-group-by)))
 
 (ert-deftest agent-shell-vertico-sidebar-default-width-is-roomy ()
   (should (= (default-value 'agent-shell-vertico-sidebar-width) 40)))
@@ -1878,8 +1879,12 @@ sidebar buffer rather than whatever buffer the user called it from."
             (fundamental-mode)
             (insert "draft content"))
           (with-current-buffer other
-            (should-error (agent-shell-vertico-sidebar-cycle-global-view)
-                          :type 'user-error)
+            (let ((agent-shell-vertico-sidebar-show-details nil)
+                  (agent-shell-vertico-sidebar-group-by nil))
+              (should-error (agent-shell-vertico-sidebar-cycle-global-view)
+                            :type 'user-error)
+              ;; Refused before it changed anything.
+              (should-not agent-shell-vertico-sidebar-show-details))
             (should-error (agent-shell-vertico-sidebar-toggle)
                           :type 'user-error))
           (with-current-buffer collision
@@ -3703,6 +3708,177 @@ session that finished a turn is."
                     (:native-subagents . (("s1" . ((:id . "s1"))))))))
     (should (equal (agent-shell-vertico-sidebar--job-state alpha)
                    '(working idle nil)))))
+
+;;; State view
+
+(ert-deftest agent-shell-vertico-sidebar-band-follows-claude-code ()
+  "A session's band is Claude Code's bucket, and unread does not move it."
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state working :tempo active :snoozed 1.0))
+              'working))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state done :tempo idle :snoozed 1.0))
+              'snoozed))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state done :tempo blocked :needs "Allow: Edit"))
+              'attention))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state working :tempo idle :in-flight t))
+              'working))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state done :tempo idle :unread 5.0))
+              'idle))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state working :tempo idle :needs "Send a prompt to start"))
+              'idle))
+  (should (eq (agent-shell-vertico-sidebar--band-for
+               '(:state failed :tempo idle))
+              'idle))
+  (should (eq (agent-shell-vertico-sidebar--section-for '(:band attention))
+              'attention)))
+
+(defmacro agent-shell-vertico-tests--with-state-view (&rest body)
+  "Evaluate BODY in a sidebar showing the state view of seven sessions.
+
+WAITING is blocked, WORKING busy, SNOOZED a snoozed idle session, and
+IDLE-1 to IDLE-5 idle sessions named so the name sort keeps them in
+that order."
+  (declare (indent 0) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((waiting "Codex Agent @ waiting" "/work/a/"
+                 '((:session . ((:id . "w") (:title . "Waiting")))))
+        (working "Codex Agent @ working" "/work/a/"
+                 '((:session . ((:id . "k") (:title . "Working")))))
+        (snoozed "Codex Agent @ snoozed" "/work/a/"
+                 '((:session . ((:id . "s") (:title . "Snoozed one")))))
+        (idle-1 "Codex Agent @ idle-1" "/work/a/"
+                '((:session . ((:id . "i1") (:title . "Idle 1")))))
+        (idle-2 "Codex Agent @ idle-2" "/work/a/"
+                '((:session . ((:id . "i2") (:title . "Idle 2")))))
+        (idle-3 "Codex Agent @ idle-3" "/work/a/"
+                '((:session . ((:id . "i3") (:title . "Idle 3")))))
+        (idle-4 "Codex Agent @ idle-4" "/work/a/"
+                '((:session . ((:id . "i4") (:title . "Idle 4")))))
+        (idle-5 "Codex Agent @ idle-5" "/work/a/"
+                '((:session . ((:id . "i5") (:title . "Idle 5"))))))
+     (let ((agent-shell-test-buffers
+            (list idle-5 snoozed idle-1 working idle-3 waiting idle-2 idle-4))
+           (agent-shell-test-statuses
+            (list (cons waiting 'blocked) (cons working 'busy)))
+           (agent-shell-vertico-sidebar-group-by 'state)
+           (agent-shell-vertico-sidebar-sort-by 'name)
+           (agent-shell-vertico-sidebar-idle-rows 3)
+           (agent-shell-vertico-sidebar-folded-sections '(snoozed)))
+       (agent-shell-vertico-sidebar--set snoozed 'snoozed 100.0)
+       (with-temp-buffer
+         (agent-shell-vertico-sidebar-mode)
+         (agent-shell-vertico-sidebar--render)
+         ,@body))))
+
+(defun agent-shell-vertico-tests--lines ()
+  "Return the current buffer's lines, without text properties."
+  (split-string (buffer-substring-no-properties (point-min) (point-max))
+                "\n"))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-draws-sections ()
+  "Sessions sit under one header for each band, in Claude Code's order.
+
+An open section header shows no count, because the rows below it are
+the count; the folded Snoozed header shows how many it holds, and its
+row is not drawn.  The Idle section stops after three rows and says
+how many more it holds."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((lines (agent-shell-vertico-tests--lines)))
+      (should (equal (seq-filter
+                      (lambda (line) (string-match-p "\\`[▼▶] " line))
+                      lines)
+                     (list "▼ Needs you" "▼ Working" "▼ Idle"
+                           (car (seq-filter
+                                 (lambda (line)
+                                   (string-prefix-p "▶ Snoozed" line))
+                                 lines)))))
+      (should (seq-some (lambda (line)
+                          (string-match-p "\\`▶ Snoozed +1\\'" line))
+                        lines))
+      (should (member "… 2 more" lines)))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list waiting working idle-1 idle-2 idle-3)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-more-row-expands ()
+  "RET on the more row shows the rest of the Idle section."
+  (agent-shell-vertico-tests--with-state-view
+    (goto-char (point-min))
+    (search-forward "… 2 more")
+    (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'more))
+    (agent-shell-vertico-sidebar-open)
+    (should-not (member "… 2 more" (agent-shell-vertico-tests--lines)))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list waiting working idle-1 idle-2 idle-3 idle-4
+                         idle-5)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-folds-a-section ()
+  "TAB on a section header folds it, and the folded header counts its rows."
+  (agent-shell-vertico-tests--with-state-view
+    (goto-char (point-min))
+    (search-forward "▼ Idle")
+    (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
+    (agent-shell-vertico-sidebar-toggle-at-point)
+    (should (seq-some (lambda (line) (string-match-p "\\`▶ Idle +5\\'" line))
+                      (agent-shell-vertico-tests--lines)))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list waiting working)))
+    (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
+    (agent-shell-vertico-sidebar-open)
+    (should (member "… 2 more" (agent-shell-vertico-tests--lines)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-display-order ()
+  "Steps walk the sections in order, folded rows included."
+  (agent-shell-vertico-tests--with-state-view
+    (should (equal (agent-shell-vertico-sidebar--display-order)
+                   (list waiting working idle-1 idle-2 idle-3 idle-4 idle-5
+                         snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-reveals-a-folded-row ()
+  "Revealing a session opens its section and the rest of Idle."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--reveal-session idle-5)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) idle-5))
+    (agent-shell-vertico-sidebar--reveal-session snoozed)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-cycles-fold-levels ()
+  "S-TAB folds every section, then shows rows, then details."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((agent-shell-vertico-sidebar-show-details nil))
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+      (agent-shell-vertico-sidebar-cycle-global-view)
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+      (agent-shell-vertico-sidebar-cycle-global-view)
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+      (should-not (agent-shell-vertico-sidebar--session-rows))
+      (agent-shell-vertico-sidebar-cycle-global-view)
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+      (should (agent-shell-vertico-sidebar--session-rows)))))
+
+(ert-deftest agent-shell-vertico-sidebar-grouping-cycles-three-views ()
+  "The grouping toggle cycles flat, project and state views."
+  (let ((agent-shell-vertico-sidebar-group-by nil))
+    (cl-letf (((symbol-function 'agent-shell-vertico-sidebar-refresh)
+               #'ignore))
+      (agent-shell-vertico-sidebar-toggle-grouping)
+      (should (eq agent-shell-vertico-sidebar-group-by 'project))
+      (agent-shell-vertico-sidebar-toggle-grouping)
+      (should (eq agent-shell-vertico-sidebar-group-by 'state))
+      (agent-shell-vertico-sidebar-toggle-grouping)
+      (should-not agent-shell-vertico-sidebar-group-by))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-view-is-the-default ()
+  "The sidebar opens in the state view."
+  (should (eq (eval (car (get 'agent-shell-vertico-sidebar-group-by
+                              'standard-value))
+                    t)
+              'state)))
+
 
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
@@ -14268,7 +14444,8 @@ visited before GAMMA; snoozed, neither is visited at all."
 (defun agent-shell-vertico-tests--snooze-separator-p (text)
   "Return non-nil when the row line holding TEXT carries the snooze rule.
 Both the line's first character and the newline ending it are checked,
-because the rule reaches the window edge only from the newline."
+because the rule reaches the window edge only from the newline.  The
+last line has no newline, since the render drops the final one."
   (goto-char (point-min))
   (search-forward text)
   (let ((rule-p (lambda (position)
@@ -14281,7 +14458,8 @@ because the rule reaches the window edge only from the newline."
                                   (list face)
                                 (ensure-list face)))))))
     (and (funcall rule-p (line-beginning-position))
-         (funcall rule-p (line-end-position)))))
+         (or (= (line-end-position) (point-max))
+             (funcall rule-p (line-end-position))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-rule-tops-the-snoozed ()
   "A rule is drawn over the first snoozed row, and over nothing else."
