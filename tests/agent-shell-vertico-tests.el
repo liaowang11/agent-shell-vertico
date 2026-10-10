@@ -4010,6 +4010,30 @@ header's row is not drawn.  An open section shows every row it holds."
         (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
         (should-not (agent-shell-vertico-sidebar--session-rows))))))
 
+(ert-deftest agent-shell-vertico-sidebar-project-view-cycles-three-levels ()
+  "S-TAB steps an open project view through rows, details and headers."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t)
+          (agent-shell-vertico-sidebar-show-details nil))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+        (should-not (agent-shell-vertico-sidebar--session-rows))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list alpha)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-project-view-cycles-folded-pinned ()
   "S-TAB shows pinned rows at the session level even when Pinned starts
 folded, and folds them with the projects at the header level."
