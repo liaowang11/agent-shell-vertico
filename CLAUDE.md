@@ -413,13 +413,12 @@ sidebar: `header-line-format` stays nil, and every section and project
 header counts for itself instead. `--header-counts` writes what follows the
 label, `Completed · 5 · • 2`: the rows drawn under the header, each root
 with its live descendants, then, only when some hold unread output
-(`--unread-p`), a `•` and how many. The dot is drawn as a row's is,
-`agent-shell-vertico-sidebar-unread-dot` over the section's band face from
-`--band-faces`; Pinned and projects are no band, so theirs takes the
-header's colour. `--insert-node-line` and `--insert-project` append the
-header face, so those per-span colours win. A project header reads
-`NAME · N · • U` and keeps `--project-summary`'s `✻ A` at its right edge;
-`--project-header-line` keeps both counts whole and shortens the name. `A`
+(`--unread-p`), a `•` and how many. The dot is drawn as a row's is, in
+`agent-shell-vertico-sidebar-unread-dot`. `--insert-node-line` and
+`--insert-project` append the header face, so the dot's colour wins. A
+project header reads `NAME · N · • U` and keeps `--project-summary`'s `✻ A`
+at its right edge; `--project-header-line` keeps both counts whole and
+shortens the name. `A`
 counts by `--waits-p` across each root's family: the attention band less the
 sessions nobody has prompted. The three counts differ on purpose: a header's
 `N` counts every row drawn under it, the Needs input tooltip names every
@@ -816,10 +815,13 @@ a failed turn, green (`-ready`) for a finished one, and grey (`-detail`)
 otherwise, which is a stopped turn. Purple
 because grey was taken: `-snoozed` inherits `link-visited` for its colour
 alone, and the row's title recedes into `-snoozed-title` (`shadow`) so the
-rows still asking stand out. Unread is not a colour: it is a bold title
-(`-unread-title`) and a `•` before the age (`--title-suffix`, face
-`-unread-dot` over the mark's face), so it reads the same in a terminal, and a
-snoozed session holding unread output is both purple and bold. The dot exists
+rows still asking stand out. Unread is not a mark colour: it is a bold title
+(`-unread-title`) and a `•` before the age (`--title-suffix`), so a snoozed
+session holding unread output is both purple and bold. The dot has a colour
+of its own, magenta (`-unread-dot` inherits `ansi-color-bright-magenta`, as
+`-working` inherits the blue, with the background the ansi face would paint
+taken away), because no mark is drawn in it: a dot in the mark's colour was
+lost beside a green star. The dot exists
 because the `priority` sort still lists unread sessions first, so a section or
 project puts a green finished row far above another one; a bold title alone
 did not say why. Every mark is a plain

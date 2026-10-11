@@ -609,9 +609,10 @@ asking for input."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-unread-dot
-  '((t :inherit bold))
+  '((t :inherit (bold ansi-color-bright-magenta)
+       :background "unspecified-bg"))
   "Face for the dot on the title line of a session holding unread output.
-Its colour comes from the session's mark, unless this face sets one."
+Magenta, because no session's mark is drawn in it."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-snoozed
@@ -991,14 +992,6 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
 
 The labels are Claude Code's.  The symbols are the bands `--band-for'
 answers, so the Completed section is the `idle' band.")
-
-(defconst agent-shell-vertico-sidebar--band-faces
-  '((attention . agent-shell-vertico-sidebar-blocked)
-    (working . agent-shell-vertico-sidebar-working)
-    (idle . agent-shell-vertico-sidebar-ready)
-    (snoozed . agent-shell-vertico-sidebar-snoozed))
-  "The face a section's unread dot is drawn in, by the section's band.
-Pinned has none: it is no band, so its dot takes the header's colour.")
 
 (defun agent-shell-vertico-sidebar--band-for (snapshot)
   "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
@@ -2095,14 +2088,12 @@ property; nothing else reads it."
 (defun agent-shell-vertico-sidebar--title-suffix (buffer snapshot)
   "Return what ends BUFFER's title line: an unread dot and the age.
 
-The dot is drawn in the mark's colour.  Unread output does not change a
+The dot has a colour of its own.  Unread output does not change a
 session's colour or band, so without it an unread finished row looks
 like a read one, though the `priority' sort lists it far above."
   (let ((dot (and (agent-shell-vertico-sidebar--unread-p buffer)
                   (propertize
-                   "•" 'face
-                   (list 'agent-shell-vertico-sidebar-unread-dot
-                         (agent-shell-vertico-sidebar--mark-face snapshot)))))
+                   "•" 'face 'agent-shell-vertico-sidebar-unread-dot)))
         (age (agent-shell-vertico-sidebar--age-text snapshot)))
     (and (or dot age)
          (string-join (delq nil (list dot age)) " "))))
@@ -2424,22 +2415,19 @@ remaining columns is the part that gets shortened."
                        ?\s)
                       summary)))))
 
-(defun agent-shell-vertico-sidebar--header-counts (buffers &optional face)
+(defun agent-shell-vertico-sidebar--header-counts (buffers)
   "Return the counts that follow a header's label, for the roots BUFFERS.
 
 \" · N\" counts the rows drawn under the header, each root with its
 live descendants, open or folded.  \" · • U\" follows when U of them
-hold output nobody has read, the dot drawn as a row's is, over FACE."
+hold output nobody has read, the dot drawn as a row's is."
   (let* ((family (seq-mapcat #'agent-shell-vertico-sidebar--family buffers))
          (unread (seq-count #'agent-shell-vertico-sidebar--unread-p family)))
     (concat " · " (number-to-string (length family))
             (when (> unread 0)
               (concat " · "
                       (propertize
-                       "•" 'face
-                       (if face
-                           (list 'agent-shell-vertico-sidebar-unread-dot face)
-                         'agent-shell-vertico-sidebar-unread-dot))
+                       "•" 'face 'agent-shell-vertico-sidebar-unread-dot)
                       " " (number-to-string unread))))))
 
 (defun agent-shell-vertico-sidebar--insert-session-and-children
@@ -2611,9 +2599,7 @@ every session it holds."
                  (if folded 'collapsed 'expanded))
                 (alist-get section agent-shell-vertico-sidebar--sections)
                 nil width
-                (agent-shell-vertico-sidebar--header-counts
-                 buffers
-                 (alist-get section agent-shell-vertico-sidebar--band-faces))))
+                (agent-shell-vertico-sidebar--header-counts buffers)))
          (start (agent-shell-vertico-sidebar--insert-node-line
                  (agent-shell-vertico-sidebar--fit line width)
                  'section section 'agent-shell-vertico-sidebar-section)))

@@ -1025,7 +1025,7 @@ a row's dot, in the section's colour."
         (let ((faces (ensure-list
                       (agent-shell-vertico-tests--property-at "•" 'face))))
           (should (memq 'agent-shell-vertico-sidebar-unread-dot faces))
-          (should (memq 'agent-shell-vertico-sidebar-ready faces)))))))
+          (should-not (memq 'agent-shell-vertico-sidebar-ready faces)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mode-line-counts-who-needs-you ()
   "The mode line says how many sessions need the reader, and only then."
@@ -4504,7 +4504,7 @@ is a still disc, so a working mark still differs in shape."
                            (get-text-property (1- (point)) 'face))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-unread-row-has-a-dot ()
-  "An unread row ends in a dot before its age, in the mark's colour."
+  "An unread row ends in a magenta dot before its age, whatever its mark."
   (agent-shell-vertico-tests--with-alpha
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-group-by 'state))
@@ -4517,8 +4517,10 @@ is a still disc, so a working mark still differs in shape."
         (agent-shell-vertico-tests--goto-first-row)
         (search-forward "•")
         (let ((face (ensure-list (get-text-property (1- (point)) 'face))))
-          (should (memq 'agent-shell-vertico-sidebar-unread-dot face))
-          (should (memq 'agent-shell-vertico-sidebar-ready face)))
+          (should (equal face '(agent-shell-vertico-sidebar-unread-dot)))
+          (should (equal (face-foreground
+                          'agent-shell-vertico-sidebar-unread-dot nil t)
+                         (face-foreground 'ansi-color-bright-magenta nil t))))
         (agent-shell-vertico-sidebar--mark-seen alpha)
         (agent-shell-vertico-sidebar--render)
         (should-not (string-match-p
@@ -15481,10 +15483,11 @@ The output is still recorded, and nobody is told about it."
           (agent-shell-vertico-sidebar--render)
           (should (equal (agent-shell-vertico-tests--section-headers)
                          '("▼ Completed · 1" "▶ Snoozed · 2 · • 1")))
-          (should (memq 'agent-shell-vertico-sidebar-snoozed
-                        (ensure-list
-                         (agent-shell-vertico-tests--property-at
-                          "•" 'face)))))))))
+          (let ((faces (ensure-list
+                        (agent-shell-vertico-tests--property-at "•" 'face))))
+            (should (memq 'agent-shell-vertico-sidebar-unread-dot faces))
+            (should-not (memq 'agent-shell-vertico-sidebar-snoozed
+                              faces))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-dims-the-title ()
   "A snoozed row's title is drawn dim; its mark keeps the snoozed colour."
