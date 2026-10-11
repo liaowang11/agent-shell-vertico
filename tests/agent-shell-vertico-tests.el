@@ -12498,6 +12498,24 @@ the two orders disagree and only the drawn one is right."
       (agent-shell-vertico-sidebar-jump-to-index 1)
       (should (eq agent-shell-test-displayed-buffer busy)))))
 
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-follows-the-projects ()
+  "In the project view, index 1 is the first project's first session.
+
+Sorted by name, beta's session leads the flat sort, but the project
+view draws the alpha project first, so its session is number 1."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((zeta "Codex Agent @ zeta" "/work/alpha/"
+             '((:session . ((:id . "z") (:title . "Zeta")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list zeta beta))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (agent-shell-vertico-sidebar-jump-to-index 1)
+      (should (eq agent-shell-test-displayed-buffer zeta))
+      (agent-shell-vertico-sidebar-jump-to-index 2)
+      (should (eq agent-shell-test-displayed-buffer beta)))))
+
 (ert-deftest agent-shell-vertico-sidebar-jump-to-index-needs-no-sidebar ()
   "The blind jump reaches every session, shown or not, and opens nothing."
   (agent-shell-vertico-tests--with-session-buffers

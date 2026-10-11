@@ -721,10 +721,9 @@ top or bottom row. The order is `--display-order`, the walk `--render`
 makes without drawing it: the roots, grouped by state section or by project
 as `agent-shell-vertico-sidebar-group-by` says, each followed depth-first
 by its children, the same order `-jump-to-index` counts in. A folded
-section or project still lists its
-sessions, because nothing is drawn. The order is asked again on every step
-rather than kept for a run of presses, so under `priority` the session just read
-may have moved by the next step. That was the user's call, the same trade
+section or project still lists its sessions, because nothing is drawn. The
+order is asked again on every step rather than kept for a run of presses, so
+under `priority` the session just read may have moved by the next step. That was the user's call, the same trade
 the index jump makes.
 
 **Retracing the jumps.** The jump history lives in the core module, not

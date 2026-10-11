@@ -4872,12 +4872,14 @@ prompt it is drawn above."
 (defun agent-shell-vertico-sidebar-jump-to-index (index &optional other-window)
   "Display the session at INDEX in the order the sidebar lists them.
 
-INDEX counts from 1, so session 1 is the row at the top of the sidebar,
-the one `agent-shell-vertico-sidebar-jump-by-key' gives its first key.
+INDEX counts from 1, so session 1 is the row at the top of the sidebar
+in the view `agent-shell-vertico-sidebar-group-by' names.
 Every live session counts, whether the sidebar is showing it or not,
 because this jump draws nothing for the reader to look at: it is the
 blind jump the `agent-shell-vertico-sidebar-jump-to-1' family is bound
-to, and it opens no sidebar of its own.
+to, and it opens no sidebar of its own.  A folded section or project
+still counts its sessions, so the Snoozed section, folded by default,
+is numbered at the end even when none of its rows is drawn.
 
 The order is `agent-shell-vertico-sidebar--display-order', the rows
 the sidebar draws: its sections or projects, each sorted by
