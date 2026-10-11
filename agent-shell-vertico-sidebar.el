@@ -4879,9 +4879,12 @@ because this jump draws nothing for the reader to look at: it is the
 blind jump the `agent-shell-vertico-sidebar-jump-to-1' family is bound
 to, and it opens no sidebar of its own.
 
-The order is `agent-shell-vertico-sidebar-sort-by', so an index is a
-position and not a name for a session: under `priority' a finished turn
-moves its session up and the same index answers differently.  That is
+The order is `agent-shell-vertico-sidebar--display-order', the rows
+the sidebar draws: its sections or projects, each sorted by
+`agent-shell-vertico-sidebar-sort-by', children under their parent.  So
+an index is a position and not a name for a session: a finished turn
+moves its session to another section and the same index answers
+differently.  That is
 the trade a quick jump makes; press `?' during
 `agent-shell-vertico-sidebar-jump-by-key' to choose from what is on
 screen instead.
@@ -4890,9 +4893,7 @@ With OTHER-WINDOW, display the session in another window."
   (interactive
    (list (or (and current-prefix-arg (prefix-numeric-value current-prefix-arg))
              (read-number "Jump to session #: "))))
-  (let ((buffers (agent-shell-vertico-sidebar--sort-buffers
-                  (seq-filter #'buffer-live-p (agent-shell-buffers))
-                  agent-shell-vertico-sidebar-sort-by)))
+  (let ((buffers (agent-shell-vertico-sidebar--display-order)))
     (unless buffers
       (user-error "No agent-shell sessions"))
     (let ((buffer (and (> index 0) (nth (1- index) buffers))))

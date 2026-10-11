@@ -396,8 +396,9 @@ open no sidebar and count every live session, not only the rows a window
 shows, because there is nothing to look at.  One command per position,
 generated the way Doom generates `+workspace/switch-to-N`, so each is
 bindable without a lambda and reachable through `M-x`.  A position is not
-a name for a session: under `priority` sorting a finished turn moves its
-session up, and jumping to a session reads it, which moves it too.
+a name for a session: a session moves to another section as its state
+changes, and under `priority` sorting jumping to a session reads it, which
+moves it too.
 
 `agent-shell-vertico-sidebar-next-session` and
 `agent-shell-vertico-sidebar-previous-session` step one row down or up

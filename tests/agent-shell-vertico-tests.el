@@ -12476,6 +12476,28 @@ the label is drawn where it belongs."
       (agent-shell-vertico-sidebar-jump-to-index 2)
       (should (eq agent-shell-test-displayed-buffer beta)))))
 
+(ert-deftest agent-shell-vertico-sidebar-jump-to-index-follows-the-sections ()
+  "Index 1 is the top row of the state view, not the flat sort's head.
+
+Under `priority' an unread finished session leads the flat sort, but
+the state view draws it under Completed, below a working session, so
+the two orders disagree and only the drawn one is right."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((done "Codex Agent @ done" "/work/done/"
+             '((:session . ((:id . "d") (:title . "Done")))))
+       (busy "Codex Agent @ busy" "/work/busy/"
+             '((:session . ((:id . "b") (:title . "Busy"))))))
+    (let ((agent-shell-test-buffers (list done busy))
+          (agent-shell-test-statuses (list (cons done 'ready)
+                                           (cons busy 'busy)))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-sort-by 'priority))
+      (agent-shell-vertico-sidebar--set done 'unread 100.0)
+      (should (equal (agent-shell-vertico-sidebar--display-order)
+                     (list busy done)))
+      (agent-shell-vertico-sidebar-jump-to-index 1)
+      (should (eq agent-shell-test-displayed-buffer busy)))))
+
 (ert-deftest agent-shell-vertico-sidebar-jump-to-index-needs-no-sidebar ()
   "The blind jump reaches every session, shown or not, and opens nothing."
   (agent-shell-vertico-tests--with-session-buffers

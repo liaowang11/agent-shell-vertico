@@ -695,18 +695,22 @@ keys to choose one is only what a manual jump needs.
 **Jumping to a session by position.** `--jump-to-index` is the blind jump the
 `agent-shell-vertico-sidebar-jump-to-1' family is bound to, and it answers a
 different question from `-jump-by-key': nothing is drawn, so there is nothing
-to restrict to the rows on screen, and it reads `--sort-buffers' directly
-rather than a rendered sidebar it would have to open. Positions count from 1,
+to restrict to the rows on screen, and it reads `--display-order` rather
+than a rendered sidebar it would have to open. It once read the flat
+`--sort-buffers`, which agreed with the rows only while a flat view
+existed; under the state view an unread finished session led that sort
+while the sidebar drew it under Completed, so `jump-to-1` landed on a row
+further down. Positions count from 1,
 so a command's number is the key a user binds it to, unlike
 `+workspace/switch-to-N' which is 0-based behind 1-based keys. The commands
 are generated with `defalias' over a `dotimes' exactly as that family is,
 because a named command is bindable in a `map!' without a lambda and findable
 through `execute-extended-command'; each closure captures its own index, which
 a test pins by calling three of them. The index is deliberately not a stable
-name for a session: the order is whatever
-`agent-shell-vertico-sidebar-sort-by' says, and under `priority' the act of
-jumping reads the session and moves it out of the attention tier, so the same
-key answers differently next time. That was the user's call, a quick jump
+name for a session: a session moves between sections as its state
+changes, and under `priority' the act of jumping reads the session and
+moves it within its section, so the same key answers differently next
+time. That was the user's call, a quick jump
 rather than an address, and it is why the reading jump exists beside it.
 
 **Stepping along the rows.** `agent-shell-vertico-sidebar-next-session`
@@ -716,8 +720,8 @@ wrapping at both ends; from a buffer that is no session they start at the
 top or bottom row. The order is `--display-order`, the walk `--render`
 makes without drawing it: the roots, grouped by state section or by project
 as `agent-shell-vertico-sidebar-group-by` says, each followed depth-first
-by its children. It is not `-jump-to-index`'s flat sort, which ignores
-both grouping and nesting. A folded section or project still lists its
+by its children, the same order `-jump-to-index` counts in. A folded
+section or project still lists its
 sessions, because nothing is drawn. The order is asked again on every step
 rather than kept for a run of presses, so under `priority` the session just read
 may have moved by the next step. That was the user's call, the same trade
