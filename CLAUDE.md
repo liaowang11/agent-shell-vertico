@@ -365,6 +365,11 @@ since colour and rule already tell the header apart and the sidebar is
 narrow. Each header is a fold in `--section-folds`,
 seeded from `agent-shell-vertico-sidebar-folded-sections`, and an open
 section draws every session it holds: there is no cap and no "more" row.
+A fold lasts only while its header is drawn: every render runs
+`--forget-empty-section-folds`, which drops the fold of a section holding
+no root, because `S-TAB` folds empty sections too and an empty section
+has no header to unfold, so a session arriving in Needs input found it
+folded behind a fold nobody could see.
 The header counts, folded or open, which `--header-counts` says (see the
 header paragraph below). The project view puts a Pinned section above the
 projects (`--split-pinned`), and its projects start open

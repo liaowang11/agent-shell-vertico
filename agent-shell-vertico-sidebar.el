@@ -2619,6 +2619,22 @@ the projects."
           (make-hash-table :test #'eq)))
   (puthash section folded agent-shell-vertico-sidebar--section-folds))
 
+(defun agent-shell-vertico-sidebar--forget-empty-section-folds (roots)
+  "Drop the fold of every state section that holds none of ROOTS.
+
+An empty section draws no header, so a fold recorded for it, by folding
+every section at once or before its last session left, is one the reader
+can neither see nor undo.  Forgetting it puts the section back at its
+default (`agent-shell-vertico-sidebar-folded-sections'), so the next
+session to arrive, one waiting on the reader above all, is not hidden.
+Both views ask, because a section stays empty whichever is drawn."
+  (when (hash-table-p agent-shell-vertico-sidebar--section-folds)
+    (let ((held (mapcar #'agent-shell-vertico-sidebar--family-section roots)))
+      (dolist (section agent-shell-vertico-sidebar--sections)
+        (unless (memq (car section) held)
+          (remhash (car section)
+                   agent-shell-vertico-sidebar--section-folds))))))
+
 (defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
   "Insert LINE as the one-line node NODE of KIND, drawn in FACE.
 The line is ruled off from the rows below it (`--header-rule')."
@@ -2761,6 +2777,7 @@ every session it holds."
                       agent-shell-vertico-sidebar--rendered-current-sessions
                       buffers)))
           (agent-shell-vertico-sidebar--watch-existing buffers nil t)
+          (agent-shell-vertico-sidebar--forget-empty-section-folds roots)
           (erase-buffer)
           (if (null buffers)
               (insert (propertize "  No agent-shell sessions\n"

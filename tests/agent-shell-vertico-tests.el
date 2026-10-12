@@ -4086,6 +4086,39 @@ header's row is not drawn.  An open section shows every row it holds."
                    (list waiting working done-1 done-2 done-3 done-4
                          done-5)))))
 
+(ert-deftest agent-shell-vertico-sidebar-empty-section-forgets-its-fold ()
+  "A fold lasts only while its header is drawn.
+
+Folding every section folds the empty ones too, whose headers are not
+drawn and so cannot be unfolded.  Forgetting the fold of an empty section
+means a session arriving there finds it at its default, open for Needs
+input, rather than hidden behind a fold nobody could see."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((done "Codex Agent @ done" "/work/done/"
+             '((:session . ((:id . "d") (:title . "Done")))))
+       (asking "Codex Agent @ asking" "/work/asking/"
+               '((:session . ((:id . "a") (:title . "Asking"))))))
+    (let ((agent-shell-test-buffers (list done))
+          (agent-shell-test-statuses (list (cons done 'ready)
+                                           (cons asking 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'state))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--set-view-level 'projects)
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-sidebar--set-view-level 'sessions)
+        (agent-shell-vertico-sidebar--set-section-folded 'attention t)
+        (agent-shell-vertico-sidebar--set-section-folded 'snoozed nil)
+        (agent-shell-vertico-sidebar--render)
+        (setq agent-shell-test-buffers (list done asking)
+              agent-shell-test-statuses (list (cons done 'ready)
+                                              (cons asking 'blocked)))
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (agent-shell-vertico-tests--section-headers)
+                       '("Needs input · 1" "Completed · 1")))
+        ;; Snoozed is empty too, so it is back to its default fold.
+        (should (agent-shell-vertico-sidebar--section-folded-p 'snoozed))))))
+
 (ert-deftest agent-shell-vertico-sidebar-state-view-display-order ()
   "Steps walk the sections in order, folded rows included."
   (agent-shell-vertico-tests--with-state-view
