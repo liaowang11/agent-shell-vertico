@@ -1536,6 +1536,7 @@ stays total and deterministic."
     ('project "RET/mouse-1: open project")
     ('model "RET/mouse-1: set model")
     ('mode "RET/mouse-1: set mode")
+    ('subagents "RET/mouse-1: list subagents and tasks")
     (_ "RET/mouse-1: open session")))
 
 (defun agent-shell-vertico-sidebar--field-text (field text &optional help-echo)
@@ -1640,7 +1641,8 @@ A state-view row draws it, since no header above it names the project."
 It is drawn whenever something runs, details shown or not, because the
 mark alone, a blue star that does not spin, cannot say what the session
 is waiting on.  Each kind gets its own icon, so a subagent reads apart
-from a shell at a glance."
+from a shell at a glance.  Activating the line lists them, the
+subagents list `S' opens."
   (when-let* ((work (agent-shell-vertico-sidebar--background-work buffer)))
     (let (parts)
       (pcase-dolist (`(,slot ,count ,noun)
@@ -1654,8 +1656,10 @@ from a shell at a glance."
                             (agent-shell-vertico-sidebar--mark-field icon))
                           (format "%d %s%s" count noun (if (= count 1) "" "s")))
                   parts))))
-      (cons (agent-shell-vertico-sidebar--fit
-             (string-join (nreverse parts) " · ") width)
+      (cons (agent-shell-vertico-sidebar--field-text
+             'subagents
+             (agent-shell-vertico-sidebar--fit
+              (string-join (nreverse parts) " · ") width))
             'agent-shell-vertico-sidebar-detail))))
 
 (defun agent-shell-vertico-sidebar--session-details-expanded-p (buffer)
@@ -3878,6 +3882,7 @@ line, so the row point is in is never skipped."
     ('mode (agent-shell-vertico-sidebar-set-mode))
     ('agent (agent-shell-vertico-sidebar-new-with-agent))
     ('project (agent-shell-vertico-sidebar-open-project))
+    ('subagents (agent-shell-vertico-sidebar-subagents))
     (_ (agent-shell-vertico-sidebar-open))))
 
 (defun agent-shell-vertico-sidebar-activate (&optional event)

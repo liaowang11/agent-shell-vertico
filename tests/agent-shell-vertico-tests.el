@@ -15854,6 +15854,31 @@ burst on an unread mark is otherwise silent."
                     ?S agent-shell-vertico-sidebar-jump-dispatch-alist))
               #'agent-shell-vertico-sidebar--jump-subagents)))
 
+(ert-deftest agent-shell-vertico-sidebar-background-line-opens-the-list ()
+  "Activating the background line lists that session's subagents."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent)
+        (:async-tasks . (("t1" . (:name "npm run dev" :state "running")))))
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--render)
+      (dolist (text '("1 subagent" "1 task"))
+        (setq agent-shell-test-last-command nil
+              agent-shell-test-displayed-buffer nil)
+        (goto-char (point-min))
+        (search-forward text)
+        (should (equal (get-text-property (1- (point)) 'help-echo)
+                       "RET/mouse-1: list subagents and tasks"))
+        (agent-shell-vertico-sidebar-activate)
+        (should (eq agent-shell-test-last-command 'agent-shell-subagents))
+        (should (eq agent-shell-test-last-buffer alpha))
+        (should-not agent-shell-test-displayed-buffer))
+      ;; The title line still opens the session.
+      (goto-char (point-min))
+      (search-forward "Alpha")
+      (agent-shell-vertico-sidebar-activate)
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
 (ert-deftest agent-shell-vertico-sidebar-rename-renames-the-session ()
   "`C' renames the session at point, in that session."
   (agent-shell-vertico-tests--with-background nil

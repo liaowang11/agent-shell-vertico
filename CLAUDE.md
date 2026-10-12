@@ -599,7 +599,9 @@ and tool calls as the root's events with nothing in them saying whose they are.
 than a Working burst, and never becomes the notification's `:last-message`.
 `--background-line` draws `2 subagents · 1 task` under the row whenever
 something runs, details shown or not, with the `subagents` and `tasks` slot
-icons, and `S` runs upstream's `agent-shell-subagents` in the session. In
+icons, and `S` runs upstream's `agent-shell-subagents` in the session, as
+does activating that line (it is the `subagents` field), since a task has no
+buffer to open and the list reaches every subagent's. In
 Claude Code's terms a session in the background is in flight, so `--band-for`
 files it as working, and its star is blue without spinning.
 
