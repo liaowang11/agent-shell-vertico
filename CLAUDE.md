@@ -294,7 +294,9 @@ is doing and not how its last turn ended; `busy` covers an out-of-turn burst;
 and `blocked` covers a permission request from a task that outlived its turn,
 which `agent-shell-status` calls ready because it asks for a turn in flight as
 well (`--permission-pending-p` puts agent-shell's own question rather than
-repeating it, so the two cannot disagree about what is pending). The overlays
+repeating it, so the two cannot disagree about what is pending), and so does
+a pending elicitation form raised outside a turn, which `--form-pending-p`
+asks agent-shell about the same way). The overlays
 only apply to an otherwise idle session, so a live `busy` or `blocked` always
 wins, and the pending decision is asked first among them: a burst streaming
 beside it is work the session does while it waits, not an answer to it.

@@ -870,6 +870,17 @@ pending."
          (error nil))
        t))
 
+(defun agent-shell-vertico-sidebar--form-pending-p (buffer)
+  "Return non-nil when BUFFER is waiting on an elicitation form.
+As `agent-shell-vertico-sidebar--permission-pending-p' is to a permission
+request: `agent-shell-status' calls a pending form blocked only while a
+turn is also in flight, so agent-shell's own question is asked."
+  (and (fboundp 'agent-shell-elicitation--pending-p)
+       (condition-case nil
+           (agent-shell-elicitation--pending-p :shell-buffer buffer)
+         (error nil))
+       t))
+
 (defun agent-shell-vertico-sidebar--parent-of (buffer)
   "Return BUFFER's live parent session, or nil.
 
@@ -935,9 +946,10 @@ agent-shell answers what the session does now, and a live `busy' or
 session is described by what the sidebar knows and agent-shell does
 not, first match first:
 
-- `blocked' while a permission decision waits, which agent-shell calls
-  blocked only while a turn is in flight.  It comes first, because a
-  burst beside it is work the session does while it waits;
+- `blocked' while a permission decision or an elicitation form waits,
+  which agent-shell calls blocked only while a turn is in flight.  It
+  comes first, because a burst beside it is work the session does
+  while it waits;
 - `busy' during an out-of-turn burst, which no turn asked for;
 - `failed' when its last turn failed, until a new turn starts;
 - `starting' while it has no ACP session yet;
@@ -958,7 +970,8 @@ Claude Code's terms."
              (status
               (cond
                ((not (eq live 'ready)) live)
-               ((agent-shell-vertico-sidebar--permission-pending-p buffer)
+               ((or (agent-shell-vertico-sidebar--permission-pending-p buffer)
+                    (agent-shell-vertico-sidebar--form-pending-p buffer))
                 'blocked)
                ((agent-shell-vertico-sidebar--get buffer 'out-of-turn) 'busy)
                ((eq state 'failed) 'failed)

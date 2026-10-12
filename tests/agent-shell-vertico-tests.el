@@ -12020,6 +12020,23 @@ flight, so a background task asking for a decision reads as ready."
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
       (should (agent-shell-vertico-sidebar--needs-attention-p alpha)))))
 
+(ert-deftest agent-shell-vertico-sidebar-out-of-turn-form-is-blocked ()
+  "A form raised with no turn in flight still blocks the session.
+
+`agent-shell-status' calls a pending form blocked only while a turn is
+in flight, as it does a permission request."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:elicitations
+                 . ((7 . ((:id . 7) (:status . pending)
+                          (:message . "Which port?"))))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+      (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                     '(done blocked "Which port?")))
+      (should (agent-shell-vertico-sidebar--needs-attention-p alpha)))))
+
 (ert-deftest agent-shell-vertico-sidebar-burst-does-not-hide-a-permission ()
   "Output streaming beside a pending decision does not answer it.
 

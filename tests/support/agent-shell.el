@@ -195,6 +195,16 @@ TOOL-CALL-ID, answer for that tool call alone."
                     (map-elt (cdr entry) :permission-request-id))
                   (map-elt state :tool-calls))))))
 
+(cl-defun agent-shell-elicitation--pending-p (&key shell-buffer)
+  "Return non-nil if SHELL-BUFFER has an elicitation awaiting an answer.
+Kept in the shape agent-shell's own function has, reading the
+`:elicitations' entries of the session state."
+  (with-current-buffer (or shell-buffer (current-buffer))
+    (seq-some (lambda (entry)
+                (eq (map-elt (cdr entry) :status) 'pending))
+              (map-elt (and (boundp 'agent-shell--state) agent-shell--state)
+                       :elicitations))))
+
 (cl-defun agent-shell-subscribe-to (&key shell-buffer event on-event)
   "Record a subscription for SHELL-BUFFER, EVENT, and ON-EVENT."
   (let ((subscription (list shell-buffer event on-event)))
