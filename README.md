@@ -184,8 +184,9 @@ finished row from a read one, since the `priority` sort lists unread sessions
 first within a section or project.
 
 The detail line is the one line that matters for the state.  A waiting session
-says what it waits for (`Allow: Run make check`), a working one shows its
-newest entry (the prompt it was sent, then the last line it streamed, or
+says what it waits for (`Allow: Run make check`, or the question a form
+asks), a working one shows its newest entry (the prompt it was sent, then the
+last line it streamed, or
 `✗ title` for a tool call that failed), and a failed one says why.  A finished
 turn shows its last line.  Only that last line is read for a marker: when it
 is a `result:` line the row shows what follows the colon, when it is a `needs

@@ -984,6 +984,21 @@ Claude Code's terms."
                                        :tool-calls))))
     (concat "Allow: " (or (map-elt (cdr call) :title) "a tool call"))))
 
+(defun agent-shell-vertico-sidebar--elicitation-needs (buffer)
+  "Return what BUFFER's pending elicitation form asks, or nil.
+The form's message, or else the title of the tool call that raised it:
+agent-shell drops a message that repeats that title, which is how a
+single question arrives."
+  (let ((state (agent-shell-vertico--state buffer)))
+    (when-let* ((form (seq-find (lambda (entry)
+                                  (eq (map-elt (cdr entry) :status) 'pending))
+                                (map-elt state :elicitations))))
+      (or (map-elt (cdr form) :message)
+          (map-nested-elt state (list :tool-calls
+                                      (map-elt (cdr form) :tool-call-id)
+                                      :title))
+          "Answer a question"))))
+
 (defun agent-shell-vertico-sidebar--job-state (buffer &optional status)
   "Return (STATE TEMPO NEEDS) for BUFFER, in Claude Code's terms.
 
@@ -1007,6 +1022,7 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
        (list (or (agent-shell-vertico-sidebar--get buffer 'state) 'done)
              'blocked
              (or (agent-shell-vertico-sidebar--permission-needs buffer)
+                 (agent-shell-vertico-sidebar--elicitation-needs buffer)
                  (agent-shell-vertico-sidebar--get buffer 'needs))))
       ((or 'done 'failed 'stopped) (list status 'idle nil))
       (_ (list 'working 'idle nil)))))
@@ -3487,11 +3503,12 @@ nobody has prompted, which asks the reader nothing yet."
     (agent-shell-vertico-sidebar--record-message-chunk buffer event)
     (agent-shell-vertico-sidebar--set buffer 'updated-at now)
     (pcase kind
-      ('permission-request
+      ((or 'permission-request 'elicitation-request)
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
-       ;; The request itself is news; the session reports itself blocked
-       ;; for as long as it waits, so nothing records that part.  It is
+       ;; The request itself is news, a permission or a form alike; the
+       ;; session reports itself blocked for as long as it waits, so
+       ;; nothing records that part.  It is
        ;; also a new ask, which no snooze put off.  The newest request
        ;; is the one the session waits on, so the wait ages from it.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
@@ -3548,7 +3565,7 @@ nobody has prompted, which asks the reader nothing yet."
       ('session-restored
        ;; A restored session has a history, so it has been prompted.
        (agent-shell-vertico-sidebar--set buffer 'fresh nil))
-      ('permission-response
+      ((or 'permission-response 'elicitation-response)
        ;; Answering a request is reading it, whether or not another one
        ;; is already pending behind it.
        (agent-shell-vertico-sidebar--set buffer 'unread nil)

@@ -1617,6 +1617,70 @@ a session that is blocked again asking for a reply."
         (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
         (should (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
 
+(ert-deftest agent-shell-vertico-sidebar-elicitation-request-marks-unread ()
+  "A form the agent raises is an ask, as a permission request is."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (now 100.0))
+      (cl-letf (((symbol-function 'float-time) (lambda (&rest _) now)))
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-sidebar--set alpha 'busy-since 50.0)
+          (agent-shell-vertico-sidebar--set alpha 'snoozed 10.0)
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . elicitation-request)))
+          (should (agent-shell-vertico-sidebar--unread-p alpha))
+          (should (= (agent-shell-vertico-sidebar--get alpha 'waiting-since)
+                     100.0))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-elicitation-response-reads-it ()
+  "Answering a form is reading it, and the turn it resumes is timed."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--mark-unread-at alpha (float-time))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . elicitation-response)))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+        (should (agent-shell-vertico-sidebar--get alpha 'busy-since))))))
+
+(ert-deftest agent-shell-vertico-sidebar-elicitation-needs-its-question ()
+  "A pending form's NEEDS is its question, or the tool call that asks it.
+The adapter drops a form's message when it repeats the tool call's
+title, which is how a single question arrives."
+  (agent-shell-vertico-tests--with-alpha
+    (setq agent-shell-test-statuses (list (cons alpha 'blocked)))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "a") (:title . "Review alpha")))
+                    (:elicitations
+                     . ((1 . ((:id . 1) (:status . answered)
+                              (:message . "Old question?")))
+                        (2 . ((:id . 2) (:status . pending)
+                              (:message
+                               . "Please answer the following questions."))))))))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done blocked "Please answer the following questions.")))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "a") (:title . "Review alpha")))
+                    (:tool-calls
+                     . (("t1" . ((:title . "Which colour?")))))
+                    (:elicitations
+                     . ((3 . ((:id . 3) (:status . pending)
+                              (:tool-call-id . "t1") (:message))))))))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done blocked "Which colour?")))
+    (should (equal (agent-shell-vertico-sidebar--detail-for
+                    (agent-shell-vertico-sidebar--snapshot alpha))
+                   "Which colour?"))))
+
 (ert-deftest agent-shell-vertico-sidebar-idle-event-stops-busy-clock ()
   "An idle event ends the turn without marking the session."
   (agent-shell-vertico-tests--with-session-buffers

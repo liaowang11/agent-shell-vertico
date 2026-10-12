@@ -316,8 +316,9 @@ Code; the markers are the whole convention.
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,
 `blocked`, `done`, `failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
-reader is asked: `Allow: TITLE` from the pending tool call, or the `needs
-input:` line). They are derived from the status rather than stored, so the two
+reader is asked: `Allow: TITLE` from the pending tool call, a pending
+elicitation form's question (`--elicitation-needs`), or the `needs input:`
+line). They are derived from the status rather than stored, so the two
 cannot disagree. A session nobody has prompted follows Claude Code's rule: it
 is working and blocked, with NEEDS `Send a prompt to start`, so it is filed in
 the attention band and drawn yellow. A shell the reader has just opened asks
