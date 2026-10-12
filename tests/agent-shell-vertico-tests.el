@@ -3124,6 +3124,48 @@ session there at all."
       (should (equal (get-text-property 0 'face other-bar)
                      'agent-shell-vertico-sidebar-current-session)))))
 
+(ert-deftest agent-shell-vertico-sidebar-marker-method-defaults-to-auto ()
+  "The default picks the fringe or the margin by where the sidebar is."
+  (should (eq (default-value 'agent-shell-vertico-sidebar-marker-method)
+              'auto)))
+
+(ert-deftest agent-shell-vertico-sidebar-auto-marker-follows-the-frames ()
+  "`auto' is the margin once a terminal frame shows the sidebar.
+
+A terminal frame has no fringes, and one buffer cannot draw a fringe
+marker in one window and a margin marker in another, so a terminal
+anywhere decides for every window.  Batch Emacs has only a terminal
+frame, which is the case a displayed sidebar here exercises; a hidden
+sidebar, or one on graphical frames alone, keeps the fringe."
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-vertico-sidebar-marker-method 'auto))
+    (agent-shell-vertico-tests--with-sidebar
+      (should (eq (agent-shell-vertico-sidebar--marker-method) 'fringe))
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should (eq (agent-shell-vertico-sidebar--marker-method) 'margin))
+          (should (eql (car (window-margins window)) 1))
+          (let ((marker
+                 (agent-shell-vertico-sidebar--current-session-marker t)))
+            (should (equal (car (get-text-property 0 'display marker))
+                           '(margin left-margin))))
+          (cl-letf (((symbol-function 'display-graphic-p)
+                     (lambda (&optional _display) t)))
+            (should (eq (agent-shell-vertico-sidebar--marker-method)
+                        'fringe))))))
+    (dolist (method '(fringe margin nil))
+      (let ((agent-shell-vertico-sidebar-marker-method method))
+        (should (eq (agent-shell-vertico-sidebar--marker-method) method))))))
+
+(ert-deftest agent-shell-vertico-sidebar-focused-marker-is-magenta ()
+  "The focused marker takes the unread dot's magenta, the accent.
+No session's mark is drawn in it, so it says nothing about a state."
+  (should (memq 'ansi-color-bright-magenta
+                (ensure-list
+                 (face-attribute 'agent-shell-vertico-sidebar-focused-session
+                                 :inherit)))))
+
 (ert-deftest agent-shell-vertico-sidebar-marker-method-nil-draws-nothing ()
   "Setting the method to nil leaves a row with no marker at all."
   (let ((agent-shell-vertico-sidebar-marker-method nil))

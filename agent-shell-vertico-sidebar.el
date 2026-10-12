@@ -191,24 +191,27 @@ prompt while the session works on it."
                          (const :tag "Last user message" last-user-message)))
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-marker-method 'fringe
+(defcustom agent-shell-vertico-sidebar-marker-method 'auto
   "Where the sidebar draws the marker on a session that is on screen.
 
 `fringe' draws a bar in the window's left fringe, `margin' draws one in
-its left display margin, and nil draws nothing.  The two markers differ
-only in colour whichever is used: the accent face
+its left display margin, and nil draws nothing.  `auto', the default,
+is `margin' while a terminal frame shows the sidebar and `fringe'
+otherwise (`agent-shell-vertico-sidebar--marker-method').  The two
+markers differ only in colour whichever is used: the accent face
 `agent-shell-vertico-sidebar-focused-session' for the session being
 worked in, `agent-shell-vertico-sidebar-current-session' for the rest.
 
-`fringe' is the default.  Graphical sidebar windows reserve at least
-eight pixels for it, including after workspace layout restoration.
-Wider left fringes and the right fringe's width are left alone.
-A terminal frame has no fringes, so it needs `margin', which spends one
-column of the sidebar on the bar.  The choice mirrors
+Graphical sidebar windows reserve at least eight pixels of fringe for
+it, including after workspace layout restoration.  Wider left fringes
+and the right fringe's width are left alone.  A terminal frame has no
+fringes, so it needs `margin', which spends one column of the sidebar on
+the bar.  The choice mirrors
 `gptel-highlight-methods', which marks its responses the same way and
 for the same reason; unlike that one this is a single method rather than
 a set, because there is no face tier here to combine with."
-  :type '(choice (const :tag "Left fringe" fringe)
+  :type '(choice (const :tag "Fringe, or margin on a terminal" auto)
+                 (const :tag "Left fringe" fringe)
                  (const :tag "Left margin" margin)
                  (const :tag "No marker" nil))
   :group 'agent-shell-vertico-sidebar)
@@ -685,20 +688,27 @@ already what this package uses for what is present and not the answer."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-focused-session
-  '((t :inherit outline-1 :height reset))
+  '((t :inherit ansi-color-bright-magenta :background "unspecified-bg"
+       :height reset))
   "Face for the marker on the session the reader is working in.
 
-The same question as `agent-shell-vertico-sidebar-current-session'
-answered with more force, so it is the same marker in the one accent
-that carries no status meaning, rather than a second hue: a different
-hue would read as a different kind of fact rather than as more of the
-same one.  Colour carries the whole distinction, as it does between
-`gptel-response-fringe-highlight' and the `shadow' gptel marks a tool
-call with: one bar, two colours.  An earlier version drew this tier on
-a thicker bar as well, on the grounds that a bar a pixel or two wide
-cannot be relied on to carry a hue difference; a four-pixel bar turned
-out to read as a block beside its neighbours rather than as more of the
-same mark, which is the fault the second hue was avoided for."
+Magenta, the accent the unread dot is drawn in, against the grey of
+`agent-shell-vertico-sidebar-current-session': one bar, two colours,
+as `gptel-response-fringe-highlight' and the `shadow' gptel marks a
+tool call with.  It must not borrow a colour a session's mark is drawn
+in, or it would say something untrue about the session; it once
+inherited `outline-1' on the grounds that an outline level names no
+state, but many themes draw that level in the same blue as a working
+session.  Magenta is the one accent here, in two senses: output owed to
+the reader on a dot, where the reader is on this bar.  The two can meet
+on one row, since the bar follows the selected window while unread
+clears only on a focused frame.  The background is taken away, as on
+the other ansi faces here, so the bitmap is not drawn on a block of the
+ansi colour.
+
+An earlier version drew this tier on a thicker bar as well; a
+four-pixel bar read as a block beside its neighbours rather than as
+the same mark drawn harder."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-jump-help-key
@@ -2251,6 +2261,26 @@ parent-child relationship."
                                      'help-echo help-echo)))
         (setq position next)))))
 
+(defun agent-shell-vertico-sidebar--marker-method ()
+  "Return the marker method in force for the current sidebar buffer.
+
+`auto' is `margin' when a window on a terminal frame shows the buffer,
+and `fringe' otherwise, a hidden sidebar included.  One answer serves
+every window, because the marker is text in the buffer: a sidebar shown
+on a graphical and a terminal frame at once draws the margin in both,
+which costs the graphical one a column so that the terminal sees the
+marker at all.  The question cannot be asked per frame in a display
+spec, whose `when' condition is evaluated with the selected frame
+rather than the one being drawn."
+  (pcase agent-shell-vertico-sidebar-marker-method
+    ('auto
+     (if (seq-some (lambda (window)
+                     (not (display-graphic-p (window-frame window))))
+                   (get-buffer-window-list nil nil t))
+         'margin
+       'fringe))
+    (method method)))
+
 (defun agent-shell-vertico-sidebar--current-session-marker (&optional focused)
   "Return a marker for a current session's row, or nil when none is drawn.
 
@@ -2267,7 +2297,7 @@ uses for both of its own methods."
   (let ((face (if focused
                   'agent-shell-vertico-sidebar-focused-session
                 'agent-shell-vertico-sidebar-current-session)))
-    (pcase agent-shell-vertico-sidebar-marker-method
+    (pcase (agent-shell-vertico-sidebar--marker-method)
       ('fringe
        (propertize " " 'display
                    `(left-fringe agent-shell-vertico-sidebar-session-fringe
@@ -2305,11 +2335,10 @@ showing the sidebar.  A restored layout can carry a zero-width
 fringe even when the frame's default is wide enough.  Repair only a
 narrow left fringe, keeping the right fringe's width and the rest;
 `set-window-fringes' leaves point and the window's start alone."
-  (let* ((width (if (eq agent-shell-vertico-sidebar-marker-method 'margin)
-                    1
-                  0))
+  (let* ((method (agent-shell-vertico-sidebar--marker-method))
+         (width (if (eq method 'margin) 1 0))
          (margin-changed (not (eql left-margin-width width)))
-         (fringe-p (eq agent-shell-vertico-sidebar-marker-method 'fringe))
+         (fringe-p (eq method 'fringe))
          (changed margin-changed))
     (when margin-changed
       (setq-local left-margin-width width))

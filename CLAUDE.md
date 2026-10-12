@@ -856,13 +856,19 @@ disagree with the windows for longer than one idle refresh.
 **Which of them you are in.** A frame showing several sessions leaves the
 marker unable to say which one the reader is typing into, so the marker has
 two tiers: `--focused-session` picks one out of `--current-sessions` and
-`--current-session-marker` draws it differently. They are one question
-answered with two degrees, not two questions, so they share a hue family and
-differ in colour alone: `-focused-session` is `outline-1`, the one accent
-with no status meaning, and `-current-session` is `shadow`. Every other
-colour here already names a state, and a marker that borrowed blue, yellow,
-red, green or purple would say something untrue about the session; `shadow` is
-what the package already uses for what is present and not the answer. This
+`--current-session-marker` draws it differently. The two tiers share one
+bitmap and differ in colour alone: `-focused-session` is magenta, the
+unread dot's accent (`ansi-color-bright-magenta`, its background taken
+away so the bitmap is not drawn on a block), and `-current-session` is
+`shadow`. A colour a session's mark is drawn in, blue, yellow, red, green or
+purple, would say something untrue about the session; `shadow` is what the
+package already uses for what is present and not the answer. The focused
+tier used to inherit `outline-1` as the one accent with no status meaning,
+but many themes, snazzy among them, draw that level in the working blue.
+Magenta is now the one accent in two senses, output owed to the reader on
+the dot and where the reader is on the bar, and the two can meet on a row:
+the bar follows the selected window, while unread clears only on a focused
+frame. This
 is `gptel-highlight-mode`'s own pair, which separates a response from a tool
 call the same way, and one bitmap serves both: an earlier version drew the
 focused tier on a four-pixel bar too, on the argument that a bar a pixel or
@@ -890,8 +896,17 @@ changing the set.
 
 `agent-shell-vertico-sidebar-marker-method` says *where* the bar is drawn,
 mirroring `gptel-highlight-methods` for the same reason gptel offers the
-choice: a terminal frame has no fringes, so under `-nw` the default
-`fringe` marks nothing. `margin` draws the same two-tier bar as a
+choice: a terminal frame has no fringes, so under `-nw` a `fringe` marker
+draws nothing. The default, `auto`, is resolved by `--marker-method`:
+`margin` while any window on a terminal frame shows the sidebar, `fringe`
+otherwise. One answer serves every window, because the marker is text in
+the one buffer, so a sidebar on a graphical and a terminal frame at once
+spends a column in both; the choice cannot be made per frame in the
+display spec, whose `when` condition is evaluated with the selected frame
+rather than the one being drawn. A terminal frame starting to show the
+sidebar runs the window-configuration hook, whose `--apply-marker-space`
+reserves the margin and offers the frame to the resize render that redraws
+the markers. `margin` draws the same two-tier bar as a
 `▎` in the left display margin instead, at the cost of the column the
 window reserves for it. Both are a `display` spec on one space used as a
 `line-prefix`, so neither costs a column of the text area itself.

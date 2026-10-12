@@ -270,24 +270,28 @@ Whatever the sort, pinned sessions come first and snoozed ones last.
 
 A fringe marker runs down the rows of the sessions the selected frame is
 showing, so the list says where you already are.  The session you are
-working in gets a thick bar in the accent colour
+working in gets a magenta bar, the accent the unread dot is drawn in
 (`agent-shell-vertico-sidebar-focused-session`); the others on the frame get
-a thin grey one (`agent-shell-vertico-sidebar-current-session`).  Neither
-borrows a status colour, since blue, yellow, red and green already mean
-working, waiting, failed and done on these rows.  The thick bar follows
-the selected window: step to a file, to magit or into the sidebar itself
-and every session on the frame is thin, so a frame or workspace is marked
+a grey one (`agent-shell-vertico-sidebar-current-session`).  Neither
+borrows a status colour, since blue, yellow, red, green and purple already
+mean working, waiting, failed, done and snoozed on these rows.  The magenta
+bar follows the selected window: step to a file, to magit or into the
+sidebar itself and every session on the frame is grey, so a frame or
+workspace is marked
 by what it shows and not by where you last were; a session off the frame,
 or on another frame, is not marked at all.  This is only the marker,
 not what counts as reading a session: unread still clears only when a
 session's own window is selected.
 
-`agent-shell-vertico-sidebar-marker-method` selects `fringe` (the default),
-`margin`, or nil to disable markers.  The fringe method reserves at least
+`agent-shell-vertico-sidebar-marker-method` selects `auto` (the default),
+`fringe`, `margin`, or nil to disable markers.  `auto` draws in the margin
+while a terminal frame shows the sidebar, since a terminal has no fringe,
+and in the fringe otherwise; a sidebar on a graphical and a terminal frame
+at once uses the margin in both.  The fringe method reserves at least
 eight pixels of the left fringe in graphical sidebar windows, including
 when a workspace restores a layout with fringes hidden.  It preserves wider
-left fringes and the right fringe's width.  Terminal frames need `margin`,
-which reserves one text column instead.
+left fringes and the right fringe's width.  The margin method reserves one
+text column instead.
 
 A jump taken from inside a session that is waiting for a permission decision
 goes to the next session that needs you, since arriving where you already are
