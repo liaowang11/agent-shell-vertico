@@ -353,7 +353,16 @@ parent, so a root's section is its whole family's (`--family-section`):
 Pinned when the root is pinned, otherwise the earliest section among the
 bands of the root and every live descendant. A child waiting on the reader
 therefore draws its idle parent under Needs input, and a working child puts
-an idle family under Working. Each header is a fold in `--section-folds`,
+an idle family under Working. A header is ruled off by an underline the
+header's newline extends to the window's edge (`--header-rule`), in
+`-header-rule`'s colour, because `─` characters show gaps between glyphs
+and an overline or a background band is lost in a terminal or a theme; it
+is prepended, so the snoozed face's `:underline nil` cannot cut it. The
+label takes its section's state colour (`--section-face`; Pinned keeps
+`-section`), and there is no fold triangle: a folded header ends in `⋯`.
+Rows under a section or project header are at depth 0, flush with it,
+since colour and rule already tell the header apart and the sidebar is
+narrow. Each header is a fold in `--section-folds`,
 seeded from `agent-shell-vertico-sidebar-folded-sections`, and an open
 section draws every session it holds: there is no cap and no "more" row.
 The header counts, folded or open, which `--header-counts` says (see the
@@ -413,9 +422,10 @@ sidebar: `header-line-format` stays nil, and every section and project
 header counts for itself instead. `--header-counts` writes what follows the
 label, `Completed · 5 · • 2`: the rows drawn under the header, each root
 with its live descendants, then, only when some hold unread output
-(`--unread-p`), a `•` and how many. The dot is drawn as a row's is, in
-`agent-shell-vertico-sidebar-unread-dot`. `--insert-node-line` and
-`--insert-project` append the header face, so the dot's colour wins. A
+(`--unread-p`), a `•` and how many, the two drawn together in
+`agent-shell-vertico-sidebar-unread-dot`; the rest of the counts are
+`-header-count` grey. `--insert-node-line` and `--insert-project` append
+the label face, so the counts' own colours win. A
 project header reads `NAME · N · • U` and keeps `--project-summary`'s `✻ A`
 at its right edge; `--project-header-line` keeps both counts whole and
 shortens the name. `A`
@@ -608,8 +618,8 @@ view files a root by the most urgent band in its family (`--family-section`),
 so a child's state can move its parent's section but never its place in the
 sort.
 Indentation, which used to be a boolean (`nested`, under a project header or
-not), is now a depth count, since a child under a project-grouped parent
-needs two steps and a project's own sessions still need one; `--content-width`
+not), is now a depth count, one step per parent; a header adds none, since
+headers stopped indenting what they hold; `--content-width`
 and `--insert-row` both take the count directly, while `--session-lines`
 keeps `nested` for the unrelated question of whether the row's own
 project line would repeat what a header above it already says — a project
@@ -827,7 +837,7 @@ project puts a green finished row far above another one; a bold title alone
 did not say why. Every mark is a plain
 character, so no icon font is needed and a terminal draws what a graphical
 frame does. The other glyphs are slots in `--icons` drawn by `--slot-icon`:
-`⌂` project, `↳` message, `◇` subagents, `$` tasks, and the `▼`/`▶` folds.
+`⌂` project, `↳` message, `◇` subagents and `$` tasks.
 The
 fringe marker for the sessions on screen is derived, not stored:
 `--current-sessions` lists every session, or viewport, a window of the selected
@@ -926,10 +936,10 @@ project's `✻` count reports only what asks for a reply.
 
 **Where point rests.** A row's leading icon and the gap after it are one
 field (`--mark-field`, the `agent-shell-vertico-sidebar-mark-field` text
-property): the status mark, a section's or project's fold triangle, the home
-on a row's project line, the arrow on a message line. Standing on one
-says nothing, and the sidebar draws no cursor to say where point is, so
-`--keep-point-off-marks` moves point past it from
+property): the status mark, the home on a row's project line, the arrow on
+a message line. Headers carry no icon, so none of a header is a field.
+Standing on one says nothing, and the sidebar draws no cursor to say where
+point is, so `--keep-point-off-marks` moves point past it from
 `pre-redisplay-functions`, which answers for every way point arrives
 there — a click, an arrow key, a workspace package restoring a layout.
 It moves forward only; `cursor-intangible-mode`, which this was at

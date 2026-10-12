@@ -587,7 +587,23 @@ render, for the row's tooltip and `--echo-row'.")
 
 (defface agent-shell-vertico-sidebar-section
   '((t :inherit agent-shell-vertico-sidebar-project))
-  "Face for state section headers in the agent-shell sidebar."
+  "Face for the Pinned section's header in the agent-shell sidebar.
+The other sections are drawn in the colour of the state they hold,
+`agent-shell-vertico-sidebar--section-face'."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-header-count
+  '((t :inherit shadow :weight normal))
+  "Face for the counts that follow a section's or project's label."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-header-rule
+  '((t :inherit shadow))
+  "Face whose colour draws the rule under a section or project header.
+
+Only the foreground is read: it becomes the colour of the underline
+`agent-shell-vertico-sidebar--header-rule' draws, which would otherwise
+take each glyph's own colour and change hue along the header."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-failed
@@ -1714,13 +1730,8 @@ default in `agent-shell-vertico-sidebar-show-details'."
   '((project   . "⌂")
     (message   . "↳")
     (subagents . "◇")
-    (tasks     . "$")
-    (expanded  . "▼")
-    (collapsed . "▶"))
-  "Slot and character for each mark that is not a session's.
-
-The fold triangles match the ones `agent-shell' uses for its own
-collapsible fragments.")
+    (tasks     . "$"))
+  "Slot and character for each mark that is not a session's.")
 
 (defun agent-shell-vertico-sidebar--slot-icon (slot &optional face)
   "Return the mark for SLOT, drawn in FACE."
@@ -1742,8 +1753,8 @@ which leaves the still glyph in place."
 (defun agent-shell-vertico-sidebar--content-width (width depth)
   "Return the columns left for text on a session row of WIDTH.
 
-DEPTH is how many levels the row is indented: 1 below a project header
-or a parent session, 2 below both."
+DEPTH is how many levels the row is indented: 1 below a parent session,
+2 below its parent's parent.  A header indents nothing."
   (max 1 (- width (* 2 (or depth 0)) 2)))
 
 (defun agent-shell-vertico-sidebar--mark-glyph (snapshot)
@@ -2075,8 +2086,8 @@ redisplay."
 
 Standing on an icon says nothing, and the sidebar has no visible cursor
 to say where point is, so point is moved on to the text.  Every leading
-icon is one of these - a status mark, a fold triangle, the home of a
-project line, the arrow of a message line - and the gap belongs to the
+icon is one of these - a status mark, the home of a project line, the
+arrow of a message line - and the gap belongs to the
 field because it is as empty an answer as the icon.  `propertize' leaves
 the half-width display the gap carries alone.
 
@@ -2317,10 +2328,10 @@ narrow left fringe, keeping the right fringe's width and the rest;
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional depth)
   "Insert session LINES with KIND and NODE text properties.
 
-DEPTH reserves two columns per level, the same two a project header
-spends on its fold triangle, so a session icon lines up under whatever
-is above it: a section label or project name at depth 1, a parent
-session's icon at depth 2.
+DEPTH reserves two columns per level, so a child session's icon lines
+up under its parent's title.  A row under a section or project header
+is at depth 0: the header is told apart by its colour and its rule,
+not by indenting what it holds.
 
 Indentation is a `line-prefix' display property rather than inserted
 spaces, as `agent-shell' does for its own fragments: the columns are
@@ -2394,41 +2405,72 @@ well."
        "✻" count 'agent-shell-vertico-sidebar-blocked))))
 
 (defun agent-shell-vertico-sidebar--project-header-line
-    (indicator name summary width &optional counts)
-  "Return a header of WIDTH holding INDICATOR, NAME, COUNTS and SUMMARY.
+    (name summary width &optional counts)
+  "Return a header of WIDTH holding NAME, COUNTS and SUMMARY.
 
 COUNTS follows NAME, and SUMMARY, when there is one, keeps the right
 edge of the row.  Both are kept whole, so a NAME too long for the
-remaining columns is the part that gets shortened."
+remaining columns is the part that gets shortened.  A header has no
+fold triangle: it is told apart by its colour and the rule under it
+\(`--header-rule'), and a folded one by the ⋯ in COUNTS."
   (let* ((counts (or counts ""))
          (reserved (+ (string-width counts)
                       (if summary (+ 2 (string-width summary)) 0)))
          (name (agent-shell-vertico-sidebar--fit
-                name
-                (max 1 (- width (string-width indicator) 1 reserved)))))
-    (concat indicator " " name counts
+                name (max 1 (- width reserved)))))
+    (concat name counts
             (when summary
               (concat (make-string
-                       (max 2 (- width (string-width indicator) 1
-                                 (string-width name) (string-width counts)
+                       (max 2 (- width (string-width name)
+                                 (string-width counts)
                                  (string-width summary)))
                        ?\s)
                       summary)))))
 
-(defun agent-shell-vertico-sidebar--header-counts (buffers)
+(defun agent-shell-vertico-sidebar--header-rule ()
+  "Return the face that rules a header line off from the rows below it.
+
+An underline rather than a line of `─' characters, which a font draws
+with gaps between them, and rather than an overline or a background,
+which a terminal does not draw or a theme can hide.  The header's
+newline carries it too, with `:extend', since a header is not padded
+and the rule has to reach the window's edge."
+  `(:underline (:color ,(or (face-foreground
+                             'agent-shell-vertico-sidebar-header-rule nil t)
+                            'foreground-color)
+                       :position t)
+               :extend t))
+
+(defun agent-shell-vertico-sidebar--section-face (section)
+  "Return the face SECTION's label is drawn in: the colour of its state.
+Pinned holds every state, so it keeps the plain header face."
+  (pcase section
+    ('attention 'agent-shell-vertico-sidebar-blocked)
+    ('working 'agent-shell-vertico-sidebar-working)
+    ('idle 'agent-shell-vertico-sidebar-ready)
+    ('snoozed 'agent-shell-vertico-sidebar-snoozed)
+    (_ 'agent-shell-vertico-sidebar-section)))
+
+(defun agent-shell-vertico-sidebar--header-counts (buffers &optional folded)
   "Return the counts that follow a header's label, for the roots BUFFERS.
 
 \" · N\" counts the rows drawn under the header, each root with its
 live descendants, open or folded.  \" · • U\" follows when U of them
-hold output nobody has read, the dot drawn as a row's is."
+hold output nobody has read, drawn whole in the colour of a row's dot.
+FOLDED ends it in \" ⋯\", which is how a header without a fold triangle
+says its rows are hidden."
   (let* ((family (seq-mapcat #'agent-shell-vertico-sidebar--family buffers))
-         (unread (seq-count #'agent-shell-vertico-sidebar--unread-p family)))
-    (concat " · " (number-to-string (length family))
+         (unread (seq-count #'agent-shell-vertico-sidebar--unread-p family))
+         (count-face 'agent-shell-vertico-sidebar-header-count))
+    (concat (propertize (concat " · " (number-to-string (length family)))
+                        'face count-face)
             (when (> unread 0)
-              (concat " · "
+              (concat (propertize " · " 'face count-face)
                       (propertize
-                       "•" 'face 'agent-shell-vertico-sidebar-unread-dot)
-                      " " (number-to-string unread))))))
+                       (format "• %d" unread)
+                       'face 'agent-shell-vertico-sidebar-unread-dot)))
+            (when folded
+              (propertize " ⋯" 'face count-face)))))
 
 (defun agent-shell-vertico-sidebar--insert-session-and-children
     (buffer width nested depth)
@@ -2487,25 +2529,23 @@ and how many of them hold unread output, and at the right edge how many
 wait on the reader (`--project-summary')."
   (let* ((expanded
           (agent-shell-vertico-sidebar--project-expanded-p root))
-         (indicator (agent-shell-vertico-sidebar--slot-icon
-                     (if expanded 'expanded 'collapsed)))
          (line (agent-shell-vertico-sidebar--project-header-line
-                indicator
                 (agent-shell-vertico-sidebar--project-name
                  root (car buffers))
                 (agent-shell-vertico-sidebar--project-summary buffers)
                 width
-                (agent-shell-vertico-sidebar--header-counts buffers)))
+                (agent-shell-vertico-sidebar--header-counts
+                 buffers (not expanded))))
          (start (point)))
     (insert (agent-shell-vertico-sidebar--fit line width) "\n")
     ;; Appended, so the counts keep the font family and colour of their
     ;; own faces.
     (add-face-text-property start (1- (point))
                             'agent-shell-vertico-sidebar-project t)
-    ;; A fold triangle is an icon like any other: point belongs on the
-    ;; project name rather than on it.
-    (put-text-property start (min (+ start 2) (1- (point)))
-                       'agent-shell-vertico-sidebar-mark-field t)
+    ;; Prepended, so a face that turns its own underline off keeps none
+    ;; of the rule's gaps.
+    (add-face-text-property start (point)
+                            (agent-shell-vertico-sidebar--header-rule))
     (add-text-properties
      start (1- (point))
      (list 'agent-shell-vertico-sidebar-node root
@@ -2514,7 +2554,7 @@ wait on the reader (`--project-summary')."
            'help-echo "TAB/RET/mouse-1: toggle project"
            'kbd-help "TAB/RET/mouse-1: toggle project"))
     (when expanded
-      (agent-shell-vertico-sidebar--insert-sessions buffers width t 1))))
+      (agent-shell-vertico-sidebar--insert-sessions buffers width t 0))))
 
 (defun agent-shell-vertico-sidebar--split-pinned (buffers)
   "Return (PINNED . REST), BUFFERS split by whether the reader pinned them.
@@ -2547,12 +2587,17 @@ the projects."
   (puthash section folded agent-shell-vertico-sidebar--section-folds))
 
 (defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
-  "Insert LINE as the one-line node NODE of KIND, drawn in FACE."
+  "Insert LINE as the one-line node NODE of KIND, drawn in FACE.
+The line is ruled off from the rows below it (`--header-rule')."
   (let ((start (point)))
     (insert line "\n")
     ;; Appended, so an icon keeps the font family in its own face and a
     ;; count its own colour.
     (add-face-text-property start (1- (point)) face t)
+    ;; Prepended, so a face that turns its own underline off, as the
+    ;; snoozed one does, leaves no gap in the rule.
+    (add-face-text-property start (point)
+                            (agent-shell-vertico-sidebar--header-rule))
     (add-text-properties
      start (1- (point))
      (list 'agent-shell-vertico-sidebar-node node
@@ -2595,24 +2640,20 @@ them on a click (`--mark-attention-count').  An open section draws
 every session it holds."
   (let* ((folded (agent-shell-vertico-sidebar--section-folded-p section))
          (line (agent-shell-vertico-sidebar--project-header-line
-                (agent-shell-vertico-sidebar--slot-icon
-                 (if folded 'collapsed 'expanded))
                 (alist-get section agent-shell-vertico-sidebar--sections)
                 nil width
-                (agent-shell-vertico-sidebar--header-counts buffers)))
+                (agent-shell-vertico-sidebar--header-counts buffers folded)))
          (start (agent-shell-vertico-sidebar--insert-node-line
                  (agent-shell-vertico-sidebar--fit line width)
-                 'section section 'agent-shell-vertico-sidebar-section)))
-    ;; The fold triangle is a mark: point belongs on the label.
-    (put-text-property start (+ start 2)
-                       'agent-shell-vertico-sidebar-mark-field t)
+                 'section section
+                 (agent-shell-vertico-sidebar--section-face section))))
     (add-text-properties start (line-end-position 0)
                          (list 'help-echo "TAB/RET/mouse-1: toggle section"
                                'kbd-help "TAB/RET/mouse-1: toggle section"))
     (when (eq section 'attention)
       (agent-shell-vertico-sidebar--mark-attention-count start buffers))
     (unless folded
-      (agent-shell-vertico-sidebar--insert-sessions buffers width nil 1))))
+      (agent-shell-vertico-sidebar--insert-sessions buffers width nil 0))))
 
 (cl-defun agent-shell-vertico-sidebar--render ()
   "Render the current sidebar buffer."

@@ -274,17 +274,17 @@ own, keeps its place rather than landing between parent and child."
           (agent-shell-vertico-sidebar--render)
           (let ((rows (agent-shell-vertico-sidebar--session-rows)))
             (should (equal (mapcar #'car rows) (list parent child other)))
-            ;; Under their section header, roots indent once and the
-            ;; child once more.
-            (should (equal (get-text-property (cdr (nth 0 rows)) 'line-prefix)
-                           "  "))
+            ;; Under their section header, roots start at column zero
+            ;; and the child is indented once.
+            (should-not (get-text-property (cdr (nth 0 rows)) 'line-prefix))
             (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
-                           "    "))
-            (should (equal (get-text-property (cdr (nth 2 rows)) 'line-prefix)
-                           "  "))))))))
+                           "  "))
+            (should-not
+             (get-text-property (cdr (nth 2 rows)) 'line-prefix))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-nests-a-child-two-deep-inside-a-project ()
-  "Grouped by project, a child indents once past its already-nested parent."
+  "Grouped by project, a child indents once past its parent.
+A project header indents nothing, as a section header does not."
   (agent-shell-vertico-tests--with-session-buffers
       ((parent "Codex Agent @ parent" "/work/parent/"
                '((:session . ((:id . "p") (:title . "Parent")))))
@@ -300,10 +300,9 @@ own, keeps its place rather than landing between parent and child."
           (agent-shell-vertico-sidebar--render)
           (let ((rows (agent-shell-vertico-sidebar--session-rows)))
             (should (equal (mapcar #'car rows) (list parent child)))
-            (should (equal (get-text-property (cdr (nth 0 rows)) 'line-prefix)
-                           "  "))
+            (should-not (get-text-property (cdr (nth 0 rows)) 'line-prefix))
             (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
-                           "    "))))))))
+                           "  "))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-sorts-children-within-their-parent ()
   "A parent's children sort among themselves, not by the top-level order.
@@ -351,13 +350,11 @@ a session outside its own family."
             ;; parent buffer is dead, without actually killing it here.
             (setq links nil)
             (agent-shell-vertico-sidebar--render)
-            ;; Indented once, under its section header, as any root is.
-            (should
-             (equal (get-text-property
-                     (cdr (assq child
-                                (agent-shell-vertico-sidebar--session-rows)))
-                     'line-prefix)
-                    "  "))))))))
+            ;; At column zero under its section header, as any root is.
+            (should-not
+             (get-text-property
+              (cdr (assq child (agent-shell-vertico-sidebar--session-rows)))
+              'line-prefix))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-uses-agent-shell-project-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -794,7 +791,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("▼ Completed · 1" "✻ Review alpha" "Codex · GPT-5")))))))
+                 '("Completed · 1" "✻ Review alpha" "Codex · GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-agent-value-is-identifiable ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -830,7 +827,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("▼ Completed · 1" "✻ Review alpha" "-")))))))
+                 '("Completed · 1" "✻ Review alpha" "-")))))))
 
 (ert-deftest agent-shell-vertico-agent-name-prefers-mode-line-name ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -888,7 +885,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("▼ Completed · 1" "✻ Review alpha"
+                 '("Completed · 1" "✻ Review alpha"
                    "↳ Find the failing test")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-renders-in-order ()
@@ -911,7 +908,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("▼ Completed · 1" "✻ Review alpha" "Plan · Done"
+                 '("Completed · 1" "✻ Review alpha" "Plan · Done"
                    "GPT-5")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-extra-info-can-be-empty ()
@@ -926,7 +923,7 @@ a session outside its own family."
         (should (equal
                  (split-string (substring-no-properties (buffer-string))
                                "\n" t)
-                 '("▼ Completed · 1" "✻ Review alpha")))))))
+                 '("Completed · 1" "✻ Review alpha")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-rows-have-no-inserted-indent ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -981,8 +978,8 @@ label keeps the fold."
         (agent-shell-vertico-sidebar--render)
         (should-not header-line-format)
         (should (equal (agent-shell-vertico-tests--section-headers)
-                       '("▼ Needs input · 1" "▼ Working · 2"
-                         "▼ Completed · 1")))
+                       '("Needs input · 1" "Working · 2"
+                         "Completed · 1")))
         (should (string-match-p
                  "Attention"
                  (agent-shell-vertico-tests--property-at "· 1" 'help-echo)))
@@ -1000,8 +997,8 @@ label keeps the fold."
   "A header counts the unread sessions it holds beside its rows.
 
 Unread output does not make a session need you, and a failure is
-finished: both are Claude Code's rules.  The unread count is drawn like
-a row's dot, in the section's colour."
+finished: both are Claude Code's rules.  The unread count is drawn in
+the magenta of a row's dot, which wins over the section's colour."
   (agent-shell-vertico-tests--with-session-buffers
       ((failed "Codex Agent @ failed" "/work/failed/"
                '((:session . ((:id . "f") (:title . "Failed")))))
@@ -1021,11 +1018,14 @@ a row's dot, in the section's colour."
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
         (should (equal (agent-shell-vertico-tests--section-headers)
-                       '("▼ Needs input · 1" "▼ Completed · 2 · • 2")))
+                       '("Needs input · 1" "Completed · 2 · • 2")))
         (let ((faces (ensure-list
                       (agent-shell-vertico-tests--property-at "•" 'face))))
           (should (memq 'agent-shell-vertico-sidebar-unread-dot faces))
-          (should-not (memq 'agent-shell-vertico-sidebar-ready faces)))))))
+          (should (< (seq-position faces
+                                   'agent-shell-vertico-sidebar-unread-dot)
+                     (seq-position faces
+                                   'agent-shell-vertico-sidebar-ready))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mode-line-counts-who-needs-you ()
   "The mode line says how many sessions need the reader, and only then."
@@ -3282,10 +3282,9 @@ tested; the graphical tests below exercise it against real windows."
                            'agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
-          ;; Only the indent under the section header, no marker.
-          (should (equal (get-text-property (line-beginning-position)
-                                            'line-prefix)
-                         "  ")))))))
+          ;; No marker, and no indent under the section header.
+          (should-not (get-text-property (line-beginning-position)
+                                         'line-prefix)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-render-marks-current-session-row ()
   "A session on screen carries the fringe marker; an unseen one does not."
@@ -3314,10 +3313,9 @@ tested; the graphical tests below exercise it against real windows."
                            agent-shell-vertico-sidebar-focused-session)))
           (goto-char (point-min))
           (search-forward "Review beta")
-          ;; Only the indent under the section header, no marker.
-          (should (equal (get-text-property (line-beginning-position)
-                                            'line-prefix)
-                         "  ")))))))
+          ;; No marker, and no indent under the section header.
+          (should-not (get-text-property (line-beginning-position)
+                                         'line-prefix)))))))
 
 (ert-deftest
     agent-shell-vertico-sidebar-render-marks-current-session-in-project-group
@@ -3980,10 +3978,35 @@ that order."
   (split-string (buffer-substring-no-properties (point-min) (point-max))
                 "\n"))
 
+(defun agent-shell-vertico-tests--header-line-p (pos)
+  "Return non-nil when the line at POS is a section or project header."
+  (memq (get-text-property pos 'agent-shell-vertico-sidebar-node-kind)
+        '(section project)))
+
+(defun agent-shell-vertico-tests--lines-where (keep)
+  "Return the current buffer's lines whose start KEEP accepts."
+  (save-excursion
+    (goto-char (point-min))
+    (let (lines)
+      (while (not (eobp))
+        (when (funcall keep (point))
+          (push (buffer-substring-no-properties (point) (line-end-position))
+                lines))
+        (forward-line 1))
+      (nreverse lines))))
+
+(defun agent-shell-vertico-tests--header-lines ()
+  "Return the current sidebar's section and project header lines."
+  (agent-shell-vertico-tests--lines-where
+   #'agent-shell-vertico-tests--header-line-p))
+
 (defun agent-shell-vertico-tests--row-lines ()
   "Return the current sidebar's lines but its section and project headers."
-  (seq-remove (lambda (line) (string-match-p "\\`[▼▶] " line))
-              (agent-shell-vertico-tests--lines)))
+  (append (agent-shell-vertico-tests--lines-where
+           (lambda (pos)
+             (not (agent-shell-vertico-tests--header-line-p pos))))
+          ;; `--lines' ends on the empty string after the last newline.
+          '("")))
 
 (defun agent-shell-vertico-tests--goto-first-row ()
   "Move point to the start of the current sidebar's first session row."
@@ -3997,8 +4020,8 @@ header's row is not drawn.  An open section shows every row it holds."
   (agent-shell-vertico-tests--with-state-view
     (let ((lines (agent-shell-vertico-tests--lines)))
       (should (equal (agent-shell-vertico-tests--section-headers)
-                     '("▼ Needs input · 1" "▼ Working · 1"
-                       "▼ Completed · 5" "▶ Snoozed · 1")))
+                     '("Needs input · 1" "Working · 1"
+                       "Completed · 5" "Snoozed · 1 ⋯")))
       (should-not (seq-some (lambda (line) (string-prefix-p "…" line))
                             lines)))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
@@ -4009,10 +4032,10 @@ header's row is not drawn.  An open section shows every row it holds."
   "TAB on a section header folds it, and the folded header still counts."
   (agent-shell-vertico-tests--with-state-view
     (goto-char (point-min))
-    (search-forward "▼ Completed")
+    (search-forward "Completed")
     (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
     (agent-shell-vertico-sidebar-toggle-at-point)
-    (should (member "▶ Completed · 5" (agent-shell-vertico-tests--lines)))
+    (should (member "Completed · 5 ⋯" (agent-shell-vertico-tests--lines)))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list waiting working)))
     (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
@@ -4164,8 +4187,8 @@ folded, and folds them with the projects at the header level."
     (agent-shell-vertico-sidebar--set done-3 'pinned 1.0)
     (agent-shell-vertico-sidebar--render)
     (should (equal (agent-shell-vertico-tests--section-headers)
-                   '("▼ Pinned · 1" "▼ Needs input · 1" "▼ Working · 1"
-                     "▼ Completed · 4" "▶ Snoozed · 1")))
+                   '("Pinned · 1" "Needs input · 1" "Working · 1"
+                     "Completed · 4" "Snoozed · 1 ⋯")))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list done-3 waiting working done-1 done-2 done-4 done-5)))
     (should (equal (agent-shell-vertico-sidebar--display-order)
@@ -4187,10 +4210,8 @@ folded, and folds them with the projects at the header level."
       (with-temp-buffer
         (agent-shell-vertico-sidebar-mode)
         (agent-shell-vertico-sidebar--render)
-        (should (equal (seq-filter
-                        (lambda (line) (string-match-p "\\`[▼▶] " line))
-                        (agent-shell-vertico-tests--lines))
-                       '("▼ Pinned · 1" "▼ alpha · 1")))
+        (should (equal (agent-shell-vertico-tests--header-lines)
+                       '("Pinned · 1" "alpha · 1")))
         (should (equal (mapcar #'car
                                (agent-shell-vertico-sidebar--session-rows))
                        (list beta alpha)))
@@ -4240,8 +4261,7 @@ every session it leaves out is ready, so idle."
 
 (defun agent-shell-vertico-tests--section-headers ()
   "Return the current sidebar's section header lines."
-  (seq-filter (lambda (line) (string-match-p "\\`[▼▶] " line))
-              (agent-shell-vertico-tests--lines)))
+  (agent-shell-vertico-tests--header-lines))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-files-family-by-its-wait ()
   "A child waiting on the reader draws its idle parent under Needs input.
@@ -4249,11 +4269,11 @@ every session it leaves out is ready, so idle."
 The Needs input header counts the whole family drawn under it."
   (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
     (should (equal (agent-shell-vertico-tests--section-headers)
-                   '("▼ Needs input · 2" "▼ Completed · 1")))
+                   '("Needs input · 2" "Completed · 1")))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list parent child other)))
     (goto-char (point-min))
-    (search-forward "▼ Completed")
+    (search-forward "Completed")
     (should (eq (agent-shell-vertico-sidebar--node-at-point) 'idle))
     (forward-line 1)
     (should (eq (agent-shell-vertico-sidebar--node-at-point) other))
@@ -4264,7 +4284,7 @@ The Needs input header counts the whole family drawn under it."
   "A working child draws its idle parent under Working, not Completed."
   (agent-shell-vertico-tests--with-family (list (cons child 'busy))
     (should (equal (agent-shell-vertico-tests--section-headers)
-                   '("▼ Working · 2" "▼ Completed · 1")))
+                   '("Working · 2" "Completed · 1")))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list parent child other)))))
 
@@ -4274,7 +4294,7 @@ The Needs input header counts the whole family drawn under it."
     (agent-shell-vertico-sidebar--set parent 'pinned 1.0)
     (agent-shell-vertico-sidebar--render)
     (should (equal (agent-shell-vertico-tests--section-headers)
-                   '("▼ Pinned · 2" "▼ Completed · 1")))
+                   '("Pinned · 2" "Completed · 1")))
     (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
                    (list parent child other)))))
 
@@ -4289,8 +4309,8 @@ showing a session, so folding it leaves nothing but headers."
     (agent-shell-vertico-sidebar--render)
     (let ((headers (agent-shell-vertico-tests--section-headers)))
       (should (= (length headers) 2))
-      (should (equal (nth 0 headers) "▶ Needs input · 2"))
-      (should (equal (nth 1 headers) "▶ Completed · 1")))
+      (should (equal (nth 0 headers) "Needs input · 2 ⋯"))
+      (should (equal (nth 1 headers) "Completed · 1 ⋯")))
     (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
     (agent-shell-vertico-sidebar--reveal-session child)
     (should (eq (agent-shell-vertico-sidebar--node-at-point) child))
@@ -4685,7 +4705,7 @@ line is the detail alone; the project view starts it with the status."
           (should (equal (cdr lines)
                          ;; Nobody saw the turn end, so it is unread.
                          (list (concat "✻ Review alpha"
-                                       (make-string 10 ?\s) "• 5m")
+                                       (make-string 12 ?\s) "• 5m")
                                "Fixed the quit"))))
         (let ((agent-shell-vertico-sidebar-group-by 'project))
           (agent-shell-vertico-sidebar--render)
@@ -4746,7 +4766,7 @@ line is the detail alone; the project view starts it with the status."
 ;; Long titles: whole when expanded, echoed when cut
 
 (defmacro agent-shell-vertico-tests--with-long-title (&rest body)
-  "Evaluate BODY in a 22-column sidebar showing ALPHA, whose title is long.
+  "Evaluate BODY in a 20-column sidebar showing ALPHA, whose title is long.
 ALPHA is working on a long prompt, so its detail line is cut too."
   (declare (indent 0) (debug t))
   `(agent-shell-vertico-tests--with-session-buffers
@@ -4760,8 +4780,7 @@ ALPHA is working on a long prompt, so its detail line is cut too."
            (agent-shell-vertico-sidebar-extra-info nil)
            (agent-shell-vertico-sidebar-animate-busy nil)
            (agent-shell-vertico-sidebar-title-max-length 24)
-           ;; Two of the columns go to the indent under the section header.
-           (agent-shell-vertico-sidebar-width 22))
+           (agent-shell-vertico-sidebar-width 20))
        (agent-shell-vertico-sidebar--handle-event
         alpha '((:event . input-submitted)
                 (:data . ((:prompt . "please review every changed file")))))
@@ -5056,48 +5075,97 @@ the command to refuse."
 
 (ert-deftest agent-shell-vertico-sidebar-slot-icons-are-characters ()
   (dolist (slot '((project . "⌂") (message . "↳") (subagents . "◇")
-                  (tasks . "$") (expanded . "▼") (collapsed . "▶")))
+                  (tasks . "$")))
     (should (equal (agent-shell-vertico-sidebar--slot-icon (car slot))
                    (cdr slot)))))
 
 (ert-deftest agent-shell-vertico-sidebar-indents-with-line-prefix ()
+  "Rows start at column zero under a header; their lines hang under them.
+
+A header is told apart by its colour and its rule, not by indenting
+what it holds, so a narrow sidebar keeps the two columns.  The hanging
+lines are indented for display only, so copied text carries no leading
+spaces."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
     (let ((agent-shell-test-buffers (list alpha))
           (agent-shell-vertico-sidebar-show-details t)
           (agent-shell-vertico-sidebar-extra-info '(project)))
-      ;; A section header owns column zero; its rows are indented for
-      ;; display only, so copied text carries no leading spaces.
       (let ((agent-shell-vertico-sidebar-group-by 'state))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
           (goto-char (point-min))
-          (should (string-prefix-p "▼ " (buffer-substring-no-properties
-                                         (point) (line-end-position))))
+          (should (string-prefix-p "Completed" (buffer-substring-no-properties
+                                                (point) (line-end-position))))
           (should-not (get-text-property (point) 'line-prefix))
           (forward-line 1)
-          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (should-not (get-text-property (point) 'line-prefix))
           (should (string-prefix-p "✻ Review alpha"
                                    (buffer-substring-no-properties
                                     (point) (line-end-position))))
           (forward-line 1)
-          (should (equal (get-text-property (point) 'line-prefix) "    "))
+          (should (equal (get-text-property (point) 'line-prefix) "  "))
           (should (string-prefix-p "⌂" (buffer-substring-no-properties
                                         (point) (line-end-position))))))
-      ;; Sessions under a project header reserve the fold columns.
       (let ((agent-shell-vertico-sidebar-group-by 'project)
             (agent-shell-vertico-sidebar-expand-by-default t))
         (with-temp-buffer
           (agent-shell-vertico-sidebar-mode)
           (goto-char (point-min))
-          (should (string-prefix-p "▼ " (buffer-substring-no-properties
-                                         (point) (line-end-position))))
+          (should (string-prefix-p "alpha" (buffer-substring-no-properties
+                                            (point) (line-end-position))))
           (should-not (get-text-property (point) 'line-prefix))
           (forward-line 1)
-          (should (equal (get-text-property (point) 'line-prefix) "  "))
+          (should-not (get-text-property (point) 'line-prefix))
           (forward-line 1)
-          (should (equal (get-text-property (point) 'line-prefix) "    ")))))))
+          (should (equal (get-text-property (point) 'line-prefix) "  ")))))))
+
+(ert-deftest agent-shell-vertico-sidebar-header-is-a-coloured-rule ()
+  "A section header is its label in the section's colour, on a rule.
+
+The label has no fold triangle, so nothing on it is a mark point must
+step past, and a folded section says so with a trailing ⋯.  The rule
+is an underline the header's newline extends to the window's edge, in
+the colour of `agent-shell-vertico-sidebar-header-rule'.  The counts
+are grey, and the unread count is the dot's magenta as a whole."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((busy "Codex Agent @ busy" "/work/busy/"
+             '((:session . ((:id . "b") (:title . "Busy")))))
+       (done "Codex Agent @ done" "/work/done/"
+             '((:session . ((:id . "d") (:title . "Done"))))))
+    (let ((agent-shell-test-buffers (list busy done))
+          (agent-shell-test-statuses (list (cons busy 'busy)
+                                           (cons done 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-folded-sections '(idle)))
+      (agent-shell-vertico-sidebar--set done 'unread 10.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (agent-shell-vertico-tests--section-headers)
+                       '("Working · 1" "Completed · 1 · • 1 ⋯")))
+        (goto-char (point-min))
+        (should-not (get-text-property
+                     (point) 'agent-shell-vertico-sidebar-mark-field))
+        (should (memq 'agent-shell-vertico-sidebar-working
+                      (flatten-tree (get-text-property (point) 'face))))
+        (let* ((face (get-text-property (line-end-position) 'face))
+               (rule (if (keywordp (car-safe face))
+                         face
+                       (seq-find (lambda (face)
+                                   (and (consp face)
+                                        (plist-get face :underline)))
+                                 face))))
+          (should rule)
+          (should (plist-get rule :extend)))
+        (search-forward "· 1")
+        (should (memq 'agent-shell-vertico-sidebar-header-count
+                      (flatten-tree (get-text-property (1- (point)) 'face))))
+        (search-forward "• 1")
+        (dolist (pos (list (- (point) 3) (1- (point))))
+          (should (memq 'agent-shell-vertico-sidebar-unread-dot
+                        (flatten-tree (get-text-property pos 'face)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-content-width-accounts-for-gap ()
   "One column for the mark, one for its space, two for each level."
@@ -5126,7 +5194,7 @@ the command to refuse."
                      (point) (line-end-position))))
           ;; The project's sessions are counted after its name, and
           ;; projects start open.
-          (should (string-prefix-p "▼ alpha · 2 " line))
+          (should (string-prefix-p "alpha · 2 " line))
           ;; The attention count holds the right edge of the row.
           (should (string-suffix-p "✻ 1" line))
           (should (= (string-width line)
@@ -5154,7 +5222,7 @@ counts it as unread beside its sessions, the way a section does."
         (goto-char (point-min))
         (should (equal (buffer-substring-no-properties
                         (point) (line-end-position))
-                       "▼ alpha · 2 · • 1"))
+                       "alpha · 2 · • 1"))
         (search-forward "•")
         (should (memq 'agent-shell-vertico-sidebar-unread-dot
                       (ensure-list (get-text-property (1- (point))
@@ -5235,7 +5303,7 @@ count at all."
           (should (string-suffix-p
                    "✻ 2" (cdr (assoc "/work/alpha/" headers))))
           (let ((beta (cdr (assoc "/work/beta/" headers))))
-            (should (equal beta "▶ beta · 2 · • 2"))))))))
+            (should (equal beta "beta · 2 · • 2 ⋯"))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-opens-session-at-point ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -15062,22 +15130,6 @@ no cursor to say where point is."
           (should (= (agent-shell-vertico-sidebar--row-point start)
                      (+ start field))))))))
 
-(ert-deftest agent-shell-vertico-sidebar-point-skips-a-fold-triangle ()
-  "A project's fold triangle is a mark like any other."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((session "Codex Agent @ session" "/work/session/"
-                '((:session . ((:id . "s") (:title . "Session"))))))
-    (let ((agent-shell-test-buffers (list session))
-          (agent-shell-vertico-sidebar-group-by 'project))
-      (with-temp-buffer
-        (agent-shell-vertico-sidebar-mode)
-        (agent-shell-vertico-sidebar--render)
-        (goto-char (point-min))
-        (should (agent-shell-vertico-sidebar--mark-field-p (point)))
-        (should (agent-shell-vertico-sidebar--mark-field-p (1+ (point))))
-        (should-not (agent-shell-vertico-sidebar--mark-field-p
-                     (+ 2 (point))))))))
-
 (ert-deftest agent-shell-vertico-sidebar-moves-point-off-a-mark ()
   "The sidebar installs what moves point off the icons it draws."
   (agent-shell-vertico-tests--with-sidebar
@@ -15181,7 +15233,9 @@ under its point."
               (agent-shell-vertico-tests--with-sidebar
                 (agent-shell-vertico-sidebar--render)
                 (set-window-buffer sidebar-window (current-buffer))
-                (set-window-point sidebar-window (point-min))
+                (set-window-point
+                 sidebar-window
+                 (cdar (agent-shell-vertico-sidebar--session-rows)))
                 (should (agent-shell-vertico-sidebar--mark-field-p
                          (window-point sidebar-window)))
                 (agent-shell-vertico-sidebar--keep-point-off-marks
@@ -15190,7 +15244,8 @@ under its point."
                              (window-point sidebar-window)))
                 (should (= (window-point sidebar-window)
                            (agent-shell-vertico-sidebar--row-point
-                            (point-min)))))))
+                            (cdar
+                             (agent-shell-vertico-sidebar--session-rows))))))))
         (kill-buffer other)))))
 
 ;;; Snoozing
@@ -15482,12 +15537,14 @@ The output is still recorded, and nobody is told about it."
           (agent-shell-vertico-sidebar-mode)
           (agent-shell-vertico-sidebar--render)
           (should (equal (agent-shell-vertico-tests--section-headers)
-                         '("▼ Completed · 1" "▶ Snoozed · 2 · • 1")))
+                         '("Completed · 1" "Snoozed · 2 · • 1 ⋯")))
           (let ((faces (ensure-list
                         (agent-shell-vertico-tests--property-at "•" 'face))))
             (should (memq 'agent-shell-vertico-sidebar-unread-dot faces))
-            (should-not (memq 'agent-shell-vertico-sidebar-snoozed
-                              faces))))))))
+            (should
+             (< (seq-position faces 'agent-shell-vertico-sidebar-unread-dot)
+                (seq-position faces
+                              'agent-shell-vertico-sidebar-snoozed)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-dims-the-title ()
   "A snoozed row's title is drawn dim; its mark keeps the snoozed colour."

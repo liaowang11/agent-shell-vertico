@@ -132,13 +132,19 @@ included, and how many of them hold output you have not read, whether the
 section is folded or open:
 
 ```
-▼ Completed · 5 · • 2
+Completed · 5 · • 2
 ```
 
-The unread count is left out when there is none.  Hover the Needs input
-count to name the sessions waiting for input, and click it to run
-`agent-shell-vertico-sidebar-jump`; a click on the label still folds the
-section.  A project header reads the same way, `▼ my-project · 4 · • 1`, and
+A header is its label in the colour of the state it holds (yellow Needs
+input, blue Working, green Completed, purple Snoozed), with grey counts, a
+magenta unread count and an underline across the sidebar's width; there is
+no fold triangle, so a folded header ends in `⋯` instead.  The rows under
+it start at the left edge rather than indented, which keeps the two columns
+for titles.  The unread count is left out when there is none.
+
+Hover the Needs input count to name the sessions waiting for input, and click
+it to run `agent-shell-vertico-sidebar-jump`; a click on the label still folds
+the section.  A project header reads the same way, `my-project · 4 · • 1`, and
 when some of its sessions wait for you it ends in `✻ N` at the right edge.
 
 In the state view, and under the project view's Pinned header, the default
@@ -440,16 +446,15 @@ keys expose the same restart, kill, interrupt, model, mode, traffic, and
 transcript operations as the Vertico Embark map.
 
 Every mark is a plain character, so the sidebar needs no icon font and reads
-the same in a terminal.  Section and project folds use `▼` and `▶`, the same
-triangles `agent-shell` uses for its own collapsible fragments; a row's
-project line starts with `⌂` and a message line with `↳`.
+the same in a terminal.  A row's project line starts with `⌂` and a message
+line with `↳`.
 
-Sessions under a project header are indented by a `line-prefix` display
-property rather than by inserted spaces, so the indentation is visual only:
-copying a row yields no leading whitespace, and the two reserved columns
-line a session icon up under the project name.
+A side conversation is indented under its parent, and a row's detail and
+project lines hang two columns under its title.  Both are a `line-prefix`
+display property rather than inserted spaces, so the indentation is visual
+only: copying a row yields no leading whitespace.
 
-Point never rests on an icon.  A status mark, a fold triangle, the home on
+Point never rests on an icon.  A status mark, the home on
 a project line, the arrow on a message line, and the gap after each are one
 field, and point landing in it is moved forward on to the text: standing on
 an icon says nothing, and the sidebar draws no cursor to say where point
