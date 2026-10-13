@@ -890,13 +890,26 @@ the whole tree is flat, exactly as before this feature existed."
   (and (fboundp 'agent-shell-side-parent-buffer)
        (agent-shell-side-parent-buffer buffer)))
 
+(defvar agent-shell-vertico-sidebar--render-children nil
+  "During a render, each session's children, keyed by session buffer.
+Bound by `agent-shell-vertico-sidebar--render' and nil outside it.")
+
 (defun agent-shell-vertico-sidebar--children-of (buffer)
   "Return BUFFER's live child sessions, or nil.
 
 Nil whenever `agent-shell-side' is not loaded, for the same reason
-`--parent-of' is."
+`--parent-of' is.  Inside a render each session is asked once
+\(`agent-shell-vertico-sidebar--render-children'): the family walk runs
+for a root's section, its counts and its rows, and every question is a
+pass over every buffer."
   (and (fboundp 'agent-shell-side-children)
-       (agent-shell-side-children buffer)))
+       (let ((cache agent-shell-vertico-sidebar--render-children))
+         (if (not cache)
+             (agent-shell-side-children buffer)
+           (let ((cached (gethash buffer cache 'unknown)))
+             (if (not (eq cached 'unknown))
+                 cached
+               (puthash buffer (agent-shell-side-children buffer) cache)))))))
 
 (defconst agent-shell-vertico-sidebar--async-task-terminal-states
   '("completed" "failed" "stopped")
@@ -2745,7 +2758,9 @@ every session it holds."
   ;; Reserve fringes and margins before measuring `window-body-width':
   ;; neither is part of the text area the rows are laid out to.
   (agent-shell-vertico-sidebar--apply-marker-space)
-  (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+  (let* ((agent-shell-vertico-sidebar--render-children
+          (make-hash-table :test #'eq))
+         (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
          ;; A child with a live parent is inserted under it instead, by
          ;; `--insert-session-and-children'; everything else, including an
          ;; orphan whose parent just died, roots its own place in the sort

@@ -304,6 +304,53 @@ A project header indents nothing, as a section header does not."
             (should (equal (get-text-property (cdr (nth 1 rows)) 'line-prefix)
                            "  "))))))))
 
+(ert-deftest agent-shell-vertico-sidebar-render-asks-each-session-for-children-once ()
+  "One render asks `agent-shell-side' for each session's children once.
+
+The family walk runs for a root's section, its header counts, its
+attention tooltip and its rows, and every walk used to ask again.  Each
+question is a pass over every buffer, which on a live setup made the
+side lookups most of a render's time.  Outside a render the answer is
+live again, so a child forked since is found."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((parent "Codex Agent @ parent" "/work/parent/"
+               '((:session . ((:id . "p") (:title . "Parent")))))
+       (child "Codex Agent @ child" "/work/parent/"
+              '((:session . ((:id . "c") (:title . "Child")))))
+       (grandchild "Codex Agent @ grandchild" "/work/parent/"
+                   '((:session . ((:id . "g") (:title . "Grandchild")))))
+       (other "Codex Agent @ other" "/work/other/"
+              '((:session . ((:id . "o") (:title . "Other"))))))
+    (let ((links (list (cons child parent) (cons grandchild child))))
+      (agent-shell-vertico-tests--with-side-links links
+        (let ((children (symbol-function 'agent-shell-side-children))
+              (asked nil))
+          (cl-letf (((symbol-function 'agent-shell-side-children)
+                     (lambda (&optional owner)
+                       (push (or owner (current-buffer)) asked)
+                       (funcall children owner))))
+            (dolist (view '(state project))
+              (let ((agent-shell-test-buffers
+                     (list parent child grandchild other))
+                    (agent-shell-vertico-sidebar-group-by view)
+                    (agent-shell-vertico-sidebar-sort-by 'name)
+                    (agent-shell-vertico-sidebar-expand-by-default t))
+                (with-temp-buffer
+                  (agent-shell-vertico-sidebar-mode)
+                  (setq asked nil)
+                  (agent-shell-vertico-sidebar--render)
+                  (should (seq-set-equal-p
+                           (mapcar #'car
+                                   (agent-shell-vertico-sidebar--session-rows))
+                           (list parent child grandchild other)))
+                  (should (equal (length asked)
+                                 (length (seq-uniq asked))))
+                  (push (cons other parent) links)
+                  (should (memq other
+                                (agent-shell-vertico-sidebar--children-of
+                                 parent)))
+                  (pop links))))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-sorts-children-within-their-parent ()
   "A parent's children sort among themselves, not by the top-level order.
 
