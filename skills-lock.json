@@ -37,6 +37,12 @@
       "skillPath": "skills/highlight/SKILL.md",
       "computedHash": "21552f0d5e6cc8162bb11c20e0ce5fad45fda89876f95d7a709304c98d549678"
     },
+    "html-plan": {
+      "source": "liaowang11/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/.curated/html-plan/SKILL.md",
+      "computedHash": "090f87552fd4b74c347984e572709efbaeccc28d72df1c935612ce72a7848b8a"
+    },
     "open": {
       "source": "xenodium/emacs-skills",
       "sourceType": "github",
