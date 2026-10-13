@@ -52,6 +52,23 @@
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
 
+(defcustom agent-shell-vertico-consult-preview-key '(:debounce 0.2 any)
+  "Which keys preview a transcript, in `consult-preview-key''s format.
+
+Opening a transcript for preview reads the file, parses it with its
+Markdown mode and fontifies the first screen, which on a median
+transcript costs about 80 ms on the main thread, and none of it can run
+elsewhere.  The default debounces that, so moving across candidates
+previews nothing until the reader stops on one.
+
+This applies to the transcript readers, the session picker's included.
+`consult-customize' cannot reach them, because it keys off the command
+being run and the picker runs inside `agent-shell''s own commands."
+  :type '(choice (const :tag "Any key" any)
+                 (const :tag "No preview" nil)
+                 (sexp :tag "Key, keys or debounce list"))
+  :group 'agent-shell-vertico-transcript)
+
 (defun agent-shell-vertico-consult--async-candidates (project-roots)
   "Return an async stage turning rg output for PROJECT-ROOTS into candidates.
 
@@ -327,6 +344,7 @@ string, which is the buffer name the caller expects."
            :prompt prompt
            :lookup #'consult--lookup-member
            :state (agent-shell-vertico-consult--state)
+           :preview-key agent-shell-vertico-consult-preview-key
            :require-match t
            :category 'agent-shell-transcript
            :narrow (agent-shell-vertico-consult--narrow
@@ -356,6 +374,7 @@ a choice with no transcript behind it previews nothing."
    :prompt prompt
    :lookup #'consult--lookup-member
    :state (agent-shell-vertico-consult--state)
+   :preview-key agent-shell-vertico-consult-preview-key
    :require-match t
    :category 'agent-shell-session-choice
    :narrow (agent-shell-vertico-consult--narrow
@@ -393,6 +412,7 @@ a choice with no transcript behind it previews nothing."
            :prompt "Transcript search: "
            :lookup #'consult--lookup-member
            :state (agent-shell-vertico-consult--state)
+           :preview-key agent-shell-vertico-consult-preview-key
            :require-match t
            :category 'agent-shell-transcript-match
            :narrow (agent-shell-vertico-consult--narrow

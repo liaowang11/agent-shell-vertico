@@ -11665,6 +11665,34 @@ carries no annotation."
       (should-not (plist-get options :sort))
       (should (functionp (plist-get options :state))))))
 
+(ert-deftest agent-shell-vertico-consult-transcript-readers-debounce-preview ()
+  "Every reader previewing a transcript passes the configured preview key."
+  (let* ((record (agent-shell-vertico-transcript-record-create
+                  :file "/tmp/transcript.md" :session-id "abc"))
+         (agent-shell-vertico-consult-preview-key '(:debounce 0.7 any))
+         (keys nil))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (_table &rest options)
+                 (push (plist-get options :preview-key) keys)
+                 nil))
+              ((symbol-function 'consult--process-collection)
+               (lambda (&rest _arguments) 'async-table))
+              ((symbol-function
+                'agent-shell-vertico-transcript--search-directories)
+               (lambda (_roots) '("/tmp/transcripts")))
+              ((symbol-function 'consult--temporary-files) (lambda () #'ignore))
+              ((symbol-function 'consult--jump-preview) (lambda () #'ignore)))
+      (ignore-errors
+        (agent-shell-vertico-consult--read-record "Transcript: " (list record)))
+      (agent-shell-vertico-consult--read-session-choice
+       "Start shell: "
+       (list (agent-shell-vertico-resume--candidate
+              "Resume abc" (agent-shell-vertico-tests--acp-session "abc")
+              record))
+       nil)
+      (agent-shell-vertico-consult--search '("/work/project/")))
+    (should (equal keys (make-list 3 '(:debounce 0.7 any))))))
+
 ;;; Out-of-turn bursts
 
 (defmacro agent-shell-vertico-tests--with-settled-timers (&rest body)
