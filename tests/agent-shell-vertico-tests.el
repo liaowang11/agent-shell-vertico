@@ -1894,22 +1894,21 @@ that row\'s own first line; only a second key leaves for the row above."
                                 (buffer-substring-no-properties
                                  (line-beginning-position)
                                  (line-end-position))))
-        ;; The section header above is a row too, and the top of the list.
-        (agent-shell-vertico-sidebar-previous-row)
-        (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
-                    'section))
+        ;; The section header above is not a stop, so alpha is the top.
         (let ((position (point)))
           (agent-shell-vertico-sidebar-previous-row)
-          (should (= (point) position)))))))
+          (should (= (point) position))
+          (should (eq (agent-shell-vertico-sidebar--node-at-point)
+                      alpha)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-row-motion-with-one-session ()
   "A lone session is still a row both keys can reach and rest on.
 
-Moving down from the only session row has nowhere to go, so point stays
-put and nothing is reported: a sidebar showing one session must not
-answer that it has none.  Moving up reaches its section header and down
-again returns.  From that session\='s own detail lines, backing up still
-lands on its first line."
+Moving either way from the only session row has nowhere to go, since
+its section header is not a stop, so point stays put and nothing is
+reported: a sidebar showing one session must not answer that it has
+none.  From that session\='s own detail lines, backing up still lands on
+its first line."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha"))))))
@@ -1925,9 +1924,6 @@ lands on its first line."
           (should (= (point) row))
           (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
           (agent-shell-vertico-sidebar-previous-row)
-          (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
-                      'section))
-          (agent-shell-vertico-sidebar-next-row)
           (should (= (point) row))
           (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
           ;; The detail line under the title belongs to the same row.
@@ -1942,10 +1938,10 @@ lands on its first line."
           (should (eq (agent-shell-vertico-sidebar--node-at-point)
                       alpha)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-row-motion-stops-on-project-headers ()
-  "Row motion stops on each project header as well as each session.
-Moving down onto a header's session and back up to that header must be
-reversible, and only the ends of the list refuse to move."
+(ert-deftest agent-shell-vertico-sidebar-row-motion-skips-project-headers ()
+  "Row motion stops on sessions only, passing over project headers.
+From a header, either key goes to the nearest session in that direction,
+and only the ends of the list refuse to move."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
               '((:session . ((:id . "a") (:title . "Review alpha")))))
@@ -1961,25 +1957,28 @@ reversible, and only the ends of the list refuse to move."
         (goto-char (point-min))
         (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
                     'project))
-        ;; The first row is the top of the list, so nothing sits above it.
+        ;; Nothing above the first header is a session.
         (let ((position (point)))
           (agent-shell-vertico-sidebar-previous-row)
           (should (= (point) position)))
         (agent-shell-vertico-sidebar-next-row)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
-        ;; Back up onto alpha's own project header.
-        (agent-shell-vertico-sidebar-previous-row)
-        (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
-                    'project))
-        (agent-shell-vertico-sidebar-next-row)
-        (agent-shell-vertico-sidebar-next-row)
-        (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
-                    'project))
+        ;; Alpha's own project header is passed over: alpha is the top.
+        (let ((position (point)))
+          (agent-shell-vertico-sidebar-previous-row)
+          (should (= (point) position)))
+        ;; Beta's project header sits between them and is passed over too.
         (agent-shell-vertico-sidebar-next-row)
         (should (eq (agent-shell-vertico-sidebar--node-at-point) beta))
         (agent-shell-vertico-sidebar-previous-row)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))
+        ;; From beta's header, back up reaches alpha.
+        (agent-shell-vertico-sidebar-next-row)
+        (forward-line -1)
         (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
-                    'project))))))
+                    'project))
+        (agent-shell-vertico-sidebar-previous-row)
+        (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha))))))
 
 (ert-deftest agent-shell-vertico-sidebar-binds-row-motion-keys ()
   "Both key styles move between rows with `C-j' and `C-k'.

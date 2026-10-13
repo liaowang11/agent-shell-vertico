@@ -3883,8 +3883,10 @@ its own first line however deep in it point started."
 (defun agent-shell-vertico-sidebar--move-to-row (backward)
   "Move point to the row after the current one, or BACKWARD of it.
 
-Every project header and every session is a stop, and the current row's own
-context and detail lines are not, so each key lands on one row's first line.
+Every session is a stop, and section and project headers are not, nor are
+the current row's own context and detail lines, so each key lands on one
+session's first line.  From a header, either key goes to the nearest session
+in its direction.
 Moving back from one of those lines lands on the row point is already in,
 and only the next key leaves it: a session's path and details are part of
 its row, so backing out of them must not skip the row itself.
@@ -3896,7 +3898,10 @@ that there is no row would say the opposite of what the sidebar shows."
          (start (agent-shell-vertico-sidebar--row-start node-positions)))
     (if (and backward (> (line-beginning-position) start))
         (goto-char (agent-shell-vertico-sidebar--row-point start))
-      (let* ((rows (mapcar #'cdr node-positions))
+      (let* ((rows (mapcar #'cdr
+                           (seq-filter (lambda (entry)
+                                         (eq (caar entry) 'session))
+                                       node-positions)))
              (position (seq-find (if backward
                                      (lambda (position) (< position start))
                                    (lambda (position) (> position start)))
@@ -3905,15 +3910,15 @@ that there is no row would say the opposite of what the sidebar shows."
           (goto-char (agent-shell-vertico-sidebar--row-point position)))))))
 
 (defun agent-shell-vertico-sidebar-next-row ()
-  "Move point to the first line of the next session or project row."
+  "Move point to the first line of the next session row, past any header."
   (interactive)
   (agent-shell-vertico-sidebar--move-to-row nil))
 
 (defun agent-shell-vertico-sidebar-previous-row ()
-  "Move point to the first line of the row above the one point sits in.
+  "Move point to the first line of the session row above point.
 
 From a session's own path or detail lines this is that session's first
-line, so the row point is in is never skipped."
+line, so the row point is in is never skipped.  Headers are passed over."
   (interactive)
   (agent-shell-vertico-sidebar--move-to-row t))
 

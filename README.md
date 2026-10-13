@@ -549,19 +549,20 @@ built-in `help-at-pt` support:
 ```
 
 The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
-previous row, session, section or project header), `TAB` (fold or session
-details), `S-TAB` (cycle all fold levels), `=` (switch between the state and
-project views), `s` (sort), `g` (refresh), `c` (new session), `k` (kill), `r`
-(restart), `i` (interrupt), `m`/`M` (mode/model), `C` (rename), `A`
+previous session, passing over section and project headers), `TAB` (fold or
+session details), `S-TAB` (cycle all fold levels), `=` (switch between the state
+and project views), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
+`r` (restart), `i` (interrupt), `m`/`M` (mode/model), `C` (rename), `A`
 (archive), `a` (side conversation), `F` (fork), `Y` (copy the session ID),
 `t`/`T` (traffic/transcript), `u`/`!` (mark unread/read), `z` (snooze), `P`
 (pin), `p` (peek), `S` (list subagents), `?` (show the key reference), and `q`
 (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
-rows, `C-j`/`C-k` move a whole row at a time, `RET` activates the current row or
-metadata field, `o` opens the session, `O` opens it in another window, `TAB`
-toggles the current row, and `S-TAB` cycles every row through the fold levels.
+rows, `C-j`/`C-k` move a whole session row at a time, skipping headers, `RET`
+activates the current row or metadata field, `o` opens the session, `O` opens it
+in another window, `TAB` toggles the current row, and `S-TAB` cycles every row
+through the fold levels.
 `gr` refreshes, `D` kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
 read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
