@@ -694,22 +694,14 @@ Keys are positional on purpose: under `priority` sorting rows move, so a
 per-session sticky key would need a persistent label column to be readable,
 and that is a separate feature.
 
-**Drilling into a parent's children.** `--read-jump-target` keys only
-`roots` in its first read, the same set `--render` now sorts at the top
-level, so a child never receives a label there and dims like any other
-unlabelled row. Choosing a root with live children does not end the read:
-`--read-child-jump-target` reuses the chosen key for the parent itself, so
-landing on the parent directly is still one press away, hands out fresh
-keys from `agent-shell-vertico-sidebar-jump-keys' \(minus the one already
-spent\) to its children, and dims everything outside that family with the
-same `--dim-overlays' the first read used. The action a dispatch key had
-already set before drilling in is not lost: it is threaded through as
-`--read-jump-keys''s DEFAULT-ACTION, so pressing an action key, then a
-parent with children, then one of them, still runs that action on the
-child rather than silently falling back to a plain jump. Nothing here
-changes `agent-shell-vertico-sidebar-jump' or `-jump-to-index': both still
-rank and index every live session, child included, because reading two
-keys to choose one is only what a manual jump needs.
+**Keying a parent's children.** `--read-jump-target` keys every session
+row, a side conversation's as much as its parent's, so the keys count the
+rows `-jump-to-index` counts and one press reaches any session. An earlier
+version keyed only `roots` and drilled into a chosen parent's children in a
+second read; that made a child unreachable by the key on screen while
+`jump-to-N` landed on it directly, and the user chose the consistent answer.
+Children therefore spend keys from `agent-shell-vertico-sidebar-jump-keys`
+like any other row.
 
 **Jumping to a session by position.** `--jump-to-index` is the blind jump the
 `agent-shell-vertico-sidebar-jump-to-1' family is bound to, and it answers a

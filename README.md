@@ -368,8 +368,9 @@ shows something running.
 `ace-window` picks a window.  The sidebar is drawn in the state view with
 every section open, each row's status mark replaced by a key from
 `agent-shell-vertico-sidebar-jump-keys`, digits `1`-`9` then the home row
-by default, in row order; press a key and that session is displayed.  A
-hidden sidebar is shown for the read and closed again after it, and a shown
+by default, in row order, side conversations included; press a key and
+that session is displayed.  A hidden sidebar is shown for the read and
+closed again after it, and a shown
 one returns to its own view after, folds as they were, so the command works
 from anywhere without changing the sidebar.  The keys follow the
 rows, so they are assigned afresh each time and read off the sidebar

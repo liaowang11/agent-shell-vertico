@@ -5226,8 +5226,7 @@ not be relied on to do."
   "Read one key with PROMPT."
   (read-key prompt))
 
-(defun agent-shell-vertico-sidebar--read-jump-keys
-    (labels labelled total &optional default-action)
+(defun agent-shell-vertico-sidebar--read-jump-keys (labels labelled total)
   "Read which of LABELS to act on, and what to do with it.
 
 LABELLED and TOTAL are how many sessions carry a key and how many there
@@ -5236,15 +5235,6 @@ are, which the prompt reports.  Reading loops: an action key from
 session key will do and asks again, `?' adds the list of actions above
 the prompt, and a session key ends the read.  Return (BUFFER . ACTION),
 where ACTION takes a session buffer.
-
-DEFAULT-ACTION is what a session key resolves to absent an explicit
-dispatch key, `--jump-display' unless the caller passes its own.  A
-parent session with children is answered in two reads, one over the
-parent rows and one over just that parent's children once it is
-chosen; passing the first read's result back in as DEFAULT-ACTION for
-the second is what keeps a dispatch key pressed before drilling in
-\(kill, say\) aimed at the child eventually chosen rather than silently
-falling back to a plain jump.
 
 The labels stay drawn throughout, so choosing an action costs no
 redraw, and the action itself is left to the caller to run once the
@@ -5270,7 +5260,6 @@ sidebar is back as it was."
          (session
           (setq result (cons session
                              (or (nth 1 action)
-                                 default-action
                                  #'agent-shell-vertico-sidebar--jump-display))))
          ((eq key ??) (setq help t))
          ((assq key agent-shell-vertico-sidebar-jump-dispatch-alist)
@@ -5279,43 +5268,8 @@ sidebar is back as it was."
          (t (user-error "No session on %s" (single-key-description key))))))
     result))
 
-(defun agent-shell-vertico-sidebar--read-child-jump-target
-    (rows window parent-key parent children action)
-  "Read which of PARENT or its CHILDREN to act on.
-
-ROWS and WINDOW are as in `--read-jump-target'.  PARENT-KEY is the key
-PARENT was already chosen by in the first read, kept live here so
-choosing a session with children does not cost the ability to land on
-the parent itself.  ACTION is the action already resolved for PARENT
-in that first read, offered as the default here so a dispatch key
-pressed before drilling in \(kill, say\) survives to whichever child is
-chosen next instead of quietly falling back to a plain jump.
-
-Return (cons RESULT OVERLAYS), RESULT being
-`agent-shell-vertico-sidebar--read-jump-keys' own (BUFFER . ACTION) and
-OVERLAYS the ones this read drew, for the caller to fold into its own
-cleanup list."
-  (let* ((child-rows (seq-filter (lambda (row) (memq (car row) children))
-                                 rows))
-         (child-keyed (agent-shell-vertico-sidebar--visible-rows
-                       child-rows window))
-         (labels (cons (cons parent-key parent)
-                       (cl-mapcar (lambda (key row) (cons key (car row)))
-                                  (remove parent-key
-                                          agent-shell-vertico-sidebar-jump-keys)
-                                  child-keyed)))
-         (keyed (cons (assq parent rows) child-keyed))
-         (overlays
-          (append (agent-shell-vertico-sidebar--dim-overlays
-                   window rows labels)
-                  (agent-shell-vertico-sidebar--show-jump-labels
-                   labels keyed))))
-    (cons (agent-shell-vertico-sidebar--read-jump-keys
-           labels (length labels) (1+ (length child-rows)) action)
-          overlays)))
-
 (defun agent-shell-vertico-sidebar--read-jump-target ()
-  "Key the top-level sessions drawn in the sidebar and read which.
+  "Key the sessions drawn in the sidebar and read which.
 
 A hidden sidebar is shown for the read and closed again after it.  The
 sidebar is drawn in the state view with every section open for the
@@ -5324,12 +5278,9 @@ under the real view and folds, which is also what puts a sidebar shown
 on another frame back: the buffer is shared, so the read's render
 reached that frame too.  The folds themselves are never touched.
 
-A session with live children is not enough to end the read: nesting
-already puts a child's row right after its parent's, so `labels' only
-keys the rows with no parent \(see `--parent-of'\), leaving every
-child dimmed like any other unlabelled row.  Choosing a parent this way
-starts a second read, scoped to just its own rows, via
-`--read-child-jump-target'.
+Every row is keyed, a side conversation's as much as its parent's, so
+the keys count the rows `agent-shell-vertico-sidebar-jump-to-index'
+counts.
 
 Return (BUFFER . ACTION) from
 `agent-shell-vertico-sidebar--read-jump-keys'.  The action is returned
@@ -5362,12 +5313,8 @@ window free for a prompt of its own."
           (agent-shell-vertico-sidebar--clear-busy-overlays)
           (let* ((agent-shell-vertico-sidebar--jump-in-progress t)
                  (rows (agent-shell-vertico-sidebar--session-rows))
-                 (roots (seq-remove
-                         (lambda (row)
-                           (agent-shell-vertico-sidebar--parent-of (car row)))
-                         rows))
                  (keyed (agent-shell-vertico-sidebar--visible-rows
-                         roots window))
+                         rows window))
                  (labels (cl-mapcar (lambda (key row) (cons key (car row)))
                                     agent-shell-vertico-sidebar-jump-keys
                                     keyed)))
@@ -5377,20 +5324,8 @@ window free for a prompt of its own."
                     window rows labels)
                    (agent-shell-vertico-sidebar--show-jump-labels
                     labels keyed)))
-            (let* ((choice (agent-shell-vertico-sidebar--read-jump-keys
-                            labels (length labels) (length roots)))
-                   (children (agent-shell-vertico-sidebar--children-of
-                              (car choice))))
-              (if (null children)
-                  choice
-                (mapc #'delete-overlay overlays)
-                (setq overlays nil)
-                (let ((refined
-                       (agent-shell-vertico-sidebar--read-child-jump-target
-                        rows window (car (rassq (car choice) labels))
-                        (car choice) children (cdr choice))))
-                  (setq overlays (cdr refined))
-                  (car refined))))))
+            (agent-shell-vertico-sidebar--read-jump-keys
+             labels (length labels) (length rows))))
       (mapc #'delete-overlay overlays)
       (unless existing
         (when (window-live-p window)
@@ -5417,11 +5352,9 @@ Press `?' to list the actions in
 to do that to the next session chosen instead of displaying it, the way
 `ace-window' dispatches on `aw-dispatch-alist'.
 
-A session with a child \(a side conversation, see `agent-shell-side'\)
-does not end the read: only sessions with no parent are keyed at
-first, and choosing one with children starts a second read, dimmed
-down to just that session and its children, its own key still live
-for landing on it directly instead of a child.
+A side conversation \(see `agent-shell-side'\) is keyed on its own row
+under its parent, as `agent-shell-vertico-sidebar-jump-to-index'
+counts it.
 
 Only the rows the sidebar window shows are keyed, and only as many as
 there are keys.  Nothing scrolls, because the read cannot be

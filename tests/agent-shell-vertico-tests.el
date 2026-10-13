@@ -13002,8 +13002,11 @@ still counts, since the step opens no sidebar and draws nothing."
                        "Jump to session: "))
         (should (eq agent-shell-test-displayed-buffer alpha))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-by-key-does-not-label-a-child ()
-  "A session with a live parent is not itself offered a key at the top level."
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-labels-a-child ()
+  "A side conversation gets a key of its own, in row order.
+
+The keys follow the rows `agent-shell-vertico-sidebar-jump-to-index'
+counts, so a child drawn under its parent is one press away as well."
   (agent-shell-vertico-tests--with-session-buffers
       ((parent "Codex Agent @ parent" "/work/parent/"
                '((:session . ((:id . "p") (:title . "Alpha Parent")))))
@@ -13016,45 +13019,18 @@ still counts, since the step opens no sidebar and draws nothing."
             (agent-shell-vertico-sidebar-sort-by 'name)
             (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
             seen)
-        ;; Other has no children, so answering its own key ends the read
-        ;; in one step: nothing here needs to drill in.
         (agent-shell-vertico-tests--with-jump-by-key
             (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown))
                    ?2)
           (agent-shell-vertico-sidebar-jump-by-key)
-          (should (equal seen (list (cons ?1 parent) (cons ?2 other))))
-          (should (eq agent-shell-test-displayed-buffer other)))))))
-
-(ert-deftest agent-shell-vertico-sidebar-jump-by-key-drills-into-a-parents-children ()
-  "Choosing a parent starts a second read scoped to its own children.
-
-The parent keeps the key it was already chosen by, so the second read's
-labels are the parent's own key plus fresh ones for each child."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((parent "Codex Agent @ parent" "/work/parent/"
-               '((:session . ((:id . "p") (:title . "Alpha Parent")))))
-       (child "Codex Agent @ child" "/work/parent/"
-              '((:session . ((:id . "c") (:title . "Child")))))
-       (other "Codex Agent @ other" "/work/other/"
-              '((:session . ((:id . "o") (:title . "Zeta Other"))))))
-    (agent-shell-vertico-tests--with-side-links (list (cons child parent))
-      (let ((agent-shell-test-buffers (list parent child other))
-            (agent-shell-vertico-sidebar-sort-by 'name)
-            (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
-            (keys (list ?1 ?2))
-            seen-second-read)
-        (agent-shell-vertico-tests--with-jump-by-key
-            (let ((key (pop keys)))
-              (unless keys
-                (setq seen-second-read
-                      (agent-shell-vertico-tests--jump-labels-shown)))
-              key)
-          (agent-shell-vertico-sidebar-jump-by-key)
-          (should (equal seen-second-read (list (cons ?1 parent) (cons ?2 child))))
+          (should (equal seen (list (cons ?1 parent) (cons ?2 child)
+                                    (cons ?3 other))))
+          (should (equal agent-shell-vertico-tests--jump-prompt
+                         "Jump to session: "))
           (should (eq agent-shell-test-displayed-buffer child)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-by-key-can-reselect-the-parent ()
-  "The parent's own key still lands on it once its children are offered."
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-parent-ends-the-read ()
+  "Choosing a parent lands on it; its children start no second read."
   (agent-shell-vertico-tests--with-session-buffers
       ((parent "Codex Agent @ parent" "/work/parent/"
                '((:session . ((:id . "p") (:title . "Alpha Parent")))))
@@ -13064,17 +13040,15 @@ labels are the parent's own key plus fresh ones for each child."
       (let ((agent-shell-test-buffers (list parent child))
             (agent-shell-vertico-sidebar-sort-by 'name)
             (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
-            (keys (list ?1 ?1)))
-        (agent-shell-vertico-tests--with-jump-by-key (pop keys)
+            (reads 0))
+        (agent-shell-vertico-tests--with-jump-by-key
+            (progn (setq reads (1+ reads)) ?1)
           (agent-shell-vertico-sidebar-jump-by-key)
+          (should (= reads 1))
           (should (eq agent-shell-test-displayed-buffer parent)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-jump-by-key-dispatch-survives-drilling-in ()
-  "An action picked before drilling into a parent still lands on the child.
-
-Without threading the first read's resolved action through as the
-second read's default, choosing the child afterwards would silently
-fall back to a plain jump instead of running the action."
+(ert-deftest agent-shell-vertico-sidebar-jump-by-key-dispatches-on-a-child ()
+  "An action key followed by a child's key runs the action on the child."
   (agent-shell-vertico-tests--with-session-buffers
       ((parent "Codex Agent @ parent" "/work/parent/"
                '((:session . ((:id . "p") (:title . "Alpha Parent")))))
@@ -13086,7 +13060,7 @@ fall back to a plain jump instead of running the action."
       (let ((agent-shell-test-buffers (list parent child other))
             (agent-shell-vertico-sidebar-sort-by 'name)
             (agent-shell-vertico-sidebar-jump-keys '(?1 ?2 ?3))
-            (keys (list ?i ?1 ?2))
+            (keys (list ?i ?2))
             acted)
         (let ((agent-shell-vertico-sidebar-jump-dispatch-alist
                `((?i ,(lambda (buffer) (setq acted buffer)) "interrupt"))))
