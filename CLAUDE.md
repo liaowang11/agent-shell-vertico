@@ -414,6 +414,8 @@ permission request ages from the `waiting-since` slot, stamped by each
 `permission-request` and cleared by `input-submitted` and the turn's end
 (`--stamp-terminal`), because reading the request drops `unread` while the
 session still waits; a turn that ends on `needs input:` ages from its end.
+The `unread` slot is never an age: it is a place in the unread queue, which
+`mark-unread` moves, so pressing it would otherwise reset the age it shows.
 Titles stay one line, cut with `…`, unless
 `agent-shell-vertico-sidebar-wrap-titles` is set, so every row has one height.
 An expanded row (`TAB`) wraps its whole title instead, past
@@ -519,10 +521,14 @@ be, and says so rather than not moving (`--attention-here-message`);
 jump's message when nothing needs attention.
 `agent-shell-vertico-sidebar-mark-unread` is the only mark the reader sets by
 hand, and it writes the same record the events write, so status names, bold
-titles, ranks, counters and the jump order need no case for it. It stamps the
-session's last activity time, not the current time, so the oldest-first tier
-stays truthful; it refuses a `busy` session, whose turn has produced nothing to
-miss; and it leaves an existing mark at its own time. It deliberately does not
+titles, ranks, counters and the jump order need no case for it. The unread
+tier is a queue in the order sessions became unread, and the jump pops its
+head, so the command stamps the current time: the session joins the back,
+behind every session already waiting, and one that is unread already moves
+there too, which is how a row is put off without being read. That was the
+user's call; an earlier version stamped the last activity time to undo an
+accidental read in place. It refuses a `busy` session, whose turn has produced
+nothing to miss. It deliberately does not
 fight the clear paths: marking a session unread while sitting in it holds only
 until the reader is next seen looking at it, which is a decision, not an
 oversight. `agent-shell-vertico-sidebar-mark-read` is the same record in reverse

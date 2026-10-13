@@ -1437,13 +1437,13 @@ NEEDS, else the turn's `result:' line, else its newest entry."
 
 (defun agent-shell-vertico-sidebar--state-since (snapshot)
   "Return when the session in SNAPSHOT entered its band, or nil."
-  (pcase-let (((map :band :snoozed :unread :busy-since-time
+  (pcase-let (((map :band :snoozed :busy-since-time
                     :background-since :last-terminal-at :created-at
                     :waiting-since)
                snapshot))
     (pcase band
       ('snoozed snoozed)
-      ('attention (or waiting-since unread last-terminal-at created-at))
+      ('attention (or waiting-since last-terminal-at created-at))
       ('working (or busy-since-time background-since created-at))
       (_ (or last-terminal-at created-at)))))
 
@@ -4643,15 +4643,12 @@ one, so the command works from the session the reader walked into."
 (defun agent-shell-vertico-sidebar-mark-unread ()
   "Mark the session at point, or the current session, as unread.
 
-Displaying a session counts as reading it, so opening one by mistake
-drops the mark that said its output was still owed to the reader.  This
-puts that mark back: the session returns to the head of the sidebar's
-`priority' order, and `agent-shell-vertico-sidebar-jump' visits it
-again.
-
-The mark carries the session's last activity time rather than now, so
-the attention tier still runs oldest first and a session marked by hand
-does not jump ahead of one that has waited longer.
+The unread sessions are a queue: the sidebar's `priority' order lists
+them in the order they became unread, and
+`agent-shell-vertico-sidebar-jump' visits the head.  This puts the
+session at the back of that queue, so the jump visits it after every
+session already waiting.  A session that is unread already moves to the
+back too, which is how one is put off without being read.
 
 A working session is refused, because nothing has finished for the
 reader to have missed, and the turn marks itself unread when it
@@ -4666,22 +4663,12 @@ it until Emacs regains input focus."
   (interactive)
   (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
          (status (agent-shell-vertico-sidebar--raw-status buffer)))
-    (cond
-     ((eq status 'busy)
+    (when (eq status 'busy)
       (user-error "Session %s is still working" (buffer-name buffer)))
-     ((agent-shell-vertico-sidebar--unread-p buffer)
-      (if (not (agent-shell-vertico-sidebar--get buffer 'snoozed))
-          (message "Session %s is already unread" (buffer-name buffer))
-        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-        (agent-shell-vertico-sidebar-refresh)
-        (message "Session %s marked unread" (buffer-name buffer))))
-     (t
-      (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-      (agent-shell-vertico-sidebar--mark-unread-at
-       buffer (or (agent-shell-vertico-sidebar--get buffer 'updated-at)
-                  (float-time)))
-      (agent-shell-vertico-sidebar-refresh)
-      (message "Session %s marked unread" (buffer-name buffer))))))
+    (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+    (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))
+    (agent-shell-vertico-sidebar-refresh)
+    (message "Session %s marked unread" (buffer-name buffer))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-mark-read ()

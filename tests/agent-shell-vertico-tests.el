@@ -4806,9 +4806,14 @@ is a still disc, so a working mark still differs in shape."
   (should (= (agent-shell-vertico-sidebar--state-since
               '(:band snoozed :snoozed 5.0 :last-terminal-at 1.0))
              5.0))
+  ;; The unread mark is a place in the queue, which marking a session
+  ;; by hand moves, so it never says how long a session has waited.
   (should (= (agent-shell-vertico-sidebar--state-since
               '(:band attention :unread 7.0 :last-terminal-at 1.0))
-             7.0))
+             1.0))
+  (should (= (agent-shell-vertico-sidebar--state-since
+              '(:band attention :unread 7.0 :created-at 2.0))
+             2.0))
   (should (= (agent-shell-vertico-sidebar--state-since
               '(:band attention :waiting-since 9.0 :unread 7.0
                       :last-terminal-at 1.0))
@@ -13853,11 +13858,12 @@ icon font of the mark it is drawn over."
         (agent-shell-vertico-sidebar--render)
         (goto-char (point-min))
         (search-forward "Review alpha")
-        (agent-shell-vertico-sidebar-mark-unread)
-        ;; The mark carries the session's own last activity time rather
-        ;; than now, so the attention tier still runs oldest first.
-        (should (equal (agent-shell-vertico-sidebar--get alpha 'unread)
-                       100.0))))))
+        (let ((before (float-time)))
+          (agent-shell-vertico-sidebar-mark-unread)
+          ;; The mark is made now, not when the session last spoke, so
+          ;; the session joins the back of the unread queue.
+          (should (>= (agent-shell-vertico-sidebar--get alpha 'unread)
+                      before)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-marks-the-current-session ()
   "Marking works from the session buffer, which is where the mistake happens."
@@ -13902,22 +13908,21 @@ a `done' mark on a running turn would report it as finished."
                       :type 'user-error))
       (should-not (agent-shell-vertico-sidebar--get alpha 'unread)))))
 
-(ert-deftest agent-shell-vertico-sidebar-mark-unread-keeps-its-time ()
-  "A session already unread keeps the time it has.
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-requeues-at-the-back ()
+  "Marking a session unread puts it behind every session already unread.
 
-The attention tier runs oldest first, so re-marking a session must not
-move it behind the ones that have waited less."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Review alpha"))))))
-    (let ((agent-shell-test-buffers (list alpha))
-          (agent-shell-test-statuses (list (cons alpha 'ready)))
-          (inhibit-message t))
-      (agent-shell-vertico-sidebar--mark-unread-at alpha 100.0)
+That holds for a session that is unread already, which a sidebar row
+can be marked without being read, so the jump visits the others first."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((inhibit-message t))
+      (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+      (agent-shell-vertico-sidebar--mark-unread-at beta 20.0)
+      (should (equal (agent-shell-vertico-sidebar--attention-sessions)
+                     (list alpha beta)))
       (with-current-buffer alpha
         (agent-shell-vertico-sidebar-mark-unread))
-      (should (equal (agent-shell-vertico-sidebar--get alpha 'unread)
-                     100.0)))))
+      (should (equal (agent-shell-vertico-sidebar--attention-sessions)
+                     (list beta alpha))))))
 
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-needs-a-session ()
   (agent-shell-vertico-tests--with-session-buffers
@@ -15687,13 +15692,16 @@ The output is still recorded, and nobody is told about it."
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-wakes-a-snooze ()
   "Asking for a session again ends its snooze; reading it does not."
   (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-sidebar--set alpha 'updated-at 10.0)
     (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
     (agent-shell-vertico-tests--snooze alpha)
     (with-current-buffer alpha (agent-shell-vertico-sidebar-mark-read))
     (should (agent-shell-vertico-sidebar--snoozed-p alpha))
     (with-current-buffer alpha (agent-shell-vertico-sidebar-mark-unread))
     (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
-    (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))
+    (should (agent-shell-vertico-sidebar--needs-attention-p alpha))
+    ;; Woken by hand, it joins the back of the queue like any other.
+    (should (> (agent-shell-vertico-sidebar--get alpha 'unread) 10.0))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-header-counts-once ()
   "Snoozed sessions share one header count, whatever their state."

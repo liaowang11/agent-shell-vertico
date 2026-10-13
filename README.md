@@ -304,16 +304,16 @@ window is marked unread.  Submitting a new prompt clears the mark, since the
 previous turn has by then been seen, and so does seeing the session in the
 selected window.
 
-Displaying a session counts as reading it, so walking into one by mistake
-drops its mark.  `u` puts the mark back: the session returns to the head of
-the `priority` order and `agent-shell-vertico-sidebar-jump` visits it again.
+The unread sessions are a queue, in the order they became unread, and
+`agent-shell-vertico-sidebar-jump` visits the head.  `u` puts a session at
+the back of it, so the jump visits it after every session already waiting;
+a session that is unread already moves to the back too, which puts it off
+without reading it.
 Both commands work on the row at point in the sidebar and on the session or
 viewport buffer itself, so bind `agent-shell-vertico-sidebar-mark-unread`
 and `agent-shell-vertico-sidebar-mark-read` in `agent-shell-mode-map`
 (`C-c u` and `C-c !` are free there) to mark the session you are standing
-in.  The mark carries the session's last activity time rather than
-the current time, so a session marked by hand does not jump ahead of one
-that has waited longer.  A working session is refused, since its turn marks
+in.  A working session is refused, since its turn marks
 itself unread when it finishes away from you.  Leave the session after
 marking it: the mark clears again as soon as you are seen looking at the
 session.
