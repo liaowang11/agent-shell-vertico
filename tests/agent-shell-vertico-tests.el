@@ -1226,7 +1226,7 @@ the magenta of a row's dot, which wins over the section's colour."
 
 (ert-deftest agent-shell-vertico-sidebar-help-opens-help-buffer ()
   (let ((buffer-name agent-shell-vertico-sidebar--help-buffer))
-    (when-let ((buffer (get-buffer buffer-name)))
+    (when-let* ((buffer (get-buffer buffer-name)))
       (kill-buffer buffer))
     (unwind-protect
         (progn
@@ -1236,7 +1236,7 @@ the magenta of a row's dot, which wins over the section's colour."
           (with-current-buffer buffer-name
             (should (derived-mode-p 'help-mode))
             (should (string-match-p "Agent Shell Sidebar" (buffer-string)))))
-      (when-let ((buffer (get-buffer buffer-name)))
+      (when-let* ((buffer (get-buffer buffer-name)))
         (kill-buffer buffer)))))
 
 (ert-deftest agent-shell-vertico-sidebar-evil-bindings-keep-jk-navigation ()
@@ -1409,7 +1409,7 @@ the magenta of a row's dot, which wins over the section's colour."
               (should-not (get-buffer-window sidebar))))
         (when (window-live-p original)
           (select-window original))
-        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
 (ert-deftest agent-shell-vertico-sidebar-toggle-closes-visible-window ()
@@ -1449,7 +1449,7 @@ the magenta of a row's dot, which wins over the section's colour."
                           window))))
         (when (window-live-p original)
           (select-window original))
-        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focus-lands-on-shown-session ()
@@ -1480,7 +1480,7 @@ the magenta of a row's dot, which wins over the section's colour."
         (when (window-live-p original)
           (select-window original)
           (set-window-buffer original original-buffer))
-        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focus-unfolds-shown-session ()
@@ -1512,7 +1512,7 @@ root would open the wrong group and leave its row hidden."
           (when (window-live-p original)
             (select-window original)
             (set-window-buffer original original-buffer))
-          (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
             (kill-buffer sidebar)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focus-from-sidebar-returns ()
@@ -1533,7 +1533,7 @@ root would open the wrong group and leave its row hidden."
               (should (window-live-p sidebar))))
         (when (window-live-p original)
           (select-window original))
-        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
 (ert-deftest agent-shell-vertico-sidebar-focus-returns-past-deleted-window ()
@@ -1556,7 +1556,7 @@ root would open the wrong group and leave its row hidden."
           (delete-window entered))
         (when (window-live-p original)
           (select-window original))
-        (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
 (ert-deftest agent-shell-vertico-sidebar-permission-request-marks-unread ()
@@ -2018,7 +2018,7 @@ point, and a refresh would send it to the top of the list."
 Rendering erases the buffer it runs in, so the command has to reach the
 sidebar buffer rather than whatever buffer the user called it from."
   (let ((other (generate-new-buffer " *agent-shell-vertico-other*")))
-    (when-let ((stale (get-buffer "*Agent Shell Sessions*")))
+    (when-let* ((stale (get-buffer "*Agent Shell Sessions*")))
       (kill-buffer stale))
     (unwind-protect
         (with-current-buffer other
@@ -12613,7 +12613,7 @@ buffer and the selected window are put back afterwards."
            ,@body)
        (when (window-live-p original)
          (select-window original))
-       (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+       (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
          (kill-buffer sidebar)))))
 
 (defvar agent-shell-vertico-tests--jump-prompt nil

@@ -1368,8 +1368,8 @@ repeating those queries during one redisplay."
          (root (agent-shell-vertico-sidebar--project-root buffer))
          (project-name
           (agent-shell-vertico-sidebar--project-name-from-buffer buffer root))
-         (recency-time (or (when-let ((time (buffer-local-value
-                                             'buffer-display-time buffer)))
+         (recency-time (or (when-let* ((time (buffer-local-value
+                                              'buffer-display-time buffer)))
                              (float-time time))
                            0.0)))
     (append
@@ -1481,16 +1481,16 @@ does."
 
 (defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
   "Return FIELD from BUFFER's current render snapshot, when available."
-  (when-let ((snapshot
-              (and (hash-table-p agent-shell-vertico-sidebar--render-snapshots)
-                   (gethash buffer agent-shell-vertico-sidebar--render-snapshots))))
+  (when-let* ((snapshots agent-shell-vertico-sidebar--render-snapshots)
+              ((hash-table-p snapshots))
+              (snapshot (gethash buffer snapshots)))
     (plist-get snapshot field)))
 
 (defun agent-shell-vertico-sidebar--activity-time (buffer)
   "Return latest observed activity time for BUFFER."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :activity-time)
       (agent-shell-vertico-sidebar--get buffer 'updated-at)
-      (when-let ((time (buffer-local-value 'buffer-display-time buffer)))
+      (when-let* ((time (buffer-local-value 'buffer-display-time buffer)))
         (float-time time))
       0.0))
 
@@ -1645,7 +1645,7 @@ stays total and deterministic."
          fields)
     (dolist (field agent-shell-vertico-sidebar-extra-info)
       (unless (and omit-project (eq field 'project))
-        (when-let ((value (alist-get field values)))
+        (when-let* ((value (alist-get field values)))
           (push value fields))))
     (setq fields (nreverse fields))
     (let (lines)
@@ -1877,7 +1877,7 @@ ones first and said the snoozed ones can wait."
                        (agent-shell-vertico-sidebar--activity-time left))
                       ('recency (or (agent-shell-vertico-sidebar--snapshot-field
                                      left :recency-time)
-                                    (when-let ((time (buffer-local-value
+                                    (when-let* ((time (buffer-local-value
                                                        'buffer-display-time left)))
                                       (float-time time))
                                     0.0))
@@ -1889,7 +1889,7 @@ ones first and said the snoozed ones can wait."
                         (agent-shell-vertico-sidebar--activity-time right))
                        ('recency (or (agent-shell-vertico-sidebar--snapshot-field
                                       right :recency-time)
-                                     (when-let ((time (buffer-local-value
+                                     (when-let* ((time (buffer-local-value
                                                         'buffer-display-time right)))
                                        (float-time time))
                                      0.0))
@@ -2282,9 +2282,9 @@ parent-child relationship."
       (let ((next (or (next-single-property-change
                       position 'agent-shell-vertico-sidebar-field nil end)
                       end)))
-        (when-let ((help-echo
-                    (get-text-property
-                     position 'agent-shell-vertico-sidebar-field-help-echo)))
+        (when-let* ((help-echo
+                     (get-text-property
+                      position 'agent-shell-vertico-sidebar-field-help-echo)))
           (add-text-properties position next
                                (list 'mouse-face 'highlight
                                      'help-echo help-echo)))
@@ -2758,8 +2758,8 @@ every session it holds."
          ;; Any visible frame, matching the check that lets an event-driven
          ;; refresh through: looking only at the selected frame would render
          ;; a sidebar on another frame at the fallback width.
-         (width (or (when-let ((window (get-buffer-window (current-buffer)
-                                                          'visible)))
+         (width (or (when-let* ((window (get-buffer-window (current-buffer)
+                                                           'visible)))
                       (window-body-width window))
                     agent-shell-vertico-sidebar-width))
          ;; `erase-buffer' invalidates raw positions.  Keep only the stable
@@ -2904,8 +2904,8 @@ its width, so a sidebar comes back too narrow as often as too wide."
 The idle callback also puts a sidebar back at its target width, which a
 narrowing frame and a restored window configuration both move it away
 from."
-  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
-    (when-let ((window (get-buffer-window sidebar frame)))
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (when-let* ((window (get-buffer-window sidebar frame)))
       (with-current-buffer sidebar
         (let ((width (window-body-width window)))
           (when (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
@@ -2922,7 +2922,7 @@ from."
                      (when (buffer-live-p sidebar)
                        (with-current-buffer sidebar
                          (setq agent-shell-vertico-sidebar--resize-timer nil)
-                         (when-let ((window (get-buffer-window sidebar frame)))
+                         (when-let* ((window (get-buffer-window sidebar frame)))
                            (agent-shell-vertico-sidebar--enforce-window-width
                             window)
                            (let ((width (window-body-width window)))
@@ -2938,7 +2938,7 @@ from."
 
 (defun agent-shell-vertico-sidebar--sidebar-buffer ()
   "Return the sidebar buffer, creating it when necessary."
-  (if-let ((buffer (get-buffer "*Agent Shell Sessions*")))
+  (if-let* ((buffer (get-buffer "*Agent Shell Sessions*")))
       (if (with-current-buffer buffer
             (derived-mode-p 'agent-shell-vertico-sidebar-mode))
           buffer
@@ -2947,7 +2947,7 @@ from."
 
 (defun agent-shell-vertico-sidebar--sidebar-visible-p (&optional buffer)
   "Return non-nil when BUFFER, or the named sidebar, is visible."
-  (when-let ((sidebar (or buffer (get-buffer "*Agent Shell Sessions*"))))
+  (when-let* ((sidebar (or buffer (get-buffer "*Agent Shell Sessions*"))))
     (get-buffer-window sidebar 'visible)))
 
 (defun agent-shell-vertico-sidebar--cancel-refresh ()
@@ -3166,7 +3166,7 @@ avoids rediscovering live sessions just to decide that."
 
 (defun agent-shell-vertico-sidebar--schedule-refresh (&rest _args)
   "Mark the sidebar dirty and schedule one idle refresh when visible."
-  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (with-current-buffer sidebar
       (setq agent-shell-vertico-sidebar--dirty t)
       (if (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
@@ -3767,7 +3767,7 @@ Two answers are drawn and either can go out of date.  Which sessions are
 on screen is a set, so a window rearrangement showing the same ones
 redraws nothing; which of them the reader is working in changes whenever
 the selected window moves onto or off a session, with the set untouched."
-  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     ;; Resolved once and passed on, because this runs on every window
     ;; change and both questions would otherwise ask agent-shell for the
     ;; same list of sessions.
@@ -3807,9 +3807,9 @@ the current buffer.  A viewport counts as the session it shows."
                        (window-buffer
                         (frame-selected-window frame-or-window)))
                       (t (current-buffer)))))
-    (when-let ((session (and (buffer-live-p buffer)
-                             (agent-shell-vertico-sidebar--session-for-buffer
-                              buffer))))
+    (when-let* ((session (and (buffer-live-p buffer)
+                              (agent-shell-vertico-sidebar--session-for-buffer
+                               buffer))))
       (agent-shell-vertico-sidebar--mark-seen session))
     (agent-shell-vertico-sidebar--refresh-current-marker)))
 
@@ -4214,7 +4214,7 @@ An expanded row also wraps the session's whole title."
 (defun agent-shell-vertico-sidebar-refresh ()
   "Refresh the visible agent-shell sidebar."
   (interactive)
-  (when-let ((buffer (get-buffer "*Agent Shell Sessions*")))
+  (when-let* ((buffer (get-buffer "*Agent Shell Sessions*")))
     (with-current-buffer buffer
       (agent-shell-vertico-sidebar--render))))
 
@@ -4491,8 +4491,8 @@ while normal and motion states get the same direct mnemonic commands."
     (define-key agent-shell-vertico-sidebar-mode-map (kbd "v") nil)
     (define-key agent-shell-vertico-sidebar-action-map (kbd "v") nil)
     (dolist (state '(normal motion))
-      (when-let ((auxiliary (evil-get-auxiliary-keymap
-                             (current-local-map) state)))
+      (when-let* ((auxiliary (evil-get-auxiliary-keymap
+                              (current-local-map) state)))
         (define-key auxiliary (kbd "v") nil)
         (define-key auxiliary (kbd "C-c v") nil))
       (evil-local-set-key state (kbd "v") nil)
@@ -4504,9 +4504,9 @@ while normal and motion states get the same direct mnemonic commands."
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "u" "!" "z" "P" "p" "S" "?" "q"))
-        (when-let ((command (lookup-key
-                             agent-shell-vertico-sidebar-action-map
-                             (kbd key))))
+        (when-let* ((command (lookup-key
+                              agent-shell-vertico-sidebar-action-map
+                              (kbd key))))
           (evil-local-set-key state (kbd (concat "C-c " key)) command))))))
 
 (define-derived-mode agent-shell-vertico-sidebar-mode special-mode
@@ -5459,7 +5459,7 @@ showing the sidebar is offered to the resize callback.  The offer is not
 redundant: Emacs records window sizes after this hook has run, so
 `window-size-change-functions' never sees a width changed here.  Every
 frame is offered because the hook is called with no frame to name."
-  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (with-current-buffer sidebar
       (if (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)
           (progn
@@ -5481,7 +5481,7 @@ frame is offered because the hook is called with no frame to name."
 
 (defun agent-shell-vertico-sidebar--selected-frame-window ()
   "Return the sidebar window on the selected frame, or nil."
-  (when-let ((sidebar (get-buffer "*Agent Shell Sessions*")))
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (get-buffer-window sidebar)))
 
 (defun agent-shell-vertico-sidebar--save-workspace-visibility

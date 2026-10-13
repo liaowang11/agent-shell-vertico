@@ -218,10 +218,10 @@ previews the session under point.")
 (defun agent-shell-vertico--lookup-name (id items id-key)
   "Resolve ID in ITEMS using ID-KEY."
   (when id
-    (when-let ((item (seq-find
-                      (lambda (candidate)
-                        (equal id (map-elt candidate id-key)))
-                      (append items nil))))
+    (when-let* ((item (seq-find
+                       (lambda (candidate)
+                         (equal id (map-elt candidate id-key)))
+                       (append items nil))))
       (or (map-elt item :name) id))))
 
 ;; Mode and model are resolved through agent-shell's own accessors, which
@@ -318,7 +318,7 @@ configuration's `:mode-line-name' when set, otherwise its `:buffer-name'."
 
 Renders through `agent-shell-vertico--suffix', which the completion
 table's affixation function also uses, so the two cannot drift apart."
-  (when-let ((buf (get-buffer cand)))
+  (when-let* ((buf (get-buffer cand)))
     (agent-shell-vertico--suffix buf)))
 
 (with-eval-after-load 'nerd-icons-completion
@@ -345,8 +345,9 @@ table's affixation function also uses, so the two cannot drift apart."
     ('recency
      (cl-sort (copy-sequence candidates) #'>
               :key (lambda (name)
-                     (if-let ((buf (get-buffer name))
-                              (time (buffer-local-value 'buffer-display-time buf)))
+                     (if-let* ((buf (get-buffer name))
+                               (time (buffer-local-value
+                                      'buffer-display-time buf)))
                          (float-time time)
                        0.0))))
     ('creation
@@ -354,7 +355,7 @@ table's affixation function also uses, so the two cannot drift apart."
     ('status
      (cl-sort (copy-sequence candidates) #'<
               :key (lambda (name)
-                     (if-let ((buf (get-buffer name)))
+                     (if-let* ((buf (get-buffer name)))
                          (agent-shell-vertico--status-priority
                           (agent-shell-vertico--status buf))
                        3))))
@@ -1299,7 +1300,8 @@ Call this only after Embark is loaded."
                 (agent-shell-vertico--session-buffer buffer)))
   (when (yes-or-no-p (format "Kill agent-shell session %s? " (buffer-name buffer)))
     (with-current-buffer buffer
-      (when-let ((proc (map-nested-elt agent-shell--state '(:client :process))))
+      (when-let* ((proc (map-nested-elt agent-shell--state
+                                        '(:client :process))))
         (when (process-live-p proc)
           (comint-send-eof))))
     (kill-buffer buffer)))
@@ -1704,7 +1706,7 @@ effect for buffers created afterwards."
   (add-hook 'agent-shell-mode-hook #'agent-shell-vertico--imenu-setup)
   (add-hook 'agent-shell-viewport-view-mode-hook
             #'agent-shell-vertico--imenu-setup)
-  (if-let ((entry (assq 'imenu marginalia-annotators)))
+  (if-let* ((entry (assq 'imenu marginalia-annotators)))
       (unless (eq (cadr entry) #'agent-shell-vertico--imenu-annotation)
         (setq agent-shell-vertico--imenu-fallback-annotator (cadr entry))
         (setq marginalia-annotators
