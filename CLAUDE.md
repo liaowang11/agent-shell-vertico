@@ -528,10 +528,14 @@ behind every session already waiting, and one that is unread already moves
 there too, which is how a row is put off without being read. That was the
 user's call; an earlier version stamped the last activity time to undo an
 accidental read in place. It refuses a `busy` session, whose turn has produced
-nothing to miss. It deliberately does not
-fight the clear paths: marking a session unread while sitting in it holds only
-until the reader is next seen looking at it, which is a decision, not an
-oversight. `agent-shell-vertico-sidebar-mark-read` is the same record in reverse
+nothing to miss. It does not fight the clear paths, which would still
+read the mark away the next time the reader is seen in the session, so
+marking the session the selected window shows moves the reader out of it
+instead (`--leave-unread`): to the head of the attention queue, as the jump
+picks it, else the session last left in the jump history, else the sidebar
+on the marked row. A prefix argument stays, and marking from a sidebar row
+or the jump's dispatch moves nobody, since the reader is not in the session.
+`agent-shell-vertico-sidebar-mark-read` is the same record in reverse
 and refuses nothing, because the unread mark is now the only thing it can drop:
 a blocked session keeps its place through its status and a failed one stays
 failed. Both commands resolve their session through `--attention-target`, which

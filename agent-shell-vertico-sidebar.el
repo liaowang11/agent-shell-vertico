@@ -4640,7 +4640,7 @@ one, so the command works from the session the reader walked into."
         (user-error "No agent-shell session here"))))
 
 ;;;###autoload
-(defun agent-shell-vertico-sidebar-mark-unread ()
+(defun agent-shell-vertico-sidebar-mark-unread (&optional stay)
   "Mark the session at point, or the current session, as unread.
 
 The unread sessions are a queue: the sidebar's `priority' order lists
@@ -4657,10 +4657,12 @@ completes away from the reader.
 A snoozed session is woken: asking for it again is the opposite of
 putting it off.
 
-Leave the session after marking it.  The mark is cleared again as soon
-as the reader is seen looking at the session, which includes staying in
-it until Emacs regains input focus."
-  (interactive)
+Marking the session the selected window shows also moves the reader out
+of it, because the mark is cleared as soon as the reader is seen looking
+at the session again (`agent-shell-vertico-sidebar--leave-unread' says
+where they land).  With prefix argument STAY, mark it and stay; the mark
+then holds only until the window is next selected."
+  (interactive "P")
   (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
          (status (agent-shell-vertico-sidebar--raw-status buffer)))
     (when (eq status 'busy)
@@ -4668,7 +4670,27 @@ it until Emacs regains input focus."
     (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
     (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))
     (agent-shell-vertico-sidebar-refresh)
-    (message "Session %s marked unread" (buffer-name buffer))))
+    (message "Session %s marked unread" (buffer-name buffer))
+    (when (and (not stay)
+               (eq (agent-shell-vertico--current-session) buffer))
+      (agent-shell-vertico-sidebar--leave-unread buffer))))
+
+(defun agent-shell-vertico-sidebar--leave-unread (buffer)
+  "Move the reader out of session BUFFER, which they just marked unread.
+
+The session most in need of attention comes first, as
+`agent-shell-vertico-sidebar-jump' would pick it: marking put BUFFER at
+the back of the queue, so the head is what is owed next.  With nothing
+else owed, the session last left in the jump history, which is where the
+reader came from.  With no history either, the sidebar, on BUFFER's row."
+  (let ((next (seq-find (lambda (session) (not (eq session buffer)))
+                        (agent-shell-vertico-sidebar--attention-sessions)))
+        (back (seq-find (lambda (session) (not (eq session buffer)))
+                        (agent-shell-vertico--jump-entries))))
+    (cond
+     (next (agent-shell-vertico-sidebar--jump-display next))
+     (back (agent-shell-vertico-sidebar--jump-display back))
+     (t (agent-shell-vertico-sidebar-focus)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-mark-read ()

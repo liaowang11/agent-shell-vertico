@@ -13952,6 +13952,86 @@ can be marked without being read, so the jump visits the others first."
       (should (equal (agent-shell-vertico-sidebar--attention-sessions)
                      (list beta alpha))))))
 
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-moves-on-to-the-next ()
+  "Marking the session the reader is in moves them on to what is owed next.
+
+Staying would read the mark away again the next time the window is
+selected, and the session just put off is now the back of the queue, so
+the head is where the reader goes."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-sidebar--mark-unread-at beta 10.0)
+        (agent-shell-vertico-tests--look-at alpha)
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-mark-unread))
+        (should (eq agent-shell-test-displayed-buffer beta))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-goes-back-when-none-waits ()
+  "With nothing else owed, the reader returns to the session last left."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--look-at beta)
+        (agent-shell-vertico-tests--look-at alpha)
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-mark-unread))
+        (should (eq agent-shell-test-displayed-buffer beta))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-falls-back-to-the-sidebar ()
+  "With nothing owed and no history, the reader lands on the sidebar row."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-tests--look-at alpha)
+          (with-current-buffer alpha
+            (agent-shell-vertico-sidebar-mark-unread))
+          (should-not agent-shell-test-displayed-buffer)
+          (should (eq (window-buffer (selected-window)) sidebar))
+          (with-current-buffer sidebar
+            (should (eq (agent-shell-vertico-sidebar--node-at-point) alpha)))
+          (should (agent-shell-vertico-sidebar--unread-p alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-stays-with-a-prefix ()
+  "A prefix argument marks the session and leaves the reader in it."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-sidebar--mark-unread-at beta 10.0)
+        (agent-shell-vertico-tests--look-at alpha)
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-mark-unread t))
+        (should-not agent-shell-test-displayed-buffer)
+        (should (eq (window-buffer (selected-window)) alpha))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-unread-stays-when-not-in-it ()
+  "Marking a session the selected window does not show moves nobody.
+
+The sidebar row and the jump's dispatch both mark a session the reader
+is not in, so there is nothing to move out of."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-sidebar--mark-unread-at beta 10.0)
+        (agent-shell-vertico-tests--look-at beta)
+        (with-current-buffer alpha
+          (agent-shell-vertico-sidebar-mark-unread))
+        (should-not agent-shell-test-displayed-buffer)
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
 (ert-deftest agent-shell-vertico-sidebar-mark-unread-needs-a-session ()
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Codex Agent @ alpha" "/work/alpha/"
