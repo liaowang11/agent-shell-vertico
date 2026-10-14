@@ -8172,39 +8172,44 @@ what made `q' skip past every transcript hopped through."
             (kill-buffer opened)))))))
 
 (ert-deftest agent-shell-vertico-transcript-markdown-mode-prefers-view-mode ()
-  "The read-only tree-sitter view mode wins when its grammars are installed."
-  (cl-letf (((symbol-function 'markdown-ts-view-mode) #'ignore)
-            ((symbol-function 'markdown-mode) #'ignore)
+  "`markdown-view-mode' wins even when the tree-sitter grammars are installed.
+The tree-sitter view mode costs a tenth of a second a screen on a
+transcript full of code blocks, against a few milliseconds."
+  (cl-letf (((symbol-function 'markdown-view-mode) #'ignore)
+            ((symbol-function 'markdown-ts-view-mode) #'ignore)
+            ((symbol-function 'treesit-language-available-p)
+             (lambda (_language &optional _detail) t)))
+    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
+                'markdown-view-mode))))
+
+(ert-deftest agent-shell-vertico-transcript-markdown-mode-falls-back-to-tree-sitter ()
+  "Without `markdown-mode' the tree-sitter view mode is used."
+  (cl-letf (((symbol-function 'markdown-view-mode) nil)
+            ((symbol-function 'markdown-ts-view-mode) #'ignore)
+            ((symbol-function 'require)
+             (lambda (_feature &optional _file _noerror) nil))
             ((symbol-function 'treesit-language-available-p)
              (lambda (_language &optional _detail) t)))
     (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
                 'markdown-ts-view-mode))))
 
 (ert-deftest agent-shell-vertico-transcript-markdown-mode-needs-both-grammars ()
-  "A missing inline grammar falls back to `markdown-mode'.
+  "The tree-sitter fallback needs the inline grammar too.
 `markdown-ts-mode' parses inline markup with its own grammar and drops
 to Text mode without it."
-  (cl-letf (((symbol-function 'markdown-ts-view-mode) #'ignore)
-            ((symbol-function 'markdown-mode) #'ignore)
+  (cl-letf (((symbol-function 'markdown-view-mode) nil)
+            ((symbol-function 'markdown-ts-view-mode) #'ignore)
+            ((symbol-function 'require)
+             (lambda (_feature &optional _file _noerror) nil))
             ((symbol-function 'treesit-language-available-p)
              (lambda (language &optional _detail)
                (eq language 'markdown))))
-    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
-                'markdown-mode))))
-
-(ert-deftest agent-shell-vertico-transcript-markdown-mode-without-tree-sitter ()
-  "`markdown-mode' is used when the tree-sitter mode cannot be loaded."
-  (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
-            ((symbol-function 'markdown-mode) #'ignore)
-            ((symbol-function 'require)
-             (lambda (_feature &optional _file _noerror) nil)))
-    (should (eq (agent-shell-vertico-transcript--markdown-major-mode)
-                'markdown-mode))))
+    (should-not (agent-shell-vertico-transcript--markdown-major-mode))))
 
 (ert-deftest agent-shell-vertico-transcript-markdown-mode-without-any-mode ()
   "No Markdown mode leaves the choice to the file itself."
   (cl-letf (((symbol-function 'markdown-ts-view-mode) nil)
-            ((symbol-function 'markdown-mode) nil)
+            ((symbol-function 'markdown-view-mode) nil)
             ((symbol-function 'require)
              (lambda (_feature &optional _file _noerror) nil)))
     (should-not (agent-shell-vertico-transcript--markdown-major-mode))))
@@ -8270,6 +8275,118 @@ ends without one modified."
           (with-current-buffer buffer
             (should (eq major-mode
                         'agent-shell-vertico-tests--derived-markdown-mode))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(defun agent-shell-vertico-tests--inline-heavy-transcript (file)
+  "Write a transcript to FILE with many separate inline ranges."
+  (with-temp-file file
+    (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n\n## Agent\n\n")
+    (dotimes (i 400)
+      (insert (format "Paragraph %d with *emphasis* and `code`.\n\n" i)))))
+
+(defun agent-shell-vertico-tests--first-redisplay-parsers (buffer)
+  "Run BUFFER's pre-redisplay range update and count its parsers."
+  (with-current-buffer buffer
+    (treesit--pre-redisplay)
+    (length (treesit-parser-list nil nil t))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-defers-inline-ranges ()
+  "Opening a transcript leaves its inline parsers to jit-lock.
+A fresh tree-sitter parser reports the whole buffer as changed, and the
+first redisplay then creates an inline parser for every paragraph: four
+seconds on a 300 KB transcript.  Only the screen needs them."
+  (skip-unless
+   (agent-shell-vertico-transcript--markdown-ts-view-mode-available-p))
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--inline-heavy-transcript file)
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'markdown-ts-view-mode)))
+            (setq buffer
+                  (agent-shell-vertico-transcript--open-record
+                   (agent-shell-vertico-transcript-record-create
+                    :file file))))
+          (should (eq (buffer-local-value 'major-mode buffer)
+                      'markdown-ts-view-mode))
+          (should (< (agent-shell-vertico-tests--first-redisplay-parsers
+                      buffer)
+                     50)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-visits-in-reader-mode ()
+  "A transcript is visited in the reader's mode, never the file's own.
+Setting up the mode the file selects, `markdown-ts-mode' in a
+configuration that remaps `markdown-mode' to it, only to replace it
+afterward was most of the time an open took."
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (auto-mode-alist '(("\\.md\\'" . agent-shell-vertico-tests--other-mode)))
+        (buffer nil)
+        modes)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "**Agent:** Codex\n\n---\n\n## User\n\nhello\n"))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode))
+                    ((symbol-function 'agent-shell-vertico-tests--other-mode)
+                     (lambda () (push 'other modes)))
+                    ((symbol-function 'agent-shell-vertico-tests--markdown-mode)
+                     (lambda ()
+                       (push 'reader modes)
+                       (setq major-mode
+                             'agent-shell-vertico-tests--markdown-mode))))
+            (setq buffer
+                  (agent-shell-vertico-transcript--open-record
+                   (agent-shell-vertico-transcript-record-create
+                    :file file))))
+          (should (equal modes '(reader))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(ert-deftest agent-shell-vertico-transcript-open-record-drops-old-parsers ()
+  "Leaving a tree-sitter mode for the reader's mode drops its parsers.
+A mode change keeps a buffer's parsers and the overlays holding its
+embedded ones, and code asking for the parsers at a position, such as
+`indent-bars' from a mode hook, then fails on what it finds."
+  (skip-unless
+   (agent-shell-vertico-transcript--markdown-ts-view-mode-available-p))
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--inline-heavy-transcript file)
+          (setq buffer (let ((auto-mode-alist
+                              '(("\\.md\\'" . markdown-ts-mode))))
+                         (find-file-noselect file)))
+          (with-current-buffer buffer
+            (font-lock-ensure)
+            (should (treesit-parser-list nil nil t)))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'agent-shell-vertico-tests--markdown-mode)))
+            (agent-shell-vertico-transcript--open-record
+             (agent-shell-vertico-transcript-record-create :file file)))
+          (with-current-buffer buffer
+            (should (eq major-mode 'agent-shell-vertico-tests--markdown-mode))
+            (should-not (treesit-parser-list nil nil t))
+            (should-not (seq-find (lambda (overlay)
+                                    (overlay-get overlay 'treesit-parser))
+                                  (overlays-in (point-min) (point-max))))))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
@@ -9418,6 +9535,31 @@ Polymode Markdown buffer unable to fontify."
                               #'string-match-p))
          nil))
       (should (eq seen-mode 'text-mode)))))
+
+(ert-deftest agent-shell-vertico-consult-preview-defers-inline-ranges ()
+  "A preview leaves its inline parsers to jit-lock, as the reader does."
+  (skip-unless
+   (agent-shell-vertico-transcript--markdown-ts-view-mode-available-p))
+  (let ((file (make-temp-file "agent-shell-vertico-transcript" nil ".md"))
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-tests--inline-heavy-transcript file)
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--markdown-major-mode)
+                     (lambda () 'markdown-ts-view-mode)))
+            (setq buffer (agent-shell-vertico-consult--open-preview
+                          file #'find-file-noselect)))
+          (should (eq (buffer-local-value 'major-mode buffer)
+                      'markdown-ts-view-mode))
+          (should (< (agent-shell-vertico-tests--first-redisplay-parsers
+                      buffer)
+                     50)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
 
 (ert-deftest agent-shell-vertico-consult-preview-follows-reader-mode ()
   "A preview uses the mode the reader opens a transcript in."

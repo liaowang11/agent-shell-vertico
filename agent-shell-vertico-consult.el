@@ -135,17 +135,23 @@ Two cases show up as an unhighlighted preview:
   engine and then never fontifies anything.  Naming the mode here instead
   of letting the user's `auto-mode-alist' pick it keeps such a mode out of
   previews: `agent-shell-vertico-consult--preview-major-mode' returns
-  either the tree-sitter view mode, which sets itself up in the mode body,
-  or plain `markdown-mode'.  Either way jit-lock stays in charge.
+  `markdown-view-mode' or the tree-sitter view mode, both of which set
+  themselves up in the mode body.  Either way jit-lock stays in charge.
 
 - A file above `consult-preview-partial-size' is read into a buffer with
   no file name, where `set-auto-mode' cannot detect Markdown and leaves
   Fundamental mode.  Set the mode there directly.
 
-Native code-block fontification is off for the mode call: it runs each
-visible block's own major mode and a whole-block `font-lock-ensure',
-the only step in the preview pipeline costing more than a few
-milliseconds, and a scanned preview does not need it."
+In the tree-sitter view mode, native code-block fontification is off for
+the mode call: it runs each visible block's own major mode and a
+whole-block `font-lock-ensure', the only step in the preview pipeline
+costing more than a few milliseconds, and a scanned preview does not
+need it.  `markdown-mode' fontifies a block natively in a few
+milliseconds, so its setting is left alone.
+
+A buffer the opener creates leaves its embedded parsers to jit-lock
+\(`agent-shell-vertico-transcript--defer-embedded-ranges'); one the
+reader already had open is left as it is."
   (let* ((mode (agent-shell-vertico-consult--preview-major-mode))
          (auto-mode-alist (cons (cons "\\.md\\'" mode) auto-mode-alist))
          ;; `markdown-ts-view-mode' turns inline images on and amends the
@@ -156,12 +162,15 @@ milliseconds, and a scanned preview does not need it."
          (markdown-ts-view-mode-pre-init-hook
           (list (lambda () (setq-local markdown-ts-inline-images nil))))
          (markdown-ts-fontify-code-blocks-natively nil)
+         (open (find-buffer-visiting file))
          (buffer (funcall opener file)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (eq major-mode 'fundamental-mode)
           (delay-mode-hooks (funcall mode))
-          (font-lock-mode 1))))
+          (font-lock-mode 1))
+        (unless (eq buffer open)
+          (agent-shell-vertico-transcript--defer-embedded-ranges))))
     buffer))
 
 (defun agent-shell-vertico-consult--preview-view (buffer record)

@@ -713,20 +713,21 @@ list offers, 10000 by default, or nil for no cap. The list is newest first, so
 the cap drops the oldest, and the prompt then reads `(newest 10000 of 12345)`
 rather than presenting the shortened list as everything.
 
-An opened transcript is put in `markdown-ts-view-mode`, the read-only viewing
-mode built on `markdown-ts-mode`, which hides the markup and renders inline
-images. It is used when Emacs ships it and both the `markdown` and
-`markdown-inline` tree-sitter grammars are installed
-(`M-x markdown-ts-mode-install-parsers` installs them). Emacs leaves both modes
-out of `auto-mode-alist`, so a transcript would otherwise never reach either.
-Without the mode or its grammars the reader falls back to `markdown-mode`, and
-without that to whatever mode the file itself selects.
+An opened transcript is put in `markdown-view-mode`, the read-only viewing mode
+of `markdown-mode`, which hides the markup. Without `markdown-mode` the reader
+falls back to `markdown-ts-view-mode`, the tree-sitter equivalent Emacs ships,
+when both the `markdown` and `markdown-inline` grammars are installed
+(`M-x markdown-ts-mode-install-parsers` installs them), and without that to
+whatever mode the file itself selects. The tree-sitter mode also renders inline
+images, but it is the fallback because it is slow to read in: on a 1.4 MB
+transcript with 900 code blocks it costs 0.1–0.2 s a screen against 10 ms, and
+17 s against 3.5 s to fontify the whole buffer. Emacs leaves it out of
+`auto-mode-alist`, so a transcript would otherwise never reach it.
 `markdown-ts-view-mode-pre-init-hook` is emptied for the mode call, because its
 default adds a final newline, which marks the buffer modified for every
 transcript that ends without one; the cost is that the grammar can misread
-markup at the very end of such a transcript. A buffer already in a
-mode built on the chosen one keeps it, so `markdown-mode` derivatives such as
-Polymode's `poly-markdown-mode` survive the fallback path.
+markup at the very end of such a transcript. A buffer already in a mode built
+on the chosen one keeps it.
 
 `agent-shell-open-transcript` and `agent-shell-viewport-open-transcript` visit
 the same file with `find-file`, which leaves the mode to the file itself, so a
@@ -795,10 +796,8 @@ read. The mode is named here rather than taken from `auto-mode-alist`: Consult
 previews files with `delay-mode-hooks` bound, which leaves a Markdown mode that
 finishes its setup in hooks (Polymode, for example) unable to fontify, and a
 file above `consult-preview-partial-size` is previewed in a buffer with no file
-name, where the mode cannot be detected at all. Tree-sitter fontification costs
-around a quarter of a second per screenful against near-zero for
-`markdown-mode`, so previewing a long transcript lags by about that much. No
-persistent cache or index is written.
+name, where the mode cannot be detected at all. No persistent cache or index is
+written.
 
 ## Session links
 

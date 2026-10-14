@@ -27,6 +27,7 @@
 (require 'subr-x)
 
 (defvar agent-shell-dot-subdir-function)
+(defvar treesit-primary-parser)
 (defvar agent-shell-transcript-file-path-function)
 ;; No value: markdown-ts-mode's own `defcustom' must install the real
 ;; default when it loads after this file.
@@ -1468,30 +1469,35 @@ and may itself be a function returning the list."
 (defun agent-shell-vertico-transcript--markdown-major-mode ()
   "Return the Markdown major mode used to read a transcript, or nil.
 
-Prefer `markdown-ts-view-mode', the read-only viewing mode built on
-`markdown-ts-mode', which hides the markup and renders inline images.  A
-transcript is read, not edited, and the reader makes the buffer read-only
-anyway.
+Prefer `markdown-view-mode', the read-only viewing mode of
+`markdown-mode', which hides the markup.  A transcript is read, not
+edited, and the reader makes the buffer read-only anyway.
 
-Emacs ships both modes but leaves them out of `auto-mode-alist', so a
-transcript never reaches either on its own: the mode has to be loaded and
+Fall back to `markdown-ts-view-mode', the tree-sitter equivalent Emacs
+ships, which also renders inline images.  It is the fallback rather than
+the default because it is slow to read in: on a transcript full of code
+blocks it costs a tenth of a second a screen against a few milliseconds,
+and a whole-buffer fontification several times as long.  Emacs
+leaves it out of `auto-mode-alist', so the mode has to be loaded and
 named here.  The `markdown' and `markdown-inline' grammars are checked
 first, because without them the mode drops the buffer to Text mode and
-warns, which is worse than the fallback.
+warns, which is worse than no choice at all.
 
-Fall back to `markdown-mode', and to nil when neither mode is available,
-which leaves the mode the file itself selects in place."
+Return nil when neither mode is available, which leaves the mode the
+file itself selects in place."
   (cond
+   ((and (or (fboundp 'markdown-view-mode)
+             (require 'markdown-mode nil t))
+         (fboundp 'markdown-view-mode))
+    'markdown-view-mode)
    ((agent-shell-vertico-transcript--markdown-ts-view-mode-available-p)
-    'markdown-ts-view-mode)
-   ((fboundp 'markdown-mode)
-    'markdown-mode)))
+    'markdown-ts-view-mode)))
 
 (defun agent-shell-vertico-transcript--set-markdown-major-mode ()
   "Put the current buffer in the Markdown mode transcripts are read in.
 
 A mode already built on that one is left alone, so a reader who visits
-transcripts in a mode derived from `markdown-mode' keeps it.
+transcripts in a mode derived from `markdown-view-mode' keeps it.
 
 `markdown-ts-view-mode-pre-init-hook' is emptied for the mode call.  It
 exists to amend buffer content, and its default adds a final newline,
@@ -1500,8 +1506,40 @@ one.  A reader must not change the file it shows.  The cost is that the
 grammar can misread markup at the very end of such a transcript."
   (when-let* ((mode (agent-shell-vertico-transcript--markdown-major-mode)))
     (unless (derived-mode-p mode)
+      (agent-shell-vertico-transcript--drop-embedded-parsers)
       (let ((markdown-ts-view-mode-pre-init-hook nil))
-        (funcall mode)))))
+        (funcall mode))
+      (agent-shell-vertico-transcript--defer-embedded-ranges))))
+
+(defun agent-shell-vertico-transcript--drop-embedded-parsers ()
+  "Delete the overlays holding the current buffer's embedded parsers.
+
+A transcript visited with `find-file' arrives in `markdown-ts-mode' in a
+configuration that remaps `markdown-mode' to it.
+Changing the major mode deletes that mode's parsers but leaves the
+overlays tree-sitter keeps each embedded parser in, so the new mode's
+hooks find dead parsers through `treesit-parsers-at': `indent-bars'
+signals on them before the reader's mode has finished starting."
+  (save-restriction
+    (widen)
+    (dolist (overlay (overlays-in (point-min) (point-max)))
+      (when (overlay-get overlay 'treesit-parser)
+        (delete-overlay overlay)))))
+
+(defun agent-shell-vertico-transcript--defer-embedded-ranges ()
+  "Leave the current buffer's embedded parsers to jit-lock.
+
+A tree-sitter mode's fresh parser reports the whole buffer as changed on
+its first parse, and `treesit--pre-redisplay' then updates embedded
+ranges across all of it.  For Markdown that is one `markdown-inline'
+parser per paragraph: four seconds of redisplay on a 300 KB transcript,
+for parsers only the screen needs.  Reading the changed regions here
+answers that first parse, and fontification still creates each parser
+for the region it draws.  A buffer without a tree-sitter parser is left
+alone."
+  (when (and (bound-and-true-p treesit-primary-parser)
+             (fboundp 'treesit-parser-changed-regions))
+    (treesit-parser-changed-regions treesit-primary-parser)))
 
 (defun agent-shell-vertico-transcript--open-record
     (record &optional other-window)
@@ -1509,15 +1547,29 @@ grammar can misread markup at the very end of such a transcript."
 
 A transcript opened here for the first time gets the view
 `agent-shell-vertico-transcript-default-view' asks for; one already
-open keeps the view its reader chose."
+open keeps the view its reader chose.
+
+A transcript not yet open is visited in the reader's Markdown mode, so
+the mode the file would select is never set up only to be replaced:
+`markdown-ts-mode', in a configuration that remaps `markdown-mode' to
+it, was most of the time an open took.  One already open is switched by
+`agent-shell-vertico-transcript--set-markdown-major-mode'."
   (let* ((file
           (agent-shell-vertico-transcript-record-file record))
          (open (find-buffer-visiting file))
+         (mode (agent-shell-vertico-transcript--markdown-major-mode))
          (buffer
-          (if other-window
-              (find-file-other-window file)
-            (find-file file))))
+          (let ((auto-mode-alist
+                 (if mode
+                     (cons (cons "\\.md\\'" mode) auto-mode-alist)
+                   auto-mode-alist))
+                (markdown-ts-view-mode-pre-init-hook nil))
+            (if other-window
+                (find-file-other-window file)
+              (find-file file)))))
     (with-current-buffer buffer
+      (unless open
+        (agent-shell-vertico-transcript--defer-embedded-ranges))
       ;; Before the record and the minor mode, since changing the major
       ;; mode clears both.
       (agent-shell-vertico-transcript--set-markdown-major-mode)
