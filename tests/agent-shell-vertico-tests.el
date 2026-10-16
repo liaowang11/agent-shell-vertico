@@ -4372,6 +4372,28 @@ It still fails the turn and ends a snooze; unwatched, it is both."
       (should (= (length notifications) 1))
       (should (agent-shell-vertico-sidebar--unread-p alpha)))))
 
+(ert-deftest agent-shell-vertico-sidebar-request-skips-a-watched-session ()
+  "A request the reader is looking at is neither announced nor unread.
+It still ends a snooze and starts the wait; unwatched, it is both."
+  (dolist (kind '(permission-request elicitation-request))
+    (agent-shell-vertico-tests--with-alpha
+      (agent-shell-vertico-tests--with-notifications
+        (agent-shell-vertico-sidebar--set alpha 'snoozed 1.0)
+        (agent-shell-vertico-sidebar--set alpha 'unread 2.0)
+        (cl-letf (((symbol-function
+                    'agent-shell-vertico-sidebar--session-focused-p)
+                   (lambda (_buffer) t)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha `((:event . ,kind))))
+        (should-not notifications)
+        (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+        (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+        (should (agent-shell-vertico-sidebar--get alpha 'waiting-since))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha `((:event . ,kind)))
+        (should (= (length notifications) 1))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
 (ert-deftest agent-shell-vertico-sidebar-session-seen-starting-is-new ()
   "A session the sidebar saw start is new until it is first prompted."
   (agent-shell-vertico-tests--with-session-buffers

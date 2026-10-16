@@ -4114,15 +4114,18 @@ dispatched prompt the dead agent never sent is given back."
       ((or 'permission-request 'elicitation-request)
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
-       ;; The request itself is news, a permission or a form alike; the
-       ;; session reports itself blocked for as long as it waits, so
-       ;; nothing records that part.  It is
-       ;; also a new ask, which no snooze put off.  The newest request
-       ;; is the one the session waits on, so the wait ages from it.
+       ;; The request itself is news, a permission or a form alike, to
+       ;; a reader who is not looking; the session reports itself
+       ;; blocked for as long as it waits, so nothing records that part.
+       ;; It is also a new ask, which no snooze put off.  The newest
+       ;; request is the one the session waits on, so the wait ages
+       ;; from it.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since now)
-       (agent-shell-vertico-sidebar--mark-unread-at buffer now)
-       (agent-shell-vertico-sidebar--notify buffer))
+       (if (agent-shell-vertico-sidebar--session-focused-p buffer)
+           (agent-shell-vertico-sidebar--set buffer 'unread nil)
+         (agent-shell-vertico-sidebar--mark-unread-at buffer now)
+         (agent-shell-vertico-sidebar--notify buffer)))
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
