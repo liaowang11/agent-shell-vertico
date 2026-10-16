@@ -1254,7 +1254,16 @@ the magenta of a row's dot, which wins over the section's colour."
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c k"))
               #'agent-shell-vertico-sidebar-kill))
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c o"))
-              #'agent-shell-vertico-sidebar-open)))
+              #'agent-shell-vertico-sidebar-jump-by-key)))
+
+(ert-deftest agent-shell-vertico-sidebar-o-jumps-by-key ()
+  "`RET' already opens the row, so `o' jumps to a session by key."
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "o"))
+              #'agent-shell-vertico-sidebar-jump-by-key))
+  (should (eq (cdr (assoc "o" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-jump-by-key))
+  (should (string-match-p "^  o  +Jump to a session by key$"
+                          (agent-shell-vertico-sidebar--help-text))))
 
 (ert-deftest agent-shell-vertico-sidebar-help-is-discoverable ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "?"))

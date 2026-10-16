@@ -4341,7 +4341,8 @@ count leaves them out.  Nothing is shown when none waits."
    "  TAB         Toggle a section, project or session details\n"
    "  S-TAB       Cycle all rows: headers, sessions, details\n\n"
    "Actions\n"
-   "  o / O       Open here / open in another window\n"
+   "  o           Jump to a session by key\n"
+   "  O           Open the session in another window\n"
    "  =           Switch between the state and project views\n"
    "  s           Choose the sort criterion\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
@@ -4375,7 +4376,7 @@ count leaves them out.  Nothing is shown when none waits."
 
 (defvar agent-shell-vertico-sidebar-action-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
+    (define-key map (kbd "o") #'agent-shell-vertico-sidebar-jump-by-key)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
@@ -4409,7 +4410,7 @@ count leaves them out.  Nothing is shown when none waits."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-activate)
-    (define-key map (kbd "o") #'agent-shell-vertico-sidebar-open)
+    (define-key map (kbd "o") #'agent-shell-vertico-sidebar-jump-by-key)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "C-j") #'agent-shell-vertico-sidebar-next-row)
     (define-key map (kbd "C-k") #'agent-shell-vertico-sidebar-previous-row)
@@ -4464,7 +4465,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("TAB" . agent-shell-vertico-sidebar-toggle-at-point)
     ("<tab>" . agent-shell-vertico-sidebar-toggle-at-point)
     ("<mouse-1>" . agent-shell-vertico-sidebar-activate)
-    ("o" . agent-shell-vertico-sidebar-open)
+    ("o" . agent-shell-vertico-sidebar-jump-by-key)
     ("O" . agent-shell-vertico-sidebar-open-other-window)
     ("S-TAB" . agent-shell-vertico-sidebar-cycle-global-view)
     ("<backtab>" . agent-shell-vertico-sidebar-cycle-global-view)

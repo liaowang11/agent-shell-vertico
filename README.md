@@ -364,10 +364,10 @@ be opened or stopped.  agent-shell reports none of this as an event, so the
 sidebar reads it from the session's state, and checks every two seconds while it
 shows something running.
 
-`agent-shell-vertico-sidebar-jump-by-key` picks a session the way
-`ace-window` picks a window.  The sidebar keeps the view selected by
-`agent-shell-vertico-sidebar-group-by`, with every project and section
-open, each row's status mark replaced by a key from
+`agent-shell-vertico-sidebar-jump-by-key` (`o` in the sidebar) picks a
+session the way `ace-window` picks a window.  The sidebar keeps the view
+selected by `agent-shell-vertico-sidebar-group-by`, with every project and
+section open, each row's status mark replaced by a key from
 `agent-shell-vertico-sidebar-jump-keys`, digits `1`-`9` then the home row
 by default, in row order, side conversations included; press a key and
 that session is displayed.  A hidden sidebar is shown for the read and
@@ -448,9 +448,8 @@ such a session ready, because it has nothing in flight to report.  The
 sidebar shows it working while the output arrives, then marks it as
 holding unseen output once the stream has been quiet for a few seconds.
 No completion event is sent for this kind of work, so the quiet period is
-what ends it.  `o` always jumps to the session at point; the other
-keys expose the same restart, kill, interrupt, model, mode, traffic, and
-transcript operations as the Vertico Embark map.
+what ends it.  The sidebar's keys expose the same restart, kill, interrupt,
+model, mode, traffic, and transcript operations as the Vertico Embark map.
 
 Every mark is a plain character, so the sidebar needs no icon font and reads
 the same in a terminal.  A row's project line starts with `⌂` and a message
@@ -549,21 +548,22 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-mode-line-mode 1))
 ```
 
-The regular (non-Evil) sidebar map includes `C-j`/`C-k` (move to the next or
-previous session, passing over section and project headers), `TAB` (fold or
-session details), `S-TAB` (cycle all fold levels), `=` (switch between the state
-and project views), `s` (sort), `g` (refresh), `c` (new session), `k` (kill),
-`r` (restart), `i` (interrupt), `m`/`M` (mode/model), `C` (rename), `A`
-(archive), `a` (side conversation), `F` (fork), `Y` (copy the session ID),
-`t`/`T` (traffic/transcript), `u`/`!` (mark unread/read), `z` (snooze), `P`
-(pin), `p` (peek), `S` (list subagents), `?` (show the key reference), and `q`
-(close the side window).
+The regular (non-Evil) sidebar map includes `RET` (activate the row or metadata
+field), `o` (jump to a session by key), `O` (open in another window),
+`C-j`/`C-k` (move to the next or previous session, passing over section and
+project headers), `TAB` (fold or session details), `S-TAB` (cycle all fold
+levels), `=` (switch between the state and project views), `s` (sort), `g`
+(refresh), `c` (new session), `k` (kill), `r` (restart), `i` (interrupt),
+`m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation), `F`
+(fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `u`/`!` (mark
+unread/read), `z` (snooze), `P` (pin), `p` (peek), `S` (list subagents), `?`
+(show the key reference), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole session row at a time, skipping headers, `RET`
-activates the current row or metadata field, `o` opens the session, `O` opens it
-in another window, `TAB` toggles the current row, and `S-TAB` cycles every row
-through the fold levels.
+activates the current row or metadata field, `o` jumps to a session by key,
+`O` opens the session at point in another window, `TAB` toggles the current
+row, and `S-TAB` cycles every row through the fold levels.
 `gr` refreshes, `D` kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
 read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
