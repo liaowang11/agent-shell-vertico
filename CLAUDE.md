@@ -1080,7 +1080,8 @@ the filter and how many sessions it shows of how many, a deliberate
 exception to "header-line-format stays nil": it is no node, never scrolls
 away, and goes when the filter does. Reveal (`-focus`, `--leave-unread`)
 clears a filter hiding its target, since the reader asked for that
-session, and the jumps, the attention count and notifications ignore it.
+session. The jumps, the mode-line count and notifications ignore it; a
+header's Needs input count follows it, since it counts what is drawn.
 
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and
