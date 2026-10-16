@@ -13314,50 +13314,75 @@ counts, so a child drawn under its parent is one press away as well."
         (should-not (agent-shell-vertico-tests--jump-labels-shown))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-reads-a-project-sidebar ()
-  "A folded project sidebar shows the open state view for the read only."
-  (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ alpha" "/work/alpha/"
-              '((:session . ((:id . "a") (:title . "Alpha")))))
-       (beta "Codex Agent @ beta" "/work/beta/"
-             '((:session . ((:id . "b") (:title . "Beta"))))))
-    (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
-          (agent-shell-test-project-names
-           (list (cons alpha "Alpha Workspace") (cons beta "Beta Workspace")))
-          (agent-shell-vertico-sidebar-group-by 'project)
-          (agent-shell-vertico-sidebar-expand-by-default nil)
-          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
-          seen kinds-during)
-      (agent-shell-vertico-tests--with-jump-by-key
-          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown)
-                       kinds-during
-                       (with-current-buffer "*Agent Shell Sessions*"
-                         (mapcar
-                          #'caar
-                          (agent-shell-vertico-sidebar--node-positions))))
-                 ?2)
-        (save-selected-window (agent-shell-vertico-sidebar--display-buffer))
-        (let ((window (get-buffer-window "*Agent Shell Sessions*")))
-          (should (string-match-p
-                   "Alpha Workspace"
-                   (with-current-buffer "*Agent Shell Sessions*"
-                     (buffer-string))))
-          (agent-shell-vertico-sidebar-jump-by-key)
-          ;; Both sessions had a row and a key, though their projects
-          ;; are folded: the read drew their section, not their projects.
-          (should (= (length seen) 2))
-          (should (member (cons ?1 alpha) seen))
-          (should (member (cons ?2 beta) seen))
-          (should (equal kinds-during '(section session session)))
-          ;; The sidebar stays open, grouped and folded again.
-          (should (window-live-p window))
-          (with-current-buffer "*Agent Shell Sessions*"
-            (should (equal (mapcar
-                            #'caar
-                            (agent-shell-vertico-sidebar--node-positions))
-                           '(project project)))
-            (should-not (agent-shell-vertico-tests--jump-labels-shown))))))))
+  "Project grouping and saved folds survive selection, quit and errors."
+  (dolist (expanded '(nil t))
+    (dolist (exit '(select quit error))
+      (agent-shell-vertico-tests--with-session-buffers
+          ((alpha "Codex Agent @ alpha" "/work/alpha/"
+                  '((:session . ((:id . "a") (:title . "Alpha")))))
+           (beta "Codex Agent @ beta" "/work/beta/"
+                 '((:session . ((:id . "b") (:title . "Beta"))))))
+        (let ((agent-shell-test-buffers (list alpha beta))
+              (agent-shell-test-statuses (list (cons alpha 'ready)
+                                              (cons beta 'ready)))
+              (agent-shell-vertico-sidebar-group-by 'project)
+              (agent-shell-vertico-sidebar-sort-by 'name)
+              (agent-shell-vertico-sidebar-expand-by-default expanded)
+              (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+              seen kinds-during folds)
+          (agent-shell-vertico-tests--with-jump-by-key
+              (progn
+                (setq seen (agent-shell-vertico-tests--jump-labels-shown)
+                      kinds-during
+                      (mapcar
+                       #'caar
+                       (agent-shell-vertico-sidebar--node-positions)))
+                (pcase exit
+                  ('select ?2)
+                  ('quit ?\e)
+                  ('error (error "Jump reader failed"))))
+            (save-selected-window
+              (agent-shell-vertico-sidebar--display-buffer))
+            (with-current-buffer "*Agent Shell Sessions*"
+              (setq folds agent-shell-vertico-sidebar--expanded-projects)
+              ;; An explicit fold must open too, even when the default
+              ;; would leave the project open.  Beta follows the default.
+              (puthash "/work/alpha/" nil folds)
+              (agent-shell-vertico-sidebar--render))
+            (pcase exit
+              ('select
+               (agent-shell-vertico-sidebar-jump-by-key)
+               (should (eq agent-shell-test-displayed-buffer beta)))
+              ('quit
+               (should (eq (condition-case nil
+                               (agent-shell-vertico-sidebar-jump-by-key)
+                             (quit 'quit))
+                           'quit)))
+              ('error
+               (should (equal
+                        (should-error
+                         (agent-shell-vertico-sidebar-jump-by-key))
+                        '(error "Jump reader failed")))))
+            (should (equal seen (list (cons ?1 alpha) (cons ?2 beta))))
+            (should (equal kinds-during
+                           '(project session project session)))
+            (should (get-buffer-window "*Agent Shell Sessions*"))
+            (with-current-buffer "*Agent Shell Sessions*"
+              (should (equal
+                       (mapcar
+                        #'caar
+                        (agent-shell-vertico-sidebar--node-positions))
+                       (if expanded
+                           '(project project session)
+                         '(project project))))
+              (should (eq folds
+                          agent-shell-vertico-sidebar--expanded-projects))
+              (should (= (hash-table-count folds) 1))
+              (should-not
+               (agent-shell-vertico-sidebar--project-expanded-p
+                "/work/alpha/"))
+              (should-not
+               (agent-shell-vertico-tests--jump-labels-shown)))))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-by-key-opens-folded-sections ()
   "Folded state sections open for the read, and fold again after it.

@@ -365,8 +365,9 @@ sidebar reads it from the session's state, and checks every two seconds while it
 shows something running.
 
 `agent-shell-vertico-sidebar-jump-by-key` picks a session the way
-`ace-window` picks a window.  The sidebar is drawn in the state view with
-every section open, each row's status mark replaced by a key from
+`ace-window` picks a window.  The sidebar keeps the view selected by
+`agent-shell-vertico-sidebar-group-by`, with every project and section
+open, each row's status mark replaced by a key from
 `agent-shell-vertico-sidebar-jump-keys`, digits `1`-`9` then the home row
 by default, in row order, side conversations included; press a key and
 that session is displayed.  A hidden sidebar is shown for the read and

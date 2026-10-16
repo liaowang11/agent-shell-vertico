@@ -5301,11 +5301,12 @@ sidebar is back as it was."
   "Key the sessions drawn in the sidebar and read which.
 
 A hidden sidebar is shown for the read and closed again after it.  The
-sidebar is drawn in the state view with every section open for the
-read, so a folded session has a row too.  Every exit path renders again
-under the real view and folds, which is also what puts a sidebar shown
-on another frame back: the buffer is shared, so the read's render
-reached that frame too.  The folds themselves are never touched.
+sidebar keeps `agent-shell-vertico-sidebar-group-by', with every project
+and section open for the read, so a folded session has a row too.
+Every exit path renders again under the original folds, which also puts
+a sidebar shown on another frame back: the buffer is shared, so the
+read's render reached that frame too.  The folds themselves are never
+touched.
 
 Every row is keyed, a side conversation's as much as its parent's, so
 the keys count the rows `agent-shell-vertico-sidebar-jump-to-index'
@@ -5330,9 +5331,10 @@ window free for a prompt of its own."
          (overlays nil))
     (unwind-protect
         (with-current-buffer sidebar
-          ;; Every section open, without touching the folds: an empty
-          ;; table and no default folds leave each section open.
-          (let ((agent-shell-vertico-sidebar-group-by 'state)
+          ;; Open every project and section in the configured view,
+          ;; without touching the reader's fold tables or defaults.
+          (let ((agent-shell-vertico-sidebar--expanded-projects nil)
+                (agent-shell-vertico-sidebar-expand-by-default t)
                 (agent-shell-vertico-sidebar--section-folds nil)
                 (agent-shell-vertico-sidebar-folded-sections nil))
             (agent-shell-vertico-sidebar--render))
@@ -5367,7 +5369,8 @@ window free for a prompt of its own."
 (defun agent-shell-vertico-sidebar-jump-by-key (&optional other-window)
   "Jump to a session by the key drawn beside it, `ace-window' style.
 
-The sessions are drawn in the sidebar's state view with every section
+The sessions keep the view selected by
+`agent-shell-vertico-sidebar-group-by', with every project and section
 open, each row's mark replaced by one of
 `agent-shell-vertico-sidebar-jump-keys' in row order, and one key is
 read: press a session's key and that session is displayed.  A hidden

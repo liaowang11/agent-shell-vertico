@@ -381,10 +381,11 @@ projects (`--split-pinned`), and its projects start open
 arm, and each asks `--family-section` of a root, so stepping, revealing and
 `S-TAB` see the sections the render draws. `S-TAB` steps both views through
 headers alone, rows, then rows with details, and back to headers.
-`agent-shell-vertico-sidebar-jump-by-key` reads in the state view with every
-section open: it binds the option to `state`, `--section-folds` to nil and
-`folded-sections` to nil around its render, so a folded session gets a row
-and a key while the folds themselves stay as the reader left them.
+`agent-shell-vertico-sidebar-jump-by-key` keeps the configured view and opens
+every project and section for the read: it temporarily binds
+`--expanded-projects` and `--section-folds` to nil, `expand-by-default` to t
+and `folded-sections` to nil around its render, so a folded session gets a
+row and a key while the folds themselves stay as the reader left them.
 
 **The detail line and the age.** Every row is a title line and, when
 `--detail-for` has something to say, a detail line, as the agent view draws a
@@ -656,15 +657,14 @@ the same convention `--live-status` already uses for `agent-shell-status`.
 **Jumping to a session by key.** `agent-shell-vertico-sidebar-jump-by-key` is
 the `ace-window` model: assign labels at trigger time, show them where the
 reader is already looking, read one key. The sidebar is the only rendering, so
-`--read-jump-target` first draws it in the state view with every section open:
-a hidden sidebar is displayed for the read and its window deleted after, and
-`agent-shell-vertico-sidebar-group-by` is let-bound to `state`,
-`--section-folds` to nil and `folded-sections` to nil around a render, so a
-folded session has a row too. An empty fold table with no default folds leaves
-every section open without writing to the reader's folds. Every exit path
-renders again under the real view and folds, including the aborts, which is
-also what repairs a sidebar shown on another frame: the buffer is shared, so
-the open-sections render reached that frame too. The folds themselves are
+`--read-jump-target` first draws it in the configured view with every project
+and section open: a hidden sidebar is displayed for the read and its window
+deleted after. Around the render, `--expanded-projects` and `--section-folds`
+are let-bound to nil, `expand-by-default` to t and `folded-sections` to nil,
+so a folded session has a row too, without writing to the reader's folds.
+Every exit path renders again under the original folds, including the aborts,
+which is also what repairs a sidebar shown on another frame: the buffer is
+shared, so the open-folds render reached that frame too. The folds themselves are
 never touched. Labels come from
 `--session-rows`, the rendered rows in display order, not from a separate
 sort, so what is drawn is what is keyed, and `--visible-rows` then drops the
