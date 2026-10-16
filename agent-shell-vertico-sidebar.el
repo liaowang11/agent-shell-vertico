@@ -701,7 +701,16 @@ otherwise take each glyph's own colour and change hue along the row."
 
 (defface agent-shell-vertico-sidebar-working
   '((t :inherit ansi-color-blue :background "unspecified-bg"))
-  "Face for a working session, or one with work behind a prompt."
+  "Face for a working session, or one with work behind a prompt.
+
+Besides the mark, it draws the spinner, the Working section's header and
+the status word of the project view.  Blue is this sidebar's choice:
+Claude Code leaves a working star uncoloured, and dims every row but
+the focused one to set it apart.  To draw it so, make this face inherit
+`default'.  A busy session still has a shape of its own then, the
+spinner or, with `agent-shell-vertico-sidebar-animate-busy' off, a
+`●'; but a session with work behind a prompt does not spin, so its
+`✻' would look like an idle one."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-ready
@@ -1981,13 +1990,20 @@ session whose agent process is gone is a dot."
         (t "✻")))
 
 (defun agent-shell-vertico-sidebar--mark-face (snapshot)
-  "Return the face of the mark of SNAPSHOT, by Claude Code's colour table.
+  "Return the face of the mark of SNAPSHOT.
 
 Purple is what the reader has put off, yellow what waits for the
 reader, blue what works, red a failure and green a finished turn.  A
 session nobody has prompted waits for its first prompt, so it is yellow
 too.  A stopped session is grey.  Unread output
-does not colour the mark: it makes the title bold."
+does not colour the mark: it makes the title bold.
+
+Yellow, red, green and grey follow Claude Code's table
+\(m0744.js:3378-3385), which has no entry for a snoozed session.  Blue
+does not: Claude Code draws a working star in no colour and tells it
+apart by dimming every row but the focused one, which this sidebar does
+not do, and grey already means stopped here.  The faces are the
+setting; see `agent-shell-vertico-sidebar-working'."
   (pcase-let (((map :state :tempo :snoozed :in-flight) snapshot))
     (cond (snoozed 'agent-shell-vertico-sidebar-snoozed)
           ((eq tempo 'blocked) 'agent-shell-vertico-sidebar-blocked)

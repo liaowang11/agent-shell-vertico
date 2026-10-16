@@ -928,12 +928,18 @@ snapshot. The glyph is `✻`, a still `●` for an active session when
 of its own), and `∙` when `--live-p` says the agent process ran and exited;
 the dot takes the face of the status the exit overlay answers, so it is red
 when the exit failed the session and keeps a finished turn's colour otherwise.
-The face follows Claude Code's colour table, first match wins: purple
+The face follows this table, first match wins: purple
 (`-snoozed`) for a snoozed session, yellow (`-blocked`) while it waits for
 the reader, a session nobody has prompted included since its tempo is
 `blocked`, blue (`-working`) while active or in flight, red (`-failed`) for
 a failed turn, green (`-ready`) for a finished one, and grey (`-detail`)
-otherwise, which is a stopped turn. Purple
+otherwise, which is a stopped turn. Yellow, red, green and grey are Claude
+Code's (`jn`, m0744.js:3378-3385); blue is not. Claude Code draws a working
+star in no colour (m0744.js:3382) and sets it apart by dimming every row but
+the focused one, which this sidebar does not do, so blue is kept; the
+`-working` face is the setting for anyone who wants Claude Code's look, and
+its docstring says what that costs (a session with work behind a prompt does
+not spin, so its star would read as idle). Purple
 because grey was taken: `-snoozed` inherits `link-visited` for its colour
 alone, and the row's title recedes into `-snoozed-title` (`shadow`) so the
 rows still asking stand out. Unread is not a mark colour: it is a bold title

@@ -4827,8 +4827,10 @@ is a still disc, so a working mark still differs in shape."
                     '(:live t :tempo active))
                    "●"))))
 
-(ert-deftest agent-shell-vertico-sidebar-mark-face-follows-claude-code ()
-  "The colour gives the state, by Claude Code's table; red means failed."
+(ert-deftest agent-shell-vertico-sidebar-mark-face-follows-the-state ()
+  "The colour gives the state; red means failed.
+The table is the sidebar's own: Claude Code's working star has no
+colour, and blue is kept because this sidebar dims no rows."
   (pcase-dolist (`(,snapshot ,face)
                  '(((:snoozed 1.0 :tempo blocked)
                     agent-shell-vertico-sidebar-snoozed)
