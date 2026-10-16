@@ -4817,6 +4817,267 @@ is a still disc, so a working mark still differs in shape."
                           alpha)
                          :live)))))
 
+(defun agent-shell-vertico-tests--dead-process ()
+  "Return a process that has run and exited."
+  (let ((process (make-process :name "asv-dead" :command '("true")
+                               :noquery t)))
+    (while (process-live-p process)
+      (accept-process-output process 0.05))
+    process))
+
+(defun agent-shell-vertico-tests--set-process (buffer process)
+  "Make PROCESS the agent process of session BUFFER.
+Nil is a client whose process has not started, which reads as live."
+  (with-current-buffer buffer
+    (setq-local agent-shell--state
+                (cons (list :client (cons :process process))
+                      (seq-remove (lambda (entry) (eq (car entry) :client))
+                                  agent-shell--state)))))
+
+(defun agent-shell-vertico-tests--kill-agent (buffer)
+  "Give session BUFFER an agent process that has exited."
+  (agent-shell-vertico-tests--set-process
+   buffer (agent-shell-vertico-tests--dead-process)))
+
+(defconst agent-shell-vertico-tests--pending-call
+  '(:tool-calls . (("call-1" . ((:title . "Run make check")
+                                (:permission-request-id . "p-1")))))
+  "A tool call waiting on a permission decision.")
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-mid-turn-is-failed ()
+  "An agent that died mid-turn failed, though a request is still pending.
+agent-shell leaves the request in place when the prompt fails, and a
+dead agent can answer nothing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              `((:session . ((:id . "a") (:title . "Alpha")))
+                ,agent-shell-vertico-tests--pending-call)))
+    (let ((agent-shell-test-statuses (list (cons alpha 'busy)))
+          (message "Agent process ended before completing request: finished"))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+      ;; acp's sentinel fails the prompt once the process is gone.
+      (agent-shell-vertico-tests--kill-agent alpha)
+      (agent-shell-vertico-sidebar--handle-event
+       alpha `((:event . error)
+               (:data . ((:code . -32603) (:message . ,message)))))
+      (setf (alist-get alpha agent-shell-test-statuses) 'ready)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+      (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                     '(failed idle nil)))
+      (should (eq (agent-shell-vertico-sidebar--band alpha) 'idle))
+      (should (equal (agent-shell-vertico-sidebar--detail-for
+                      (agent-shell-vertico-sidebar--session-snapshot alpha))
+                     (concat "Failed: " message))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-is-never-busy ()
+  "A dead agent is read before what agent-shell says is in flight.
+A turn whose busy flag outlived the process would otherwise spin forever."
+  (agent-shell-vertico-tests--with-alpha
+    (setf (alist-get alpha agent-shell-test-statuses) 'busy)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+    (agent-shell-vertico-tests--set-process alpha nil)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-ignores-a-pending-request ()
+  "A finished turn whose agent died stays done, whatever is pending.
+This is the test that pins the dead-process overlay on its own: no
+error event says the request is stale, only the dead process does."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              `((:session . ((:id . "a") (:title . "Alpha")))
+                ,agent-shell-vertico-tests--pending-call)))
+    (agent-shell-vertico-tests--end-turn alpha)
+    (agent-shell-vertico-tests--set-process alpha nil)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done idle nil)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-ends-background-work ()
+  "Work behind a prompt stops counting once the agent process is gone."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))
+                (:native-subagents . (("s1" . ((:id . "s1"))))))))
+    (agent-shell-vertico-tests--end-turn alpha)
+    (agent-shell-vertico-tests--set-process alpha nil)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should-not (agent-shell-vertico-sidebar--background-work alpha))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+    (should-not (agent-shell-vertico-sidebar--background-signature
+                 (list alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-unprompted-session-is-failed ()
+  "A session nobody prompted whose agent died failed, saying so."
+  (agent-shell-vertico-tests--with-fresh
+    (agent-shell-vertico-tests--kill-agent fresh)
+    (should (eq (agent-shell-vertico-sidebar--raw-status fresh) 'failed))
+    (should (eq (agent-shell-vertico-sidebar--band fresh) 'idle))
+    (let ((snapshot (agent-shell-vertico-sidebar--session-snapshot fresh)))
+      (should (equal (plist-get snapshot :error) "Agent process exited"))
+      (should (equal (agent-shell-vertico-sidebar--detail-for snapshot)
+                     "Failed: Agent process exited")))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-error-without-message ()
+  "An error event with no message reads as the exit once the agent died."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-sidebar--handle-event alpha '((:event . error)))
+    (should (equal (agent-shell-vertico-sidebar--detail-for
+                    (agent-shell-vertico-sidebar--session-snapshot alpha))
+                   "Failed"))
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should (equal (agent-shell-vertico-sidebar--detail-for
+                    (agent-shell-vertico-sidebar--session-snapshot alpha))
+                   "Failed: Agent process exited"))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-starting-session-is-failed ()
+  "A session whose agent died before it had a session failed to start."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:title . "Alpha"))))))
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+    (agent-shell-vertico-tests--set-process alpha nil)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'starting))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-keeps-how-the-turn-ended ()
+  "A turn that had ended keeps how it ended after its agent died.
+This is Claude Code's rule: a finished job is left alone, and one that
+ended asking a question still asks it."
+  (pcase-dolist (`(,reason ,text ,status)
+                 '(("end_turn" "All done." done)
+                   ("cancelled" "Half way." stopped)
+                   ("refusal" "No." failed)
+                   ("end_turn" "needs input: which branch?" blocked)))
+    (agent-shell-vertico-tests--with-alpha
+      (agent-shell-vertico-tests--stream alpha text)
+      (agent-shell-vertico-tests--end-turn alpha reason)
+      (agent-shell-vertico-tests--kill-agent alpha)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) status)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-still-asks-its-question ()
+  "A dead agent's question is what it asks, not a request it left behind."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              `((:session . ((:id . "a") (:title . "Alpha")))
+                ,agent-shell-vertico-tests--pending-call)))
+    (agent-shell-vertico-tests--stream alpha "needs input: which branch?")
+    (agent-shell-vertico-tests--end-turn alpha)
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(blocked blocked "which branch?")))))
+
+(defmacro agent-shell-vertico-tests--with-notifications (&rest body)
+  "Evaluate BODY recording each notification in NOTIFICATIONS, newest first."
+  (declare (indent 0) (debug t))
+  `(let* (notifications
+          (agent-shell-vertico-sidebar-notify-function
+           (lambda (&rest arguments) (push arguments notifications))))
+     ,@body))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-exit-notifies-once ()
+  "An exit that fails a session is announced once, and marks it unread.
+The agent coming back and dying again is a second exit."
+  (agent-shell-vertico-tests--with-fresh
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--kill-agent fresh)
+      (agent-shell-vertico-sidebar--note-exits (list fresh waiting))
+      (agent-shell-vertico-sidebar--note-exits (list fresh waiting))
+      (should (= (length notifications) 1))
+      (should (eq (plist-get (car notifications) :buffer) fresh))
+      (should (equal (plist-get (car notifications) :status) "Failed"))
+      (should (eq (plist-get (car notifications) :state) 'failed))
+      (should (plist-get (car notifications) :unread))
+      (should (agent-shell-vertico-sidebar--unread-p fresh))
+      (agent-shell-vertico-tests--set-process fresh nil)
+      (agent-shell-vertico-sidebar--note-exits (list fresh))
+      (should-not (agent-shell-vertico-sidebar--get fresh 'exited-at))
+      (agent-shell-vertico-tests--kill-agent fresh)
+      (agent-shell-vertico-sidebar--note-exits (list fresh))
+      (should (= (length notifications) 2)))))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-exit-after-a-turn-is-silent ()
+  "An agent dying after its turn finished changes nothing to announce."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--end-turn alpha)
+      (agent-shell-vertico-sidebar--mark-seen alpha)
+      (setq notifications nil)
+      (agent-shell-vertico-tests--kill-agent alpha)
+      (agent-shell-vertico-sidebar--note-exits (list alpha))
+      (should-not notifications)
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-exit-ends-a-snooze ()
+  "An exit is a new ask, which no snooze put off."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-sidebar--set alpha 'snoozed 1.0)
+      (agent-shell-vertico-tests--kill-agent alpha)
+      (agent-shell-vertico-sidebar--note-exits (list alpha))
+      (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+      (should (= (length notifications) 1)))))
+
+(ert-deftest agent-shell-vertico-sidebar-agent-exit-skips-a-watched-session ()
+  "An exit the reader is looking at is neither announced nor unread."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (_buffer) t)))
+        (agent-shell-vertico-tests--kill-agent alpha)
+        (agent-shell-vertico-sidebar--note-exits (list alpha)))
+      (should-not notifications)
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+      (should (agent-shell-vertico-sidebar--get alpha 'exited-at)))))
+
+(ert-deftest agent-shell-vertico-sidebar-prompt-forgets-an-exit ()
+  "A prompt to a dead session respawns its agent, so its exit is over."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--kill-agent alpha)
+    (agent-shell-vertico-sidebar--note-exits (list alpha))
+    (should (agent-shell-vertico-sidebar--get alpha 'exited-at))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'exited-at))))
+
+(ert-deftest agent-shell-vertico-sidebar-render-notices-an-exit ()
+  "A render announces an exit once, even if the announcement renders."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha)))
+      (agent-shell-vertico-tests--with-sidebar
+        (let* ((sidebar (current-buffer))
+               (count 0)
+               (agent-shell-vertico-sidebar-notify-function
+                (lambda (&rest _)
+                  (cl-incf count)
+                  (with-current-buffer sidebar
+                    (agent-shell-vertico-sidebar--render)))))
+          (agent-shell-vertico-tests--kill-agent alpha)
+          (agent-shell-vertico-sidebar--render)
+          (agent-shell-vertico-sidebar--render)
+          (should (= count 1))
+          (should (string-match-p "Agent process exited"
+                                  (buffer-string))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-exit-notifier-errors-are-demoted ()
+  "A notify function that signals does not stop the render."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-notify-function
+           (lambda (&rest _) (error "Broken notifier"))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-tests--kill-agent alpha)
+        (let ((inhibit-message t))
+          (agent-shell-vertico-sidebar--render))
+        (should (string-match-p "Review alpha" (buffer-string)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-unread-title-is-bold ()
   "A session holding output nobody has read has a bold title."
   (agent-shell-vertico-tests--with-alpha

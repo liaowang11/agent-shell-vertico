@@ -302,6 +302,37 @@ only apply to an otherwise idle session, so a live `busy` or `blocked` always
 wins, and the pending decision is asked first among them: a burst streaming
 beside it is work the session does while it waits, not an answer to it.
 
+**When the agent process dies.** One overlay comes before even agent-shell's
+live status: a session whose agent process ran and exited (`--live-p` nil) is
+answered by `--exited-status`, because a dead agent can neither be busy nor
+answer a request, whatever agent-shell's records still say. When acp's
+sentinel fails a prompt, agent-shell emits `error` before it clears busy and
+leaves any pending permission in place, and a busy flag that outlived the
+process would spin forever; asking about the process first settles both. The
+rule is Claude Code's for a job whose worker died (`an()`, m0307.js:2009): a
+turn that had ended keeps how it ended (`done`, `stopped`, `failed`), one that
+ended on a `needs input:` question stays `blocked` and its NEEDS is that
+question alone, never a request the dead agent left behind, and anything else
+(a turn in flight, `starting`, `new`, an out-of-turn burst) is `failed`, which
+`--error-for` says as `Failed: Agent process exited` when no `error` event gave
+a message. Like the pending decision, it is derived rather than recorded: a
+prompt to the dead buffer makes acp start the process again in place
+(acp.el:456), so a stored flag would go stale. The one record is the
+`exited-at` slot, which only says the exit has been reported:
+`--note-exits` stamps it, and when the exit is what failed the session (the
+state slot is not one of the four kept above) ends a snooze, marks the session
+unread unless the reader is in it, and calls `--notify` once. A turn the exit
+cut short was already reported by its `error` event and so is skipped. The slot
+clears when the process is seen alive again or on `input-submitted`. agent-shell
+emits nothing for an idle exit, so `--note-exits` runs at the top of every
+render, before any snapshot is taken, and from `--background-poll`; the
+notification therefore waits for the sidebar to be shown, within a minute
+thanks to the age refresh, which matches Claude Code checking only when its
+list loads. The status, the counts and the jump need no render, since they are
+derived. The stamp is set before `--notify`, which runs under
+`with-demoted-errors`, so a notify function that renders again reports nothing
+twice and one that signals does not abort the render.
+
 **How a turn ended.** A cancelled turn is `stopped`, and a stop reason other
 than `end_turn` (a refusal, a limit) is `failed` in agent-shell's own words.
 A turn that ran to its end is read by `--classify-message` as Claude Code
@@ -639,8 +670,12 @@ the report silent as it would be without this, and blocks nothing.
 `--raw-status` overlays it after every other idle overlay, in the order its
 docstring gives:
 a pending permission, an out-of-turn burst, `failed` (a failure says more),
-`starting`, `stopped`, the `blocked` state and `new`. It stamps
-`--background-since` through `--track-background`, since async tasks carry no
+`starting`, `stopped`, the `blocked` state and `new`; a dead agent process is
+asked before all of them, and `--background-work` answers nil once the process
+is gone, because nothing runs behind a dead agent though the records never
+reach an end. That is also how the two-second poll notices an agent that died
+with work running: the signature empties and the render reports the exit. It
+stamps `--background-since` through `--track-background`, since async tasks carry no
 spawn time of their own; the tier (rank 3, between working and snoozed) runs
 oldest-first from that stamp. Polling was chosen over an `:after` advice on
 `agent-shell-subagents--changed`, which would be exact, because it depends on
@@ -873,7 +908,9 @@ with the session current and let `--attention-target` answer.
 says the state; `--mark-glyph` and `--mark-face` read both from the
 snapshot. The glyph is `✻`, a still `●` for an active session when
 `agent-shell-vertico-sidebar-animate-busy` is off (so working keeps a shape
-of its own), and `∙` when `--live-p` says the agent process ran and exited.
+of its own), and `∙` when `--live-p` says the agent process ran and exited;
+the dot takes the face of the status the exit overlay answers, so it is red
+when the exit failed the session and keeps a finished turn's colour otherwise.
 The face follows Claude Code's colour table, first match wins: purple
 (`-snoozed`) for a snoozed session, yellow (`-blocked`) while it waits for
 the reader, a session nobody has prompted included since its tempo is
@@ -1036,7 +1073,9 @@ wherever an attention mark is set, never for a focused session. It receives
 the sidebar shows for the session, never a read state), `:state` and
 `:needs` (Claude Code's STATE and NEEDS from `--job-state`, so a channel can
 say what a waiting session asks), `:unread` (whether the session holds output
-nobody has read) and `:last-message`.
+nobody has read) and `:last-message`. An agent process that exits is reported
+once by `--note-exits` when the exit is what failed the session (see "When the
+agent process dies").
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
 streamed chunk and keeps none of them; any other event ends the message,

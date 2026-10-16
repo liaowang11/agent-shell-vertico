@@ -393,6 +393,13 @@ Non-nil when the sidebar saw the session start and nobody has prompted it.
 Only a session seen before it had an ACP session can be known to be
 unprompted; one already running when the sidebar first saw it may have
 any history, and a restored one has some.")
+  (exited-at nil :documentation "\
+When the sidebar first saw the session's agent process gone, or nil.
+
+Whether the agent is gone is read from the process every time, because
+a prompt to the dead buffer starts it again in place.  This only says
+the exit has been seen, so it is reported once; it goes when the
+process is seen alive again or a prompt is submitted.")
   (created-at nil :documentation "\
 When the sidebar first saw the session.")
   (first-terminal-at nil :documentation "\
@@ -956,7 +963,8 @@ agent-shell keeps both in the session's state and emits no event for
 either, so this reads the state: a subagent runs until its record gains
 `:ended-at', and an async task until its `:state' is terminal.  Both
 are agent-shell's internals; a state without them answers nil, which is
-a session with nothing in the background."
+a session with nothing in the background.  Nothing runs once the agent
+process is gone, though the records never reach an end."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :background)
       (let* ((state (agent-shell-vertico--state buffer))
              (subagents
@@ -968,7 +976,8 @@ a session with nothing in the background."
                            (not (member (plist-get (cdr entry) :state)
                                         terminal)))
                          (map-elt state :async-tasks))))
-        (unless (and (zerop subagents) (zerop tasks))
+        (unless (or (and (zerop subagents) (zerop tasks))
+                    (not (agent-shell-vertico-sidebar--live-p buffer)))
           (cons subagents tasks)))))
 
 (defun agent-shell-vertico-sidebar--track-background (buffer status)
@@ -980,11 +989,31 @@ See the `background-since' slot of `agent-shell-vertico-sidebar--session'."
                                           (float-time)))
     (agent-shell-vertico-sidebar--set buffer 'background-since nil)))
 
+(defun agent-shell-vertico-sidebar--exited-status (buffer)
+  "Return the status of BUFFER once its agent process is gone.
+
+A turn that had ended keeps how it ended, `done', `stopped' or `failed',
+and one that ended on a question is still `blocked': the question
+stands, and the row says what it was until the reader reloads.  This is
+Claude Code's rule for a job whose worker died.  Anything else, a turn
+in flight, a session starting or one nobody has prompted, `failed',
+since nothing will finish it."
+  (let ((state (agent-shell-vertico-sidebar--get buffer 'state)))
+    (if (memq state '(done stopped failed blocked))
+        state
+      'failed)))
+
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
 The answer is `starting', `new', `busy', `background', `blocked',
 `done', `failed' or `stopped', or whatever else agent-shell reports.
+
+A session whose agent process is gone is answered first, by
+`agent-shell-vertico-sidebar--exited-status': a dead agent cannot be
+busy or answer a request, whatever agent-shell's own records still say.
+It is read from the process every time rather than recorded, because a
+prompt to the dead buffer starts the agent again in place.
 
 agent-shell answers what the session does now, and a live `busy' or
 `blocked' means a turn owns the session and wins.  An otherwise idle
@@ -1010,26 +1039,31 @@ not, first match first:
 `agent-shell-vertico-sidebar--job-state' gives the same answer in
 Claude Code's terms."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status)
-      (let* ((live (agent-shell-vertico-sidebar--live-status buffer))
-             (state (agent-shell-vertico-sidebar--get buffer 'state))
-             (status
-              (cond
-               ((not (eq live 'ready)) live)
-               ((or (agent-shell-vertico-sidebar--permission-pending-p buffer)
-                    (agent-shell-vertico-sidebar--form-pending-p buffer))
-                'blocked)
-               ((agent-shell-vertico-sidebar--get buffer 'out-of-turn) 'busy)
-               ((eq state 'failed) 'failed)
-               ((not (agent-shell-vertico--session-field buffer :id))
-                'starting)
-               ((eq state 'stopped) 'stopped)
-               ((eq state 'blocked) 'blocked)
-               ((agent-shell-vertico-sidebar--get buffer 'fresh) 'new)
-               ((agent-shell-vertico-sidebar--background-work buffer)
-                'background)
-               (t 'done))))
+      (let ((status
+             (if (not (agent-shell-vertico-sidebar--live-p buffer))
+                 (agent-shell-vertico-sidebar--exited-status buffer)
+               (let ((live (agent-shell-vertico-sidebar--live-status buffer)))
+                 (if (eq live 'ready)
+                     (agent-shell-vertico-sidebar--idle-status buffer)
+                   live)))))
         (agent-shell-vertico-sidebar--track-background buffer status)
         status)))
+
+(defun agent-shell-vertico-sidebar--idle-status (buffer)
+  "Return the status of BUFFER as a live session with no turn in flight.
+The idle arms of `agent-shell-vertico-sidebar--raw-status'."
+  (let ((state (agent-shell-vertico-sidebar--get buffer 'state)))
+    (cond ((or (agent-shell-vertico-sidebar--permission-pending-p buffer)
+               (agent-shell-vertico-sidebar--form-pending-p buffer))
+           'blocked)
+          ((agent-shell-vertico-sidebar--get buffer 'out-of-turn) 'busy)
+          ((eq state 'failed) 'failed)
+          ((not (agent-shell-vertico--session-field buffer :id)) 'starting)
+          ((eq state 'stopped) 'stopped)
+          ((eq state 'blocked) 'blocked)
+          ((agent-shell-vertico-sidebar--get buffer 'fresh) 'new)
+          ((agent-shell-vertico-sidebar--background-work buffer) 'background)
+          (t 'done))))
 
 (defconst agent-shell-vertico-sidebar--new-needs "Send a prompt to start"
   "What a session nobody has prompted yet is waiting for.")
@@ -1077,10 +1111,15 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
       ('background (list 'working 'idle nil))
       ('new (list 'working 'blocked agent-shell-vertico-sidebar--new-needs))
       ('blocked
+       ;; A dead agent asks only the question its turn ended on: a
+       ;; request it left behind can no longer be answered.
        (list (or (agent-shell-vertico-sidebar--get buffer 'state) 'done)
              'blocked
-             (or (agent-shell-vertico-sidebar--permission-needs buffer)
-                 (agent-shell-vertico-sidebar--elicitation-needs buffer)
+             (or (and (agent-shell-vertico-sidebar--live-p buffer)
+                      (or (agent-shell-vertico-sidebar--permission-needs
+                           buffer)
+                          (agent-shell-vertico-sidebar--elicitation-needs
+                           buffer)))
                  (agent-shell-vertico-sidebar--get buffer 'needs))))
       ((or 'done 'failed 'stopped) (list status 'idle nil))
       (_ (list 'working 'idle nil)))))
@@ -1390,6 +1429,20 @@ only a process that ran and stopped says the agent is gone."
          (process (and client (map-elt client :process))))
     (or (null process) (process-live-p process))))
 
+(defconst agent-shell-vertico-sidebar--exited-error "Agent process exited"
+  "Why a session failed when its agent process is gone and nothing said.")
+
+(defun agent-shell-vertico-sidebar--error-for (buffer status)
+  "Return why BUFFER in STATUS failed, as its snapshot's `:error'.
+The `error' slot when it holds a message; else, for a session the exit
+of its agent failed, `agent-shell-vertico-sidebar--exited-error'."
+  (let ((error (agent-shell-vertico-sidebar--get buffer 'error)))
+    (if (and (not (stringp error))
+             (eq status 'failed)
+             (not (agent-shell-vertico-sidebar--live-p buffer)))
+        agent-shell-vertico-sidebar--exited-error
+      error)))
+
 (defun agent-shell-vertico-sidebar--session-snapshot (buffer)
   "Return one render snapshot for live session BUFFER.
 
@@ -1443,7 +1496,7 @@ repeating those queries during one redisplay."
            :agent (agent-shell-vertico--agent-name buffer))
      (list :detail (agent-shell-vertico-sidebar--detail-text buffer)
            :result (agent-shell-vertico-sidebar--get buffer 'result)
-           :error (agent-shell-vertico-sidebar--get buffer 'error)
+           :error (agent-shell-vertico-sidebar--error-for buffer status)
            :updated-at (agent-shell-vertico-sidebar--get buffer 'updated-at)
            :created-at (agent-shell-vertico-sidebar--get buffer 'created-at)
            :last-terminal-at
@@ -3016,6 +3069,9 @@ every session it holds."
   (let* ((agent-shell-vertico-sidebar--render-children
           (make-hash-table :test #'eq))
          (buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         ;; Before any snapshot is taken, so a notification reads the
+         ;; sessions afresh rather than a render half built.
+         (_ (agent-shell-vertico-sidebar--note-exits buffers))
          ;; A child with a live parent is inserted under it instead, by
          ;; `--insert-session-and-children'; everything else, including an
          ;; orphan whose parent just died, roots its own place in the sort
@@ -3296,11 +3352,14 @@ from."
 agent-shell emits no event when a subagent or an async task starts or
 ends, and a task can end with nothing said, so the sidebar asks.  Work
 starts inside a turn, whose events render the sidebar anyway, which is
-why this only runs while something is drawn as running."
-  (unless (equal (agent-shell-vertico-sidebar--background-signature
-                  (seq-filter #'buffer-live-p (agent-shell-buffers)))
-                 agent-shell-vertico-sidebar--rendered-background)
-    (agent-shell-vertico-sidebar--schedule-refresh)))
+why this only runs while something is drawn as running.  An agent that
+exits stops its work, so this is also how a death behind a prompt is
+noticed, and `agent-shell-vertico-sidebar--note-exits' reports it."
+  (let ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers))))
+    (agent-shell-vertico-sidebar--note-exits buffers)
+    (unless (equal (agent-shell-vertico-sidebar--background-signature buffers)
+                   agent-shell-vertico-sidebar--rendered-background)
+      (agent-shell-vertico-sidebar--schedule-refresh))))
 
 (defun agent-shell-vertico-sidebar--ensure-background-refresh ()
   "Check background work on a timer while some is drawn and on screen."
@@ -3863,6 +3922,34 @@ nobody has prompted, which asks the reader nothing yet."
                :last-message (agent-shell-vertico-sidebar--last-message
                               buffer)))))
 
+(defun agent-shell-vertico-sidebar--note-exits (buffers)
+  "Report each of BUFFERS whose agent process is newly seen gone.
+
+agent-shell emits no event when the agent exits with no request in
+flight, so the sidebar notices when it next looks: every render, which
+the age refresh runs at least once a minute while the sidebar is shown,
+and every background-work poll.  An exit is reported once, in the
+`exited-at' slot, and only when it is what failed the session: a turn
+that had ended keeps how it ended, so its exit says nothing new, and a
+turn the exit cut short has already been reported by its `error' event.
+Being reported, the session is unread unless the reader is in it, and a
+snooze ends, since the agent cannot go on without the reader."
+  (dolist (buffer buffers)
+    (if (agent-shell-vertico-sidebar--live-p buffer)
+        (agent-shell-vertico-sidebar--set buffer 'exited-at nil)
+      (unless (agent-shell-vertico-sidebar--get buffer 'exited-at)
+        (let ((now (float-time)))
+          ;; Stamped first, so a notify function that renders the
+          ;; sidebar again does not report it a second time.
+          (agent-shell-vertico-sidebar--set buffer 'exited-at now)
+          (unless (memq (agent-shell-vertico-sidebar--get buffer 'state)
+                        '(done stopped failed blocked))
+            (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+            (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
+              (agent-shell-vertico-sidebar--mark-unread-at buffer now)
+              (with-demoted-errors "Agent shell sidebar notification: %S"
+                (agent-shell-vertico-sidebar--notify buffer)))))))))
+
 (defun agent-shell-vertico-sidebar--handle-event (buffer event)
   "Update sidebar metadata for BUFFER after agent EVENT."
   (let ((kind (map-elt event :event))
@@ -3928,7 +4015,9 @@ nobody has prompted, which asks the reader nothing yet."
        (agent-shell-vertico-sidebar--set buffer 'tool-calls nil)
        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-       (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
+       (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil)
+       ;; A prompt to a dead session starts its agent again.
+       (agent-shell-vertico-sidebar--set buffer 'exited-at nil))
       ('tool-call-update
        (agent-shell-vertico-sidebar--record-tool-call buffer event))
       ('session-restored
