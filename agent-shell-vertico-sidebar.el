@@ -3064,7 +3064,8 @@ matching parent its children."
   "Return the header line naming the filter, SHOWN of TOTAL sessions drawn."
   (concat
    (propertize " Filter: " 'face 'agent-shell-vertico-sidebar-header-count)
-   (propertize agent-shell-vertico-sidebar--filter
+   ;; A header line is a mode-line construct, where `%' is a directive.
+   (propertize (string-replace "%" "%%" agent-shell-vertico-sidebar--filter)
                'face 'agent-shell-vertico-sidebar-section)
    (propertize (format " · %d/%d · f to change" shown total)
                'face 'agent-shell-vertico-sidebar-header-count)))
@@ -3100,8 +3101,11 @@ The line is ruled off from the rows below it (`--header-rule')."
 
 BUFFERS are the roots under the header.  The tooltip lists those of
 their sessions in the attention band, and a click runs
-`agent-shell-vertico-sidebar-jump', as the mode line count does.  Only
-the count carries it, so a click on the label still folds the section."
+`agent-shell-vertico-sidebar-jump', as the mode line count does.  While
+the sidebar is filtered the click jumps only among the sessions of
+BUFFERS' families, those the header draws and its tooltip names from, so
+it never opens a session the filter hides.  Only the count carries it,
+so a click on the label still folds the section."
   (save-excursion
     (goto-char start)
     (when (search-forward " · " (line-end-position) t)
@@ -3118,7 +3122,19 @@ the count carries it, so a click on the label still folds the section."
                                'attention))
                          (seq-mapcat #'agent-shell-vertico-sidebar--family
                                      buffers))))
-               'keymap (agent-shell-vertico-sidebar--attention-map)))))))
+               'keymap
+               (if agent-shell-vertico-sidebar--filter
+                   (let ((map (make-sparse-keymap))
+                         (shown (seq-mapcat
+                                 #'agent-shell-vertico-sidebar--family
+                                 buffers)))
+                     (define-key map [mouse-1]
+                                 (lambda ()
+                                   (interactive)
+                                   (agent-shell-vertico-sidebar--jump-among
+                                    shown)))
+                     map)
+                 (agent-shell-vertico-sidebar--attention-map))))))))
 
 (defun agent-shell-vertico-sidebar--insert-section (section buffers width)
   "Insert the header of state SECTION and, unless folded, its BUFFERS.
@@ -3946,8 +3962,9 @@ what follows it, at least three characters.  When the last line is no
 marker the turn is done, and LINE is that line, or nil when there is no
 message.
 
-A fence is three or more backticks or tildes, and as in Claude Code
-it closes only on a run of its own character at least as long."
+A fence is three or more backticks or tildes.  It closes only on a run
+of its own character at least as long with nothing after it, since in
+Markdown a closing fence carries no info string."
   (let ((case-fold-search t)
         fence last-line)
     (dolist (line (split-string (or text "") "\n"))
@@ -3956,7 +3973,8 @@ it closes only on a run of its own character at least as long."
         (let ((run (match-string 1 line)))
           (cond ((null fence) (setq fence run))
                 ((and (eq (aref run 0) (aref fence 0))
-                      (>= (length run) (length fence)))
+                      (>= (length run) (length fence))
+                      (string-blank-p (substring line (match-end 0))))
                  (setq fence nil)))))
        (fence nil)
        (t (let ((trimmed (string-trim line)))
@@ -4869,7 +4887,8 @@ open the session, and \\[newline] starts a new line.
 The session starts without being displayed, so no window changes and
 the jump history and `agent-shell-vertico-before-display-function'
 hear of it only when it is opened.  Its row appears at once, under
-Working, with the prompt queued until the session can take it; if the
+Working, with the prompt queued until the session can take it, and a
+filter hiding the row is cleared, which the message says.  If the
 session fails to start or the prompt cannot be sent, the row reads
 failed and the prompt is put on the kill ring."
   (interactive "P")
@@ -4898,19 +4917,25 @@ failed and the prompt is put on the kill ring."
       (agent-shell-vertico-sidebar--dispatch-when-ready shell prompt)
       (when open
         (agent-shell-vertico--display-session (buffer-name shell)))
-      (agent-shell-vertico-sidebar--show-dispatched shell)
-      (message "Dispatched to %s" (buffer-name shell)))))
+      (message "Dispatched to %s%s" (buffer-name shell)
+               (if (agent-shell-vertico-sidebar--show-dispatched shell)
+                   "; the sidebar filter was cleared to show it"
+                 "")))))
 
 (defun agent-shell-vertico-sidebar--show-dispatched (shell)
-  "Redraw the sidebar with point on SHELL's row, as Claude Code follows it."
+  "Redraw the sidebar with point on SHELL's row, as Claude Code follows it.
+Return non-nil when that cleared a filter hiding the row, so the
+dispatch can say so: its own message replaces the reveal's."
   (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (let ((window (get-buffer-window sidebar t)))
       (with-current-buffer sidebar
-        (agent-shell-vertico-sidebar--render)
-        (if (window-live-p window)
-            (with-selected-window window
-              (agent-shell-vertico-sidebar--reveal-session shell))
-          (agent-shell-vertico-sidebar--reveal-session shell))))))
+        (let ((filtered agent-shell-vertico-sidebar--filter))
+          (agent-shell-vertico-sidebar--render)
+          (if (window-live-p window)
+              (with-selected-window window
+                (agent-shell-vertico-sidebar--reveal-session shell))
+            (agent-shell-vertico-sidebar--reveal-session shell))
+          (and filtered (not agent-shell-vertico-sidebar--filter)))))))
 
 (defun agent-shell-vertico-sidebar-set-sort ()
   "Choose the sidebar sorting criterion."
@@ -5059,10 +5084,12 @@ that message; see `agent-shell-vertico-sidebar-expanded-detail-lines'."
 
 (defun agent-shell-vertico-sidebar--set-filter (string)
   "Filter this sidebar through STRING and draw it again.
-A blank or nil STRING clears the filter."
+A blank or nil STRING clears the filter, and so does one that parses to
+nothing, such as a bare prefix: it would filter nothing while still
+keeping the folds from moving."
   (setq agent-shell-vertico-sidebar--filter
         (let ((string (string-trim (or string ""))))
-          (unless (string-empty-p string) string)))
+          (and (agent-shell-vertico-sidebar--filter-parse string) string)))
   (agent-shell-vertico-sidebar--render))
 
 (defun agent-shell-vertico-sidebar-filter ()
@@ -5076,9 +5103,10 @@ and any other word the title, detail line, project or last prompt.  A
 family is drawn whole when any member matches.
 
 While filtered, every section and project is drawn open and its fold
-cannot be toggled, the header line names the filter, and revealing a
-session the filter hides clears it.  The jumps still reach every
-session."
+cannot be toggled, the header line names the filter, and revealing or
+dispatching a session the filter hides clears it.  A filter that parses
+to nothing, such as `s:' alone, is no filter.  The jumps still reach
+every session."
   (interactive)
   (let ((sidebar (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
                      (current-buffer)
@@ -5720,6 +5748,12 @@ common with the shell, so it always rejects with `n'.")
     map)
   "Keymap for `agent-shell-vertico-sidebar-peek-mode'.")
 
+(defconst agent-shell-vertico-sidebar--peek-evil-g-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "r") #'agent-shell-vertico-sidebar-peek-refresh)
+    map)
+  "Prefix map for the peek's Evil `g' bindings: `gr' redraws.")
+
 (defun agent-shell-vertico-sidebar--cancel-peek-timers ()
   "Cancel the timers that redraw the peek."
   (dolist (symbol '(agent-shell-vertico-sidebar--peek-refresh-timer
@@ -5744,6 +5778,9 @@ common with the shell, so it always rejects with `n'.")
                           #'agent-shell-vertico-sidebar-peek-reply)
       (evil-local-set-key state (kbd "RET")
                           #'agent-shell-vertico-sidebar-peek-open)
+      ;; Evil's `g' is a prefix, so the redraw is `gr', as in the sidebar.
+      (evil-local-set-key state (kbd "g")
+                          agent-shell-vertico-sidebar--peek-evil-g-map)
       (dolist (key '("i" "I"))
         (evil-local-set-key state (kbd key)
                             #'agent-shell-vertico-sidebar-peek-interrupt))
@@ -6259,27 +6296,35 @@ every live session, not only the ones needing attention."
   (if read
       (agent-shell-vertico-sidebar--jump-display
        (get-buffer (agent-shell-vertico--read-session "Agent shell: " 'all)))
-    (let* ((sessions (agent-shell-vertico-sidebar--attention-sessions))
-           (target
-            (seq-find
-             (lambda (buffer)
-               (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
-             sessions)))
-      (cond
-       ;; Visiting reads whatever the session had to say.  A
-       ;; permission decision is still owed afterwards, and the
-       ;; blocked status keeps the session in place for it.
-       (target (agent-shell-vertico-sidebar--jump-display target))
-       ;; Every session asking is the one the reader is already in,
-       ;; which only a blocked one can be: arriving would settle
-       ;; nothing, and saying so beats a jump that does not move.
-       (sessions
-        (message "%s"
-                 (agent-shell-vertico-sidebar--attention-here-message
-                  (car sessions))))
-       (t
-        (message
-         "%s" (agent-shell-vertico-sidebar--no-attention-message)))))))
+    (agent-shell-vertico-sidebar--jump-among nil)))
+
+(defun agent-shell-vertico-sidebar--jump-among (among)
+  "Jump to the session most in need of attention, of AMONG when non-nil.
+This is `agent-shell-vertico-sidebar-jump' without a prefix argument;
+AMONG limits it to the sessions a filtered header draws."
+  (let* ((sessions (seq-filter
+                    (lambda (buffer) (or (null among) (memq buffer among)))
+                    (agent-shell-vertico-sidebar--attention-sessions)))
+         (target
+          (seq-find
+           (lambda (buffer)
+             (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
+           sessions)))
+    (cond
+     ;; Visiting reads whatever the session had to say.  A
+     ;; permission decision is still owed afterwards, and the
+     ;; blocked status keeps the session in place for it.
+     (target (agent-shell-vertico-sidebar--jump-display target))
+     ;; Every session asking is the one the reader is already in,
+     ;; which only a blocked one can be: arriving would settle
+     ;; nothing, and saying so beats a jump that does not move.
+     (sessions
+      (message "%s"
+               (agent-shell-vertico-sidebar--attention-here-message
+                (car sessions))))
+     (t
+      (message
+       "%s" (agent-shell-vertico-sidebar--no-attention-message))))))
 
 (defun agent-shell-vertico-sidebar--attention-here-message (buffer)
   "Return what to report when only BUFFER asks and the reader is in it."

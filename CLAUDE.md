@@ -409,7 +409,10 @@ as `Blocked: nothing left` always did. A fence is three or more backticks
 or tildes at any indent, since a fence inside a list item is indented
 (Claude Code allows three spaces), and as in Claude Code it closes only
 on a run of its own character at least as long as the one that opened it
-(m0303.js:76-106). Claude Code's prose rules for a turn with no marker,
+(m0303.js:76-106). It also closes only on a bare run, as Markdown says: a
+closing fence carries no info string, so a ```` ```bash ```` line inside a
+fence is code, and a marker after it stays hidden.
+Claude Code's prose rules for a turn with no marker,
 such as a trailing question, are not ported.
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
@@ -571,7 +574,10 @@ section or an earlier one: whoever is in the attention band sits under Needs
 input unless its family is pinned. `--mark-attention-count` puts the
 attention tooltip (`--attention-tooltip`, naming those sessions) and a
 `keymap` running `agent-shell-vertico-sidebar-jump` on mouse-1 on the Needs
-input count alone, so a click on the label still folds the section. The
+input count alone, so a click on the label still folds the section. While
+the sidebar is filtered the click runs `--jump-among` over the families of
+the header's roots instead, the sessions the tooltip names from, so the click
+never opens a session the filter hides; unfiltered, it is the plain jump. The
 jump visits `--needs-attention-p`, which also takes an unread idle session the
 band does not count: the two answer different questions, and the jump was
 left as it was. `agent-shell-vertico-sidebar-mode-line-mode` counts as `A`
@@ -665,8 +671,10 @@ agent-shell runs subscribers
 with the shell current and reduces their errors to a message, so the redraw
 switches to the peek itself and is wrapped in `with-demoted-errors`.
 `--peek-refresh` keeps point and every window's point and start by line and
-column, draws `Session ended` once the session is gone, and is bound to `g`
-(and is the peek's `revert-buffer-function`). The sidebar's minute timer runs
+column, draws `Session ended` once the session is gone, and is bound to `g`,
+`gr` under Evil, whose `g` is a prefix (`--peek-evil-g-map`, as the sidebar's
+`--evil-g-map`), and is the peek's `revert-buffer-function`.
+The sidebar's minute timer runs
 only while the sidebar is visible, so the peek has its own 30-second timer,
 running while the peek is shown. A request that arrives while the peek is the
 selected window still marks the session unread and notifies: the peek is not
@@ -1246,7 +1254,10 @@ the caller's channel, not here.
 
 **Filtering the sidebar.** `agent-shell-vertico-sidebar-filter` (`f`)
 reads a filter in the minibuffer and applies it on Enter, one render, with
-no live update; empty input clears it. The string is kept in the
+no live update; empty input clears it, and so does input `--filter-parse`
+reads as nothing (`s:` alone), so `--filter` is non-nil only when it filters:
+every fold guard tests the string and the render the parse, and the two must
+agree. The string is kept in the
 buffer-local `--filter`, so it applies on every frame showing the sidebar,
 and every render reapplies it, so a session that stops matching leaves.
 `--filter-parse` reads Claude Code's prefixes, `s:` `n:` `o:` `a:`, plus
@@ -1268,18 +1279,23 @@ filtering, so a section the filter hides keeps its fold, then keeps a root
 when any member of its family matches and draws the family whole. A
 family is still filed by `--family-section`, so a matching idle parent of a
 working child is drawn under Working. Headers count what they draw. While
-filtered, the insert phase let-binds the four fold variables the key jump
-binds, so every header is open and no fold table is written; toggling a
+filtered, the insert phase let-binds the same four fold variables the key
+jump binds (the jump also binds `--filter` itself), so every header is open
+and no fold table is written; toggling a
 header is refused, as Claude Code ignores Enter on a header while
 filtering; `--view-level` has no header level and `--set-view-level`
 writes no fold, so `S-TAB` steps between rows and details alone. A filter
 matching nothing draws `No sessions match FILTER`. The header line names
-the filter and how many sessions it shows of how many, a deliberate
+the filter and how many sessions it shows of how many, with `%` doubled,
+since a header line is a mode-line construct; it is a deliberate
 exception to "header-line-format stays nil": it is no node, never scrolls
-away, and goes when the filter does. Reveal (`-focus`, `--leave-unread`)
-clears a filter hiding its target, since the reader asked for that
-session. The jumps, the mode-line count and notifications ignore it; a
-header's Needs input count follows it, since it counts what is drawn.
+away, and goes when the filter does. Reveal (`-focus`, `--leave-unread`,
+and dispatch through `--show-dispatched`) clears a filter hiding its target,
+since the reader asked for that session; dispatch says so in its own
+message, which would otherwise replace the reveal's.
+The jumps, the mode-line count and notifications ignore it; a
+header's Needs input count follows it, since it counts what is drawn, and so
+do that count's tooltip and click (see the header paragraph).
 
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and

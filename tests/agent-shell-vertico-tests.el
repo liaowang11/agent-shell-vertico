@@ -4588,6 +4588,15 @@ Indentation does not matter, since fences in list items are indented."
     (should (equal (agent-shell-vertico-sidebar--classify-message text)
                    '(blocked . "which?")))))
 
+(ert-deftest agent-shell-vertico-sidebar-fence-closes-only-bare ()
+  "A fence line carrying an info string is content, not a closing fence."
+  (should (equal (agent-shell-vertico-sidebar--classify-message
+                  "Done.\n```\nResult: inside\n```bash\nfoo")
+                 '(done . "Done.")))
+  (should (equal (agent-shell-vertico-sidebar--classify-message
+                  "needs input: which?\n```\n```bash\nresult: x\n```  \n")
+                 '(blocked . "which?"))))
+
 (ert-deftest agent-shell-vertico-sidebar-turn-ends-stamp-terminal-times ()
   "The first turn end is kept; the latest one moves with every end."
   (agent-shell-vertico-tests--with-alpha
@@ -5655,6 +5664,23 @@ inside the event would read the session as still working."
               #'agent-shell-vertico-sidebar-peek-interrupt))
   (should (eq (lookup-key agent-shell-vertico-sidebar-peek-mode-map "g")
               #'agent-shell-vertico-sidebar-peek-refresh)))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-evil-keys ()
+  "Under Evil the peek redraws on `gr', since Evil's `g' is a prefix."
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (state key definition)
+                 (push (list state key definition) bindings))))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-peek-mode)))
+    (dolist (state '(normal motion))
+      (let ((g (nth 2 (seq-find (lambda (binding)
+                                  (and (eq (car binding) state)
+                                       (equal (cadr binding) (kbd "g"))))
+                                bindings))))
+        (should (keymapp g))
+        (should (eq (lookup-key g "r")
+                    #'agent-shell-vertico-sidebar-peek-refresh))))))
 
 (ert-deftest agent-shell-vertico-sidebar-peek-on-an-ended-session ()
   "Once its session is gone the peek says so and answers nothing."
@@ -18221,6 +18247,66 @@ The filter is back once the read ends."
         (agent-shell-vertico-sidebar-filter)
         (should-not agent-shell-vertico-sidebar--filter)
         (should (= (length (agent-shell-vertico-sidebar--session-rows)) 7))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-of-nothing-is-no-filter ()
+  "A filter that parses to nothing, a bare prefix, is stored as none.
+Otherwise the sidebar draws unfiltered while the folds refuse to move."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s: a:")
+    (should-not agent-shell-vertico-sidebar--filter)
+    (should-not header-line-format)
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("Needs input · 1" "Working · 1" "Completed · 5"
+                     "Snoozed · 1 ⋯")))
+    (goto-char (point-min))
+    (agent-shell-vertico-sidebar-toggle-at-point)
+    (should (agent-shell-vertico-sidebar--section-folded-p 'attention))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-header-line-escapes-percent ()
+  "A `%' in the filter is drawn as itself, not as a mode-line construct."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "100%-b")
+    ;; Batch Emacs formats no mode line, so the escape is checked.
+    (should (string-match-p "Filter: 100%%-b " header-line-format))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-attention-click-follows ()
+  "Under a filter the Needs input count's click reaches only what it names.
+Its tooltip names the sessions drawn under it; a click on it opens the
+first of them needing attention, never one the filter hides."
+  (agent-shell-vertico-tests--with-state-view
+    (setq agent-shell-test-statuses
+          (list (cons waiting 'blocked) (cons done-5 'blocked)
+                (cons working 'busy)))
+    (agent-shell-vertico-sidebar--mark-unread-at waiting 1.0)
+    (agent-shell-vertico-sidebar--mark-unread-at done-5 2.0)
+    (should (eq (car (agent-shell-vertico-sidebar--attention-sessions))
+                waiting))
+    (agent-shell-vertico-sidebar--set-filter "n:done")
+    (goto-char (point-min))
+    (should (search-forward "Needs input · " nil t))
+    (let ((tooltip (get-text-property (point) 'help-echo))
+          (command (lookup-key (get-text-property (point) 'keymap)
+                               [mouse-1]))
+          shown)
+      (should (string-match-p "Done 5" tooltip))
+      (should-not (string-match-p "Waiting" tooltip))
+      (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--jump-display)
+                 (lambda (buffer) (setq shown buffer))))
+        (call-interactively command))
+      (should (eq shown done-5)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-says-it-cleared-the-filter ()
+  "A dispatch whose row the filter hides clears it, and says so last."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (setq agent-shell-test-buffers (list alpha beta))
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--set-filter "n:review")
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (agent-shell-vertico-sidebar-dispatch nil)
+      (should-not agent-shell-vertico-sidebar--filter)
+      (should (string-match-p "filter" (car messages)))
+      (should (string-match-p (regexp-quote (buffer-name beta))
+                              (car messages))))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-is-bound ()
   "`f' filters in both maps and under Evil, and the help names it."
