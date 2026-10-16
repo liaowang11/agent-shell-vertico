@@ -295,10 +295,14 @@ from `agent-shell--emit-event`, which would leave a row reading as sent. So
 the prompt goes through `--send-prompt` only once the session has its id, now
 or from our own `prompt-ready` subscription, where agent-shell submits at once
 and never waits a second time; `--new-shell` starts with the `new` strategy,
-so `prompt-ready` comes unasked. A send that signals, or an `error` event
-while `dispatched` is set (a session failing to start), runs
-`--dispatch-failed`: the row reads failed, the prompt goes on the kill ring
-and a message says so. `prompt-ready` sends only while the slot still holds
+so `prompt-ready` comes unasked. A send that signals, an `error` event
+while `dispatched` is set (a session failing to start), or `--note-exits`
+finding the agent dead while it is set, runs `--dispatch-failed`: the row
+reads failed, the prompt goes on the kill ring and a message says so. Only
+the failed send reports itself there, as any failed turn is reported:
+`--stamp-terminal`, unread and `--notify` with `--settled-status` unless the
+reader is in the session; the `error` arm and `--note-exits` report their
+own. `prompt-ready` sends only while the slot still holds
 the prompt, so a prompt given back is never sent later. `clean-up` reports
 nothing: a session the reader kills on purpose is not a failed dispatch, and
 its record and our subscription die with it. `input-submitted` clears the
@@ -364,7 +368,8 @@ prompt to the dead buffer makes acp start the process again in place
 `exited-at` slot, which only says the exit has been reported:
 `--note-exits` stamps it, and when the exit is what failed the session (the
 state slot is not one of the four kept above) ends a snooze, marks the session
-unread unless the reader is in it, and calls `--notify` once. A turn the exit
+unread unless the reader is in it, and calls `--notify` once; a prompt still
+`dispatched` is given back through `--dispatch-failed`. A turn the exit
 cut short was already reported by its `error` event and so is skipped. The slot
 clears when the process is seen alive again or on `input-submitted`. agent-shell
 emits nothing for an idle exit, so `--note-exits` runs at the top of every
@@ -644,11 +649,19 @@ request, so it ages from the newest, which is the one drawn). `i`, and `I` in
 evil, stops the session through `agent-shell-vertico-interrupt-session`, so
 agent-shell's confirmation applies; a reply of `/stop` does the same when the
 session is busy, blocked or in the background and is refused otherwise, as
-agent-shell has no `/stop` to send. Whether a `session/cancel` outside a turn
+agent-shell has no `/stop` to send. Both refuse a session whose agent is not
+`--live-p`, as the answer keys do: the cancel goes through
+`acp-send-notification`, which starts a client that is not running, so it
+would bring a dead agent back for a session it never had.
+Whether a `session/cancel` outside a turn
 stops background work is the agent's business. The peek redraws itself:
 `--handle-event` ends with `--peek-note-event`, which redraws at once on the
 events that change what the session asks and coalesces the rest, streamed
-chunks above all, on a half-second idle timer. agent-shell runs subscribers
+chunks above all, on a half-second idle timer. `error` is the exception: it
+redraws from a zero-delay timer, because agent-shell emits it before it
+clears its busy flag, and a redraw inside the emit read the failed turn as
+Working (`--settled-status` answers the same problem for the notification).
+agent-shell runs subscribers
 with the shell current and reduces their errors to a message, so the redraw
 switches to the peek itself and is wrapped in `with-demoted-errors`.
 `--peek-refresh` keeps point and every window's point and start by line and

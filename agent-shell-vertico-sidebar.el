@@ -1035,6 +1035,14 @@ since nothing will finish it."
         state
       'failed)))
 
+(defun agent-shell-vertico-sidebar--settled-status (buffer)
+  "Return the status of BUFFER as it is once its current turn is over.
+agent-shell emits `error' before it clears its busy flag, so the turn
+the error ends still reads as in flight; this is what it will read as."
+  (if (agent-shell-vertico-sidebar--live-p buffer)
+      (agent-shell-vertico-sidebar--idle-status buffer)
+    (agent-shell-vertico-sidebar--exited-status buffer)))
+
 (defun agent-shell-vertico-sidebar--raw-status (buffer)
   "Return the status symbol the sidebar shows for BUFFER.
 
@@ -4052,7 +4060,8 @@ and every background-work poll.  An exit is reported once, in the
 that had ended keeps how it ended, so its exit says nothing new, and a
 turn the exit cut short has already been reported by its `error' event.
 Being reported, the session is unread unless the reader is in it, and a
-snooze ends, since the agent cannot go on without the reader."
+snooze ends, since the agent cannot go on without the reader.  A
+dispatched prompt the dead agent never sent is given back."
   (dolist (buffer buffers)
     (if (agent-shell-vertico-sidebar--live-p buffer)
         (agent-shell-vertico-sidebar--set buffer 'exited-at nil)
@@ -4061,6 +4070,11 @@ snooze ends, since the agent cannot go on without the reader."
           ;; Stamped first, so a notify function that renders the
           ;; sidebar again does not report it a second time.
           (agent-shell-vertico-sidebar--set buffer 'exited-at now)
+          ;; A dispatched agent that died with no `error' event will
+          ;; not send its prompt either.  The exit is reported below.
+          (when-let* ((prompt (agent-shell-vertico-sidebar--get
+                               buffer 'dispatched)))
+            (agent-shell-vertico-sidebar--dispatch-failed buffer prompt))
           (unless (memq (agent-shell-vertico-sidebar--get buffer 'state)
                         '(done stopped failed blocked))
             (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
@@ -4102,13 +4116,8 @@ snooze ends, since the agent cannot go on without the reader."
        (when-let* ((prompt (agent-shell-vertico-sidebar--get
                             buffer 'dispatched)))
          (agent-shell-vertico-sidebar--dispatch-failed buffer prompt))
-       ;; agent-shell emits `error' before it clears its busy flag, so
-       ;; the turn the error ends still reads as in flight.  Report the
-       ;; session as it is once the turn is over.
        (agent-shell-vertico-sidebar--notify
-        buffer (if (agent-shell-vertico-sidebar--live-p buffer)
-                   (agent-shell-vertico-sidebar--idle-status buffer)
-                 (agent-shell-vertico-sidebar--exited-status buffer))))
+        buffer (agent-shell-vertico-sidebar--settled-status buffer)))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
@@ -4782,13 +4791,20 @@ project reader, as `agent-shell-vertico-sidebar-resume-past' loads it."
 
 The prompt goes on the kill ring and a message says so, as Claude Code
 hands a failed dispatch's query back.  REASON, when non-nil, is why the
-send failed, recorded as the session's failure; an `error' event has
-recorded its own already and passes none."
-  (when reason
-    (agent-shell-vertico-sidebar--set shell 'state 'failed)
-    (agent-shell-vertico-sidebar--set shell 'error reason)
-    (agent-shell-vertico-sidebar--mark-unread-at shell (float-time)))
+send failed, recorded and reported as a failed turn is: unread and
+notified unless the reader is in the session.  An `error' event or a
+noticed exit reports its own failure and passes none."
   (agent-shell-vertico-sidebar--set shell 'dispatched nil)
+  (when reason
+    (let ((now (float-time)))
+      (agent-shell-vertico-sidebar--set shell 'state 'failed)
+      (agent-shell-vertico-sidebar--set shell 'error reason)
+      (agent-shell-vertico-sidebar--stamp-terminal shell now)
+      (unless (agent-shell-vertico-sidebar--session-focused-p shell)
+        (agent-shell-vertico-sidebar--mark-unread-at shell now)
+        (with-demoted-errors "Agent shell sidebar notification: %S"
+          (agent-shell-vertico-sidebar--notify
+           shell (agent-shell-vertico-sidebar--settled-status shell))))))
   (kill-new prompt)
   (agent-shell-vertico-sidebar--schedule-refresh)
   (message "Dispatch to %s failed%s; the prompt is in the kill ring"
@@ -6001,7 +6017,8 @@ reading, so the session's unread mark is left alone."
                        elicitation-response input-submitted turn-complete error)
   "Events that redraw the peek at once: they change what the session asks.
 Every other event of the peeked session, a streamed chunk above all,
-redraws it once things go idle.")
+redraws it once things go idle.  `error' redraws as soon as the emit
+returns, since agent-shell clears its busy flag only after it.")
 
 (defun agent-shell-vertico-sidebar--peek-note-event (buffer kind)
   "Redraw the peek if it shows BUFFER, which has had an event of KIND."
@@ -6009,15 +6026,21 @@ redraws it once things go idle.")
               ((eq (buffer-local-value
                     'agent-shell-vertico-sidebar--peek-session peek)
                    buffer)))
-    (if (memq kind agent-shell-vertico-sidebar--peek-refresh-events)
-        (agent-shell-vertico-sidebar--peek-refresh)
+    (cond
+     ;; agent-shell emits `error' before it clears its busy flag, so a
+     ;; redraw now would read the failed turn as still working.
+     ((eq kind 'error)
+      (run-at-time 0 nil #'agent-shell-vertico-sidebar--peek-refresh))
+     ((memq kind agent-shell-vertico-sidebar--peek-refresh-events)
+      (agent-shell-vertico-sidebar--peek-refresh))
+     (t
       (unless (timerp agent-shell-vertico-sidebar--peek-refresh-timer)
         (setq agent-shell-vertico-sidebar--peek-refresh-timer
               (run-with-idle-timer
                0.5 nil
                (lambda ()
                  (setq agent-shell-vertico-sidebar--peek-refresh-timer nil)
-                 (agent-shell-vertico-sidebar--peek-refresh))))))))
+                 (agent-shell-vertico-sidebar--peek-refresh)))))))))
 
 (defun agent-shell-vertico-sidebar--ensure-peek-age-refresh ()
   "Keep the peek's waiting age current for as long as the peek is shown.
@@ -6112,10 +6135,13 @@ function returns."
 
 (defun agent-shell-vertico-sidebar-peek-interrupt ()
   "Stop the session the peek shows, as `agent-shell-interrupt' does.
-agent-shell's own confirmation setting applies."
+agent-shell's own confirmation setting applies.  A session whose agent
+is gone is refused: the cancel would start a new agent to send it to."
   (interactive)
-  (agent-shell-vertico-interrupt-session
-   (agent-shell-vertico-sidebar--peek-target))
+  (let ((session (agent-shell-vertico-sidebar--peek-target)))
+    (unless (agent-shell-vertico-sidebar--live-p session)
+      (user-error "The session's agent is not running"))
+    (agent-shell-vertico-interrupt-session session))
   (agent-shell-vertico-sidebar--peek-refresh))
 
 (defun agent-shell-vertico-sidebar--peek-answer-permission

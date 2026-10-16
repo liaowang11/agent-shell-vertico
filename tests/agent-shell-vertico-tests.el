@@ -1687,6 +1687,56 @@ A later `prompt-ready' sends nothing: the prompt was reported failed."
     (should-not (agent-shell-vertico-tests--calls-of
                  'agent-shell--prompt-send))))
 
+(ert-deftest agent-shell-vertico-sidebar-dispatch-failed-send-is-reported ()
+  "A send that fails is a failed turn: notified, aged, unread if unseen."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let* (notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--dispatch-from-row alpha)
+      (cl-letf (((symbol-function 'agent-shell--prompt-send)
+                 (lambda (&rest _) (user-error "Busy, try later"))))
+        (agent-shell-vertico-tests--prompt-ready beta))
+      (should (agent-shell-vertico-sidebar--get beta 'last-terminal-at))
+      (should (agent-shell-vertico-sidebar--unread-p beta))
+      (should (= (length notifications) 1))
+      (should (equal (plist-get (car notifications) :status) "Failed"))
+      (should (eq (plist-get (car notifications) :state) 'failed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-failed-send-seen-in-place ()
+  "A failed send in the session the reader looks at is neither news nor
+unread."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let* (notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--dispatch-from-row alpha)
+      (save-window-excursion
+        (switch-to-buffer beta)
+        (cl-letf (((symbol-function 'agent-shell--prompt-send)
+                   (lambda (&rest _) (user-error "Busy, try later"))))
+          (agent-shell-vertico-tests--prompt-ready beta)))
+      (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'failed))
+      (should-not (agent-shell-vertico-sidebar--unread-p beta))
+      (should-not notifications))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-exit-gives-it-back ()
+  "A dispatched agent found dead with no `error' event gives its prompt
+back, and its exit is reported once."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let* (notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--dispatch-from-row alpha)
+      (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--live-p)
+                 (lambda (_) nil)))
+        (agent-shell-vertico-sidebar--note-exits (list beta))
+        (agent-shell-vertico-sidebar--note-exits (list beta))
+        (should-not (agent-shell-vertico-sidebar--get beta 'dispatched))
+        (should (equal (current-kill 0) "fix the flaky test"))
+        (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'failed))
+        (should (= (length notifications) 1))))))
+
 (ert-deftest agent-shell-vertico-sidebar-dispatch-kill-is-no-failure ()
   "A dispatched session the reader kills is not reported as a failure."
   (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
@@ -5557,6 +5607,44 @@ Streamed chunks wait for an idle moment, and other sessions are ignored."
     (should (equal (mapcar (lambda (call) (list (car call) (cadr call)))
                            agent-shell-test-calls)
                    `((agent-shell-interrupt ,alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-stop-refuses-a-dead-agent ()
+  "Neither /stop nor i stops a session whose agent is gone.
+Interrupting would send a cancel, and acp starts a client to send it, so
+a dead agent would be started again for a session it never had."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state)
+    (agent-shell-vertico-sidebar--set alpha 'state 'blocked)
+    (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--live-p)
+               (lambda (_) nil))
+              ((symbol-function 'read-string) (lambda (&rest _) "/stop"))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
+      (should (string-match-p
+               "agent is not running"
+               (cadr (should-error (agent-shell-vertico-sidebar-peek-reply)
+                                   :type 'user-error))))
+      (should-error (agent-shell-vertico-sidebar-peek-interrupt)
+                    :type 'user-error))
+    (should-not (agent-shell-vertico-tests--calls-of
+                 'agent-shell-interrupt))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-after-error-reads-failed ()
+  "The peek redraws a failed turn as failed, not as the turn in flight.
+agent-shell emits `error' before it clears its busy flag, so a redraw
+inside the event would read the session as still working."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state)
+    (setq agent-shell-test-statuses (list (cons alpha 'busy)))
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . error) (:data (:message . "boom")))))
+    ;; What `agent-shell--finish-output' does once the emit returns.
+    (setq agent-shell-test-statuses (list (cons alpha 'ready)))
+    (accept-process-output nil 0.05)
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should-not (string-match-p "Working" (car (split-string text "\n"))))
+      (should (string-match-p "Failed" (car (split-string text "\n")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-peek-keys ()
   "The peek answers with agent-shell's keys and stops with i."
