@@ -502,19 +502,23 @@ as long as it waits, so reading the status is the whole answer and no record
 can go stale.
 Reading a blocked session therefore drops its unread mark and leaves it in the
 attention tier, which is right: it still owes a permission decision. The one
-place the axes are not independent is that a working session is never unread,
-and `--unread-for` is where that is said: it holds the record back while
-`--raw-status` says `busy`, and hands it over again once the session goes quiet.
-Nothing is lost, because `--out-of-turn-settled` leaves an existing mark at its
-own time, so the row returns to the attention tier with the age it had. Without
-it, out-of-turn output arriving after a turn nobody read drew an unread row
-saying Working — a mark asking for the reader on a session with nothing to read
-yet.
-`mark-unread` refuses a `busy` session for the same reason and said it first;
-`mark-read` reads and drops the record rather than the deferred mark, so it
-still works on a session that is working. The `priority` sort puts the attention
-sessions first, and they are two tiers rather than one (`--status-rank-for`):
-unread output, then a `blocked` session the reader has already seen. Ranking
+place the axes are not independent is that a working session is never unread.
+A prompt clears the mark (`input-submitted`), and so does an out-of-turn burst
+that makes the session `busy` (`--note-out-of-turn`): what it produced before
+is superseded by what it is producing now. A burst beside a pending decision
+leaves the mark, since the session still waits for the reader. When the burst
+settles, `--out-of-turn-settled` marks the session again at the burst's own
+time, so the row joins the back of the unread queue. It does so silently when
+the burst cleared a mark, because quiet cannot tell a paused message from a
+second wave; reading the session mid-burst (`--mark-seen`) forgets that, so
+what the burst leaves is announced. This used to defer the mark instead,
+handing it back at its old age once the session went quiet; the user chose
+clearing. `--unread-for` still holds a record back while `--raw-status` says
+`busy`, as a guard for any path that leaves one in place.
+`mark-unread` refuses a `busy` session for the same reason. The `priority`
+sort puts the attention sessions first, and they are two tiers rather than one
+(`--status-rank-for`): unread output, then a `blocked` session the reader has
+already seen. Ranking
 them together oldest-first pinned every jump to the blocked one, whose wait
 always began before any turn that has finished since, and arriving settles
 nothing that a permission decision does not. Both tiers run oldest-first, as the
@@ -598,11 +602,12 @@ also why the unread mark is not held back by it: holding a mark back until the
 work ends would hold it forever behind a server. What it does add is one
 notification. A turn that ends with work running (`--background-at-turn-end`)
 usually says only that the work started, and its mark would silence the report
-that follows, since a burst on an unread mark announces nothing; so the first
-burst to settle once nothing runs is announced anyway, once, and the mark keeps
-its own time. A server that never ends never releases it, which leaves the
-report silent as it would be without this, and blocks nothing. `--raw-status`
-overlays it after every other idle overlay, in the order its docstring gives:
+that follows, since a burst that clears an unread mark announces nothing; so
+the first burst to settle once nothing runs is announced anyway, once, and the
+mark takes its time. A server that never ends never releases it, which leaves
+the report silent as it would be without this, and blocks nothing.
+`--raw-status` overlays it after every other idle overlay, in the order its
+docstring gives:
 a pending permission, an out-of-turn burst, `failed` (a failure says more),
 `starting`, `stopped`, the `blocked` state and `new`. It stamps
 `--background-since` through `--track-background`, since async tasks carry no

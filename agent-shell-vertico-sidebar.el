@@ -350,9 +350,10 @@ Non-nil when the last turn ended with background work still running.
 
 Such a turn usually says only that the work has started, and marks the
 session unread; the result comes later, as out-of-turn output that
-finds the mark in place and would announce nothing.  Presence says the
-next burst to settle once the work has ended is that result, so
-`agent-shell-vertico-sidebar--out-of-turn-settled' announces it.")
+clears the mark and would announce nothing when it sets it again.
+Presence says the next burst to settle once the work has ended is that
+result, so `agent-shell-vertico-sidebar--out-of-turn-settled' announces
+it.")
   (state nil :documentation "\
 How the session's last turn ended, in Claude Code's words.
 
@@ -1186,10 +1187,10 @@ than `project', nil included, is the state view."
 
 A working session owes nothing yet: whatever it produced is superseded
 by what it is producing now, and the turn or the burst will report
-itself when it ends.  The record is only deferred, never dropped, so the
-mark comes back with its own age once the session goes quiet.  This is
-what `agent-shell-vertico-sidebar-mark-unread' says for the mark a
-reader sets by hand, said once for every way a mark is set."
+itself when it ends.  A prompt and a burst both clear the record when
+they start, so this is a guard for any path that leaves one in place.
+This is what `agent-shell-vertico-sidebar-mark-unread' says for the mark
+a reader sets by hand, said once for every way a mark is set."
   (unless (eq status 'busy)
     time))
 
@@ -3356,17 +3357,35 @@ work `agent-shell-vertico-sidebar--background-work' already reports."
 
 The burst keeps the time of its first update as its working age, so a
 long burst rises through the working tier instead of restarting at every
-chunk."
-  (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
-  (unless (agent-shell-vertico-sidebar--get buffer 'busy-since)
-    (agent-shell-vertico-sidebar--set buffer 'busy-since time))
-  (agent-shell-vertico-sidebar--set buffer 'out-of-turn (list :timer
-                 (run-at-time
-                  (agent-shell-vertico-sidebar--out-of-turn-settle-seconds)
-                  nil
-                  #'agent-shell-vertico-sidebar--out-of-turn-settled
-                  buffer)
-                 :time time)))
+chunk.
+
+A burst that makes the session work clears the unread mark it lands on:
+what the session produced before is superseded by what it is producing
+now.  One streaming beside a pending decision leaves the mark, because
+the session is still waiting for the reader.  The burst remembers a mark
+it cleared, so its settle can tell one it took away from one nobody had
+set."
+  (let ((cleared (plist-get (agent-shell-vertico-sidebar--get
+                             buffer 'out-of-turn)
+                            :cleared))
+        burst)
+    (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
+    (unless (agent-shell-vertico-sidebar--get buffer 'busy-since)
+      (agent-shell-vertico-sidebar--set buffer 'busy-since time))
+    (setq burst (list :timer
+                      (run-at-time
+                       (agent-shell-vertico-sidebar--out-of-turn-settle-seconds)
+                       nil
+                       #'agent-shell-vertico-sidebar--out-of-turn-settled
+                       buffer)
+                      :time time))
+    (agent-shell-vertico-sidebar--set buffer 'out-of-turn burst)
+    (when (and (agent-shell-vertico-sidebar--get buffer 'unread)
+               (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy))
+      (agent-shell-vertico-sidebar--set buffer 'unread nil)
+      (setq cleared t))
+    (when cleared
+      (plist-put burst :cleared t))))
 
 (defun agent-shell-vertico-sidebar--out-of-turn-settled (buffer)
   "Mark BUFFER's finished out-of-turn output as unread.
@@ -3374,21 +3393,20 @@ chunk."
 A burst carries no completion event, so it counts as finished once it has
 been quiet for `agent-shell-vertico-sidebar--out-of-turn-settle-seconds'.
 A pause longer than that mid-burst settles early; the next update starts
-a fresh burst and finds this mark already in place, so the reader still
-sees one mark rather than a flicker.
+a fresh burst, which clears this mark and sets it again at its own time
+when it settles.
 
-That is also why a burst stacked on a mark nobody has read announces
-nothing: quiet is the only signal there is, and it cannot tell one
-message paused from a second wave minutes later, so a wave that would
-have announced itself twice for one message stays silent instead.  A
-wave arriving after the last one was read finds no mark and announces
-itself as usual.
+A burst that cleared a mark nobody had read announces nothing: quiet is
+the only signal there is, and it cannot tell one message paused from a
+second wave minutes later, so a wave that would have announced itself
+twice for one message stays silent instead.  A wave arriving after the
+last one was read cleared nothing and announces itself as usual.
 
 The one wave that does announce itself on a mark is the result of
 background work: a turn that ended with work still running recorded so
 in the session's `background-at-turn-end' slot, and the first
 wave to settle once nothing runs is what that turn was waiting for.  It
-is announced once, and the mark keeps its own time."
+is announced once, and the mark takes the wave's time."
   (let ((burst (agent-shell-vertico-sidebar--get buffer 'out-of-turn)))
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
@@ -3404,16 +3422,15 @@ is announced once, and the mark keeps its own time."
           (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
         (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
           (cond
-           ;; An earlier unread mark keeps its own time, so the
-           ;; attention tier still orders oldest first.  The record is
-           ;; asked directly rather than through
+           ;; A mark set during the burst keeps its own time.  The
+           ;; record is asked directly rather than through
            ;; `agent-shell-vertico-sidebar--unread-time', because this
-           ;; writes the record: what a row would show is deferred while
-           ;; a session works and answers nothing.
+           ;; writes the record.
            ((not (agent-shell-vertico-sidebar--get buffer 'unread))
             (agent-shell-vertico-sidebar--set
              buffer 'unread (or (plist-get burst :time) (float-time)))
-            (agent-shell-vertico-sidebar--notify buffer))
+            (when (or result (not (plist-get burst :cleared)))
+              (agent-shell-vertico-sidebar--notify buffer)))
            (result
             (agent-shell-vertico-sidebar--notify buffer))))))
     ;; The burst stopping is a message boundary, the same way any other
@@ -3912,6 +3929,10 @@ the selected window moves onto or off a session, with the set untouched."
 Reading settles what the session has said, not what it is waiting for:
 a blocked session still needs its permission decision afterwards, and a
 failed one is still failed."
+  ;; A burst that cleared a mark would settle silently; reading the
+  ;; session meanwhile makes what the burst leaves news again.
+  (when-let* ((burst (agent-shell-vertico-sidebar--get buffer 'out-of-turn)))
+    (plist-put burst :cleared nil))
   (when (agent-shell-vertico-sidebar--get buffer 'unread)
     (agent-shell-vertico-sidebar--set buffer 'unread nil)
     (agent-shell-vertico-sidebar--schedule-refresh)))
@@ -4820,8 +4841,8 @@ since reading a session is not dealing with it.
 New output marks the session again, which includes a turn that finishes
 after this and a background stream that goes quiet after this.
 
-A session working through a burst carries no mark to see, and the one it
-is holding back still goes: the record is what this command is about."
+A session working through a burst carries no mark to see: the burst
+cleared it, and marks the session again when it settles."
   (interactive)
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
     (if (not (agent-shell-vertico-sidebar--get buffer 'unread))
