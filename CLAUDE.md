@@ -368,6 +368,11 @@ since colour and rule already tell the header apart and the sidebar is
 narrow. Each header is a fold in `--section-folds`,
 seeded from `agent-shell-vertico-sidebar-folded-sections`, and an open
 section draws every session it holds: there is no cap and no "more" row.
+Claude Code caps its Completed section, but the reasons do not carry
+over: the sidebar lists only live buffers, rows span several lines in a
+scrolling window, the `priority` order puts unread sessions at the head
+of Completed so a cut by finish time would split them, and folding the
+whole section already exists.
 A fold lasts only while its header is drawn: every render runs
 `--forget-empty-section-folds`, which drops the fold of a section holding
 no root, because `S-TAB` folds empty sections too and an empty section
