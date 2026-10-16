@@ -13085,6 +13085,30 @@ and a page number would land on the turn before the one it names."
       (should (eq (plist-get (car notifications) :state) 'failed))
       (should (plist-get (car notifications) :unread)))))
 
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-turn-that-failed ()
+  "A turn's error is reported as a failure, not as the turn it ended.
+agent-shell emits `error' before it clears its busy flag, so the status
+it reports at that moment is still the turn in flight."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let* ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'busy)))
+           notifications
+           (agent-shell-vertico-sidebar-notify-function
+            (lambda (&rest arguments) (push arguments notifications))))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . error)
+                 (:data . ((:code . -32603) (:message . "Timed out"))))))
+      (should (= (length notifications) 1))
+      (should (equal (plist-get (car notifications) :status) "Failed"))
+      (should (eq (plist-get (car notifications) :state) 'failed))
+      (should-not (plist-get (car notifications) :needs))
+      (should (plist-get (car notifications) :unread)))))
+
 (ert-deftest agent-shell-vertico-sidebar-notifies-a-settled-burst ()
   "Output that arrived outside a turn is announced once it stops."
   (agent-shell-vertico-tests--with-session-buffers

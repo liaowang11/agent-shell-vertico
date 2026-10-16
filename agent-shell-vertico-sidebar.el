@@ -1051,7 +1051,8 @@ Claude Code's terms."
 
 (defun agent-shell-vertico-sidebar--idle-status (buffer)
   "Return the status of BUFFER as a live session with no turn in flight.
-The idle arms of `agent-shell-vertico-sidebar--raw-status'."
+The idle arms of `agent-shell-vertico-sidebar--raw-status', apart so
+the `error' event can report a turn as over before agent-shell says so."
   (let ((state (agent-shell-vertico-sidebar--get buffer 'state)))
     (cond ((or (agent-shell-vertico-sidebar--permission-pending-p buffer)
                (agent-shell-vertico-sidebar--form-pending-p buffer))
@@ -3897,30 +3898,42 @@ the turn failed."
                         (agent-shell--stop-reason-description reason)
                       reason)))))
 
-(defun agent-shell-vertico-sidebar--notify (buffer)
+(defun agent-shell-vertico-sidebar--notify (buffer &optional status)
   "Report that BUFFER now needs attention.
 
 The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
 this after the unread mark and the status are in place, since both are
 read back from the session.  A snoozed session is not reported: the
 events that end a snooze end it before they get here.  Nor is one
-nobody has prompted, which asks the reader nothing yet."
+nobody has prompted, which asks the reader nothing yet.
+
+STATUS is the status to report, when what agent-shell says at the call
+is not yet true; by default the session's `--raw-status'."
   (when (and agent-shell-vertico-sidebar-notify-function
-             (buffer-live-p buffer)
-             (not (agent-shell-vertico-sidebar--snoozed-p buffer))
-             (not (eq (agent-shell-vertico-sidebar--raw-status buffer) 'new))
-             (not (agent-shell-vertico-sidebar--session-focused-p buffer)))
-    (pcase-let ((`(,state ,_tempo ,needs)
-                 (agent-shell-vertico-sidebar--job-state buffer)))
-      (funcall agent-shell-vertico-sidebar-notify-function
-               :buffer buffer
-               :agent (agent-shell-vertico--agent-name buffer)
-               :status (agent-shell-vertico-sidebar--status-name buffer)
-               :state state
-               :needs needs
-               :unread (agent-shell-vertico-sidebar--unread-p buffer)
-               :last-message (agent-shell-vertico-sidebar--last-message
-                              buffer)))))
+             (buffer-live-p buffer))
+    (let ((status (or status
+                      (agent-shell-vertico-sidebar--raw-status buffer))))
+      (when (and (not (agent-shell-vertico-sidebar--snoozed-for
+                       status (agent-shell-vertico-sidebar--get
+                               buffer 'snoozed)))
+                 (not (eq status 'new))
+                 (not (agent-shell-vertico-sidebar--session-focused-p
+                       buffer)))
+        (pcase-let ((`(,state ,_tempo ,needs)
+                     (agent-shell-vertico-sidebar--job-state buffer status)))
+          (funcall agent-shell-vertico-sidebar-notify-function
+                   :buffer buffer
+                   :agent (agent-shell-vertico--agent-name buffer)
+                   :status (agent-shell-vertico-sidebar--status-name-for
+                            status)
+                   :state state
+                   :needs needs
+                   :unread (and (agent-shell-vertico-sidebar--unread-for
+                                 status (agent-shell-vertico-sidebar--get
+                                         buffer 'unread))
+                                t)
+                   :last-message (agent-shell-vertico-sidebar--last-message
+                                  buffer)))))))
 
 (defun agent-shell-vertico-sidebar--note-exits (buffers)
   "Report each of BUFFERS whose agent process is newly seen gone.
@@ -3978,7 +3991,13 @@ snooze ends, since the agent cannot go on without the reader."
        (agent-shell-vertico-sidebar--stamp-terminal buffer now)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
-       (agent-shell-vertico-sidebar--notify buffer))
+       ;; agent-shell emits `error' before it clears its busy flag, so
+       ;; the turn the error ends still reads as in flight.  Report the
+       ;; session as it is once the turn is over.
+       (agent-shell-vertico-sidebar--notify
+        buffer (if (agent-shell-vertico-sidebar--live-p buffer)
+                   (agent-shell-vertico-sidebar--idle-status buffer)
+                 (agent-shell-vertico-sidebar--exited-status buffer))))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)

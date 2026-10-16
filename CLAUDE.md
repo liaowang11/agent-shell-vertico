@@ -1075,7 +1075,17 @@ the sidebar shows for the session, never a read state), `:state` and
 say what a waiting session asks), `:unread` (whether the session holds output
 nobody has read) and `:last-message`. An agent process that exits is reported
 once by `--note-exits` when the exit is what failed the session (see "When the
-agent process dies").
+agent process dies"). The `error` report passes `--notify` its status rather
+than letting it read one: agent-shell emits `error` before it clears its busy
+flag (agent-shell.el:5522 before 5534), so `--raw-status` would still answer
+`busy`, and the report would say `Working` with `:unread` nil, since
+`--unread-for` holds a mark back from a busy session. The branch asks
+`--idle-status`, the idle arms of `--raw-status` split out for this, or
+`--exited-status` once the process is gone. A request still pending when a
+live agent's prompt fails would make that report `Waiting`. That stale request
+is agent-shell's to clear, on its prompt's failure path as on the success
+path, and the fix belongs in the agent-shell fork; the sidebar keeps no record
+of its own for such requests.
 The message is accumulated in `--record-message-chunk` from the events the
 sidebar already subscribes to, because `agent-shell` emits one event per
 streamed chunk and keeps none of them; any other event ends the message,
