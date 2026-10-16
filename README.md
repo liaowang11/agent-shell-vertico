@@ -552,8 +552,9 @@ The regular (non-Evil) sidebar map includes `RET` (activate the row or metadata
 field), `o` (jump to a session by key), `O` (open in another window),
 `C-j`/`C-k` (move to the next or previous session, passing over section and
 project headers), `TAB` (fold or session details), `S-TAB` (cycle all fold
-levels), `=` (switch between the state and project views), `s` (sort), `g`
-(refresh), `c` (new session), `k` (kill), `r` (restart), `i` (interrupt),
+levels), `=` (switch between the state and project views), `s` (sort), `f`
+(filter the sessions; see below), `g` (refresh), `c` (new session), `k` (kill),
+`r` (restart), `i` (interrupt),
 `m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation), `F`
 (fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `H` (resume
 a past session of the project at point; with a prefix, of any project),
@@ -564,7 +565,8 @@ In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole session row at a time, skipping headers, `RET`
 activates the current row or metadata field, `o` jumps to a session by key,
 `O` opens the session at point in another window, `TAB` toggles the current
-row, and `S-TAB` cycles every row through the fold levels.
+row, `S-TAB` cycles every row through the fold levels, and `f` filters the
+sessions in place of `evil-find-char`.
 `gr` refreshes, `gh` resumes a past session of the project at point, `D`
 kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
@@ -580,6 +582,17 @@ it, `F` forks it, and `Y` copies its session ID; `!`, `z`, `S`, `C`, `A`, `a`,
 while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
 `v` remains Evil's visual-state key.  `?` shows the same key reference.  The
 local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
+
+`f` reads a filter and applies it when you press `RET`; empty input clears it.
+Every word must match, case aside: `s:needs` a status or section (`s:done`,
+`s:work`, `s:snooz`), `n:fix` the title or last prompt, `o:tests` the agent's
+newest message, `a:cod` the start of the agent's name, `p:vertico` the project,
+and any other word the title, detail line, project or last prompt.  A side
+conversation and its parent are drawn together when either matches.  While a
+filter is on, the header line names it, every section and project is open and
+cannot be folded, and `S-TAB` steps between rows and details only.  Revealing a
+session the filter hides clears it, and the jumps (`o`, the numbered jumps,
+next and previous session) still reach every session.
 
 ## Project-scoped shell commands
 

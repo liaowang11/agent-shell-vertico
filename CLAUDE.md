@@ -447,8 +447,10 @@ is visible and has sessions.
 
 **The header and the mode line.** There is no summary line above the
 sidebar: `header-line-format` stays nil, and every section and project
-header counts for itself instead. `--header-counts` writes what follows the
-label, `Completed · 5 · • 2`: the rows drawn under the header, each root
+header counts for itself instead. The one exception is a filter, which
+the header line names while it is on (see "Filtering the sidebar").
+`--header-counts` writes what follows the label, `Completed · 5 · • 2`:
+the rows drawn under the header, each root
 with its live descendants, then, only when some hold unread output
 (`--unread-p`), a `•` and how many, the two drawn together in
 `agent-shell-vertico-sidebar-unread-dot`; the rest of the counts are
@@ -700,6 +702,9 @@ and section open: a hidden sidebar is displayed for the read and its window
 deleted after. Around the render, `--expanded-projects` and `--section-folds`
 are let-bound to nil, `expand-by-default` to t and `folded-sections` to nil,
 so a folded session has a row too, without writing to the reader's folds.
+`--filter` is let-bound to nil beside them, so a filtered-out session
+has a row and a key too: the keys count what `-jump-to-index` counts,
+filtered or not, the rule "Keying a parent's children" records.
 Every exit path renders again under the original folds, including the aborts,
 which is also what repairs a sidebar shown on another frame: the buffer is
 shared, so the open-folds render reached that frame too. The folds themselves are
@@ -759,7 +764,8 @@ than a rendered sidebar it would have to open. It once read the flat
 `--sort-buffers`, which agreed with the rows only while a flat view
 existed; under the state view an unread finished session led that sort
 while the sidebar drew it under Completed, so `jump-to-1` landed on a row
-further down. Positions count from 1,
+further down. A sidebar filter changes nothing here, as a fold changes
+nothing: every live session counts. Positions count from 1,
 so a command's number is the key a user binds it to, unlike
 `+workspace/switch-to-N' which is 0-based behind 1-based keys. The commands
 are generated with `defalias' over a `dotimes' exactly as that family is,
@@ -780,8 +786,9 @@ top or bottom row. The order is `--display-order`, the walk `--render`
 makes without drawing it: the roots, grouped by state section or by project
 as `agent-shell-vertico-sidebar-group-by` says, each followed depth-first
 by its children, the same order `-jump-to-index` counts in. A folded
-section or project still lists its sessions, because nothing is drawn. The
-order is asked again on every step rather than kept for a run of presses, so
+section or project still lists its sessions, because nothing is drawn, and
+so does a filtered sidebar. The order is asked again on every step rather
+than kept for a run of presses, so
 under `priority` the session just read may have moved by the next step. That
 was the user's call, the same trade the index jump makes.
 
@@ -1039,6 +1046,42 @@ the first.
 Text is passed on unshortened, so trimming and markup stripping belong to
 the caller's channel, not here.
 
+**Filtering the sidebar.** `agent-shell-vertico-sidebar-filter` (`f`)
+reads a filter in the minibuffer and applies it on Enter, one render, with
+no live update; empty input clears it. The string is kept in the
+buffer-local `--filter`, so it applies on every frame showing the sidebar,
+and every render reapplies it, so a session that stops matching leaves.
+`--filter-parse` reads Claude Code's prefixes, `s:` `n:` `o:` `a:`, plus
+`p:` for the project; a prefix with nothing after it is dropped and an
+unknown one is free text. `--filter-match-p` asks every part, case aside:
+`s:` starts the status word or the label of the session's own section or
+band, never the STATE field, which says `done` for a session waiting on
+the reader, and a snoozed session answers to Snoozed alone, so `s:done`
+keeps neither; `n:` is in the title or the last prompt, as Claude Code
+matches a name or an intent; `o:` is in the newest message, the result or
+the error, since only the newest message is kept; `a:` starts the agent's
+name, the prefix rule the agent narrowing keys use, though not their
+function, which takes a key character; `p:` is in the project name; free
+text is in the title, the detail line as `--detail-for` draws it, the
+project name or the last prompt. The snapshot answers all but the last
+prompt and the newest message, which are read from the session.
+`--render` calls `--forget-empty-section-folds` on every root before
+filtering, so a section the filter hides keeps its fold, then keeps a root
+when any member of its family matches and draws the family whole. A
+family is still filed by `--family-section`, so a matching idle parent of a
+working child is drawn under Working. Headers count what they draw. While
+filtered, the insert phase let-binds the four fold variables the key jump
+binds, so every header is open and no fold table is written; toggling a
+header is refused, as Claude Code ignores Enter on a header while
+filtering; `--view-level` has no header level and `--set-view-level`
+writes no fold, so `S-TAB` steps between rows and details alone. A filter
+matching nothing draws `No sessions match FILTER`. The header line names
+the filter and how many sessions it shows of how many, a deliberate
+exception to "header-line-format stays nil": it is no node, never scrolls
+away, and goes when the filter does. Reveal (`-focus`, `--leave-unread`)
+clears a filter hiding its target, since the reader asked for that
+session, and the jumps, the attention count and notifications ignore it.
+
 **Narrowing and grouping.** Each completion category answers two
 questions of its own: `--narrow-keys` lists the keys it offers, and
 `--narrow-p` says whether a candidate belongs to the key in force. Both
@@ -1060,7 +1103,10 @@ status they select, so one alist is both the key help and what a
 candidate's status is compared against. Grouping is completion metadata
 (`group-function`), so it also works without Consult; `consult--read`
 puts its own metadata ahead of the table's, so the `:group` a reader
-passes wins over the table's, and both name the same function.
+passes wins over the table's, and both name the same function. The
+sidebar filter is their counterpart for the sidebar, whose rows no
+minibuffer reads; it shares the agent prefix rule but not the functions
+(see "Filtering the sidebar").
 
 ## Critical constraint: do not pre-bind host-package variables
 

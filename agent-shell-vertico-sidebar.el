@@ -592,6 +592,13 @@ which is its business and not something to read a frame number out of.")
 
 An absent entry follows `agent-shell-vertico-sidebar-folded-sections'.")
 
+(defvar-local agent-shell-vertico-sidebar--filter nil
+  "The filter this sidebar draws its sessions through, as typed, or nil.
+
+`agent-shell-vertico-sidebar-filter' sets it, and
+`agent-shell-vertico-sidebar--filter-parse' reads it.  The sidebar is
+one buffer, so the filter applies on every frame that shows it.")
+
 (defvar-local agent-shell-vertico-sidebar--expanded-sessions nil
   "Hash table of session detail overrides in the current sidebar buffer.
 
@@ -2779,6 +2786,152 @@ Both views ask, because a section stays empty whichever is drawn."
           (remhash (car section)
                    agent-shell-vertico-sidebar--section-folds))))))
 
+(defconst agent-shell-vertico-sidebar--filter-prefixes
+  '(("s" . :state) ("n" . :name) ("o" . :output) ("a" . :agent)
+    ("p" . :project))
+  "Filter prefixes and the field of a parsed filter each one fills.
+Claude Code's `s:', `n:', `o:' and `a:', and `p:' for the project.")
+
+(defun agent-shell-vertico-sidebar--filter-parse (string)
+  "Return the filter STRING asks for as a plist, or nil for none.
+
+Words split on whitespace.  A word starting with a prefix of
+`--filter-prefixes', case aside, fills that field (`:state', `:name',
+`:output', `:agent', `:project'), and the last one wins; a prefix with
+nothing after it is ignored.  Every other word, an unknown prefix such
+as `g:x' included, joins the free `:text'.  Values are downcased,
+because every comparison ignores case."
+  (let (filter text)
+    (dolist (word (split-string (or string "") "[[:space:]]+" t))
+      (let ((word (downcase word)))
+        (if-let* (((string-match "\\`\\([a-z]\\):\\(.*\\)\\'" word))
+                  (field (alist-get
+                          (match-string 1 word)
+                          agent-shell-vertico-sidebar--filter-prefixes
+                          nil nil #'equal)))
+            (let ((value (match-string 2 word)))
+              (unless (string-empty-p value)
+                (setq filter (plist-put filter field value))))
+          (push word text))))
+    (when text
+      (setq filter (plist-put filter :text
+                              (string-join (nreverse text) " "))))
+    filter))
+
+(defun agent-shell-vertico-sidebar--filter-has-p (value &rest texts)
+  "Return non-nil when VALUE is a substring of one of TEXTS, case aside."
+  (seq-some (lambda (text)
+              (and (stringp text)
+                   (string-search value (downcase text))))
+            texts))
+
+(defun agent-shell-vertico-sidebar--filter-starts-p (value &rest texts)
+  "Return non-nil when one of TEXTS starts with VALUE, case aside."
+  (seq-some (lambda (text)
+              (and (stringp text)
+                   (string-prefix-p value (downcase text))))
+            texts))
+
+(defun agent-shell-vertico-sidebar--filter-state-labels (snapshot)
+  "Return the words `s:' matches for the session in SNAPSHOT.
+
+Its status word (`--status-name-for') and the labels of its own section
+and band, as Claude Code matches a job's own state and section.  A
+snoozed session answers to Snoozed alone, because the reader has put it
+off whatever its status says.  The STATE field is not offered: it says
+`done' for a session waiting on the reader, so `s:done' would keep it."
+  (let ((section (alist-get (plist-get snapshot :section)
+                            agent-shell-vertico-sidebar--sections))
+        (band (alist-get (plist-get snapshot :band)
+                         agent-shell-vertico-sidebar--sections)))
+    (if (eq (plist-get snapshot :band) 'snoozed)
+        (list section band)
+      (list (plist-get snapshot :status-name) section band))))
+
+(defun agent-shell-vertico-sidebar--filter-match-p (filter buffer)
+  "Return non-nil when session BUFFER satisfies every part of FILTER.
+
+FILTER is a plist from `--filter-parse'; nil keeps everything.  Every
+comparison ignores case:
+
+- `:state' starts one of `--filter-state-labels';
+- `:name' is in the title or the last prompt, as Claude Code matches a
+  job's name or intent;
+- `:output' is in the agent's newest message, the turn's result or its
+  error.  Only the newest message is kept, where Claude Code searches
+  every output a job recorded;
+- `:agent' starts the agent's name, as an agent narrowing key does;
+- `:project' is in the project name;
+- `:text' is in the title, the detail line as drawn, the project name
+  or the last prompt.
+
+BUFFER's render snapshot answers what it holds; the last prompt and the
+newest message are read from the session."
+  (let ((snapshot (agent-shell-vertico-sidebar--snapshot buffer))
+        (prompt nil)
+        (prompt-read nil))
+    (cl-flet ((prompt ()
+                (unless prompt-read
+                  (setq prompt
+                        (agent-shell-vertico-sidebar--last-user-message
+                         buffer)
+                        prompt-read t))
+                prompt))
+      (pcase-let (((map :state :name :output :agent :project :text) filter))
+        (and (or (null state)
+                 (apply #'agent-shell-vertico-sidebar--filter-starts-p state
+                        (agent-shell-vertico-sidebar--filter-state-labels
+                         snapshot)))
+             (or (null name)
+                 (agent-shell-vertico-sidebar--filter-has-p
+                  name (plist-get snapshot :title) (prompt)))
+             (or (null output)
+                 (agent-shell-vertico-sidebar--filter-has-p
+                  output (agent-shell-vertico-sidebar--last-message buffer)
+                  (plist-get snapshot :result)
+                  (plist-get snapshot :error)))
+             (or (null agent)
+                 (agent-shell-vertico-sidebar--filter-starts-p
+                  agent (plist-get snapshot :agent)))
+             (or (null project)
+                 (agent-shell-vertico-sidebar--filter-has-p
+                  project (plist-get snapshot :project-name)))
+             (or (null text)
+                 (agent-shell-vertico-sidebar--filter-has-p
+                  text (plist-get snapshot :title)
+                  (agent-shell-vertico-sidebar--detail-for snapshot)
+                  (plist-get snapshot :project-name)
+                  (prompt))))))))
+
+(defun agent-shell-vertico-sidebar--filter-roots (filter roots)
+  "Return the ROOTS FILTER keeps: those with a match in their family.
+A family is drawn whole, so a matching child keeps its parent and a
+matching parent its children."
+  (if filter
+      (seq-filter (lambda (root)
+                    (seq-some (lambda (buffer)
+                                (agent-shell-vertico-sidebar--filter-match-p
+                                 filter buffer))
+                              (agent-shell-vertico-sidebar--family root)))
+                  roots)
+    roots))
+
+(defun agent-shell-vertico-sidebar--filter-header-line (shown total)
+  "Return the header line naming the filter, SHOWN of TOTAL sessions drawn."
+  (concat
+   (propertize " Filter: " 'face 'agent-shell-vertico-sidebar-header-count)
+   (propertize agent-shell-vertico-sidebar--filter
+               'face 'agent-shell-vertico-sidebar-section)
+   (propertize (format " · %d/%d · f to change" shown total)
+               'face 'agent-shell-vertico-sidebar-header-count)))
+
+(defun agent-shell-vertico-sidebar--refuse-folds-while-filtered ()
+  "Signal a user error when this sidebar is filtered.
+Every header is drawn open while a filter is on, as Claude Code ignores
+collapse while filtering, so a fold toggled then could not be seen."
+  (when agent-shell-vertico-sidebar--filter
+    (user-error "Folds are ignored while the sidebar is filtered")))
+
 (defun agent-shell-vertico-sidebar--insert-node-line (line kind node face)
   "Insert LINE as the one-line node NODE of KIND, drawn in FACE.
 The line is ruled off from the rows below it (`--header-rule')."
@@ -2869,6 +3022,8 @@ every session it holds."
          ;; or the grouping below.  `snapshots' still covers every buffer:
          ;; a nested child's own status still needs tracking and drawing.
          (roots (seq-remove #'agent-shell-vertico-sidebar--parent-of buffers))
+         (filter (agent-shell-vertico-sidebar--filter-parse
+                  agent-shell-vertico-sidebar--filter))
          (snapshots (mapcar #'agent-shell-vertico-sidebar--session-snapshot
                             buffers))
          (snapshot-table (make-hash-table :test #'eq))
@@ -2923,11 +3078,39 @@ every session it holds."
                       agent-shell-vertico-sidebar--rendered-current-sessions
                       buffers)))
           (agent-shell-vertico-sidebar--watch-existing buffers nil t)
+          ;; Every root, not just those the filter keeps: a section the
+          ;; filter hides still holds sessions, so its fold stands.
           (agent-shell-vertico-sidebar--forget-empty-section-folds roots)
+          (setq roots (agent-shell-vertico-sidebar--filter-roots filter roots)
+                header-line-format
+                (when filter
+                  (agent-shell-vertico-sidebar--filter-header-line
+                   (length (seq-mapcat #'agent-shell-vertico-sidebar--family
+                                       roots))
+                   (length buffers))))
           (erase-buffer)
-          (if (null buffers)
-              (insert (propertize "  No agent-shell sessions\n"
-                                  'face 'agent-shell-vertico-sidebar-detail))
+          (cond
+           ((null buffers)
+            (insert (propertize "  No agent-shell sessions\n"
+                                'face 'agent-shell-vertico-sidebar-detail)))
+           ((null roots)
+            (insert (propertize
+                     (concat "  No sessions match "
+                             agent-shell-vertico-sidebar--filter "\n")
+                     'face 'agent-shell-vertico-sidebar-detail)))
+           (t
+            ;; A filter draws every header open, as the key jump does,
+            ;; without writing to the reader's fold tables.
+            (let ((agent-shell-vertico-sidebar--expanded-projects
+                   (unless filter
+                     agent-shell-vertico-sidebar--expanded-projects))
+                  (agent-shell-vertico-sidebar-expand-by-default
+                   (or filter agent-shell-vertico-sidebar-expand-by-default))
+                  (agent-shell-vertico-sidebar--section-folds
+                   (unless filter agent-shell-vertico-sidebar--section-folds))
+                  (agent-shell-vertico-sidebar-folded-sections
+                   (unless filter
+                     agent-shell-vertico-sidebar-folded-sections)))
             (pcase (agent-shell-vertico-sidebar--view)
               ('state
                (pcase-dolist (`(,section . ,members)
@@ -2950,7 +3133,7 @@ every session it holds."
                            (agent-shell-vertico-sidebar--group-buffers rest)
                            agent-shell-vertico-sidebar-sort-by))
                    (agent-shell-vertico-sidebar--insert-project
-                    (car group) (cdr group) width))))))
+                    (car group) (cdr group) width))))))))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -4090,6 +4273,7 @@ line, so the row point is in is never skipped.  Headers are passed over."
   (let ((root (agent-shell-vertico-sidebar--project-at-point)))
     (unless root
       (user-error "Point is not on a project header"))
+    (agent-shell-vertico-sidebar--refuse-folds-while-filtered)
     (puthash root
              (not (agent-shell-vertico-sidebar--project-expanded-p root))
              agent-shell-vertico-sidebar--expanded-projects)
@@ -4100,6 +4284,7 @@ line, so the row point is in is never skipped.  Headers are passed over."
   (interactive)
   (unless (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section)
     (user-error "Point is not on a section header"))
+  (agent-shell-vertico-sidebar--refuse-folds-while-filtered)
   (let ((section (agent-shell-vertico-sidebar--node-at-point)))
     (agent-shell-vertico-sidebar--set-section-folded
      section (not (agent-shell-vertico-sidebar--section-folded-p section)))
@@ -4352,9 +4537,13 @@ default."
 `projects' shows project or section headers only, `sessions' adds their
 session rows, and `details' adds each session's metadata lines."
   (cond
-   ((pcase (agent-shell-vertico-sidebar--view)
-      ('project (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
-      ('state (not (agent-shell-vertico-sidebar--any-section-unfolded-p))))
+   ;; A filter draws every header open, so it has no header level.
+   ((and (not agent-shell-vertico-sidebar--filter)
+         (pcase (agent-shell-vertico-sidebar--view)
+           ('project
+            (not (agent-shell-vertico-sidebar--any-project-expanded-p)))
+           ('state
+            (not (agent-shell-vertico-sidebar--any-section-unfolded-p)))))
     'projects)
    ((agent-shell-vertico-sidebar--any-session-details-visible-p) 'details)
    (t 'sessions)))
@@ -4367,9 +4556,14 @@ levels unfold every section.  Putting
 back each section's default fold instead would leave a sidebar whose
 sessions all sit in a section that starts folded showing headers alone
 at every level.  The project view folds or unfolds its Pinned section
-with the projects, for the same reason."
+with the projects, for the same reason.
+
+A filtered sidebar draws every header open, so there no fold is
+written: the levels would change nothing on screen, and the folds are
+what the sidebar shows once the filter is cleared."
   (let ((folded (eq level 'projects)))
-    (pcase (agent-shell-vertico-sidebar--view)
+    (pcase (and (not agent-shell-vertico-sidebar--filter)
+                (agent-shell-vertico-sidebar--view))
       ('project
        (setq agent-shell-vertico-sidebar-expand-by-default (not folded))
        (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
@@ -4388,6 +4582,8 @@ with the projects, for the same reason."
 
 In both views the levels are the headers alone, then their session
 rows, then each session's metadata lines, then back to the headers.
+While the sidebar is filtered every header is open, so the levels are
+the rows and their details alone, and no fold is written.
 
 Every per-project and per-session fold made with `TAB' is discarded, so the
 sidebar reaches the chosen level as a whole.
@@ -4407,7 +4603,7 @@ the whole command runs there however it was called."
        (pcase (agent-shell-vertico-sidebar--view-level)
          ('projects 'sessions)
          ('sessions 'details)
-         (_ 'projects)))
+         (_ (if agent-shell-vertico-sidebar--filter 'sessions 'projects))))
       (agent-shell-vertico-sidebar--render))))
 
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
@@ -4434,6 +4630,40 @@ that message; see `agent-shell-vertico-sidebar-expanded-detail-lines'."
     ('section (agent-shell-vertico-sidebar-toggle-section))
     ('session (agent-shell-vertico-sidebar-toggle-session-details))
     (_ (user-error "Point is not on a project or session row"))))
+
+(defun agent-shell-vertico-sidebar--set-filter (string)
+  "Filter this sidebar through STRING and draw it again.
+A blank or nil STRING clears the filter."
+  (setq agent-shell-vertico-sidebar--filter
+        (let ((string (string-trim (or string ""))))
+          (unless (string-empty-p string) string)))
+  (agent-shell-vertico-sidebar--render))
+
+(defun agent-shell-vertico-sidebar-filter ()
+  "Show only the sessions matching a filter read from the minibuffer.
+
+The filter is applied once it is entered, and empty input clears it.
+Every word must match a session, case aside: `s:WORD' its status or
+section, `n:WORD' its title or last prompt, `o:WORD' the agent's newest
+message, `a:WORD' the start of the agent's name, `p:WORD' its project,
+and any other word the title, detail line, project or last prompt.  A
+family is drawn whole when any member matches.
+
+While filtered, every section and project is drawn open and its fold
+cannot be toggled, the header line names the filter, and revealing a
+session the filter hides clears it.  The jumps still reach every
+session."
+  (interactive)
+  (let ((sidebar (if (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                     (current-buffer)
+                   (or (get-buffer "*Agent Shell Sessions*")
+                       (user-error "The agent-shell sidebar is not open")))))
+    (with-current-buffer sidebar
+      (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+        (user-error "The named sidebar buffer is not an agent-shell sidebar"))
+      (agent-shell-vertico-sidebar--set-filter
+       (read-from-minibuffer "Filter sessions (s: n: o: a: p:): "
+                             agent-shell-vertico-sidebar--filter)))))
 
 (defun agent-shell-vertico-sidebar-refresh ()
   "Refresh the visible agent-shell sidebar."
@@ -4549,6 +4779,7 @@ count leaves them out.  Nothing is shown when none waits."
    "  O           Open the session in another window\n"
    "  =           Switch between the state and project views\n"
    "  s           Choose the sort criterion\n"
+   "  f           Filter the sessions (s: n: o: a: p:); empty clears\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"
    "  m / M       Set mode / model\n"
@@ -4585,6 +4816,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
+    (define-key map (kbd "f") #'agent-shell-vertico-sidebar-filter)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
@@ -4628,6 +4860,7 @@ count leaves them out.  Nothing is shown when none waits."
                 #'agent-shell-vertico-sidebar-cycle-global-view)
     (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
     (define-key map (kbd "s") #'agent-shell-vertico-sidebar-set-sort)
+    (define-key map (kbd "f") #'agent-shell-vertico-sidebar-filter)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
@@ -4679,6 +4912,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("<backtab>" . agent-shell-vertico-sidebar-cycle-global-view)
     ("=" . agent-shell-vertico-sidebar-toggle-grouping)
     ("s" . agent-shell-vertico-sidebar-set-sort)
+    ("f" . agent-shell-vertico-sidebar-filter)
     ("gr" . agent-shell-vertico-sidebar-refresh)
     ("c" . agent-shell-vertico-sidebar-new)
     ("D" . agent-shell-vertico-sidebar-kill)
@@ -4733,7 +4967,7 @@ while normal and motion states get the same direct mnemonic commands."
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (member (car binding) '("gr" "gh"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M" "C"
+      (dolist (key '("o" "O" "=" "s" "f" "g" "c" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "p" "S"
                      "?" "q"))
         (when-let* ((command (lookup-key
@@ -5514,7 +5748,8 @@ sidebar is back as it was."
 
 A hidden sidebar is shown for the read and closed again after it.  The
 sidebar keeps `agent-shell-vertico-sidebar-group-by', with every project
-and section open for the read, so a folded session has a row too.
+and section open and any filter lifted for the read, so a folded or
+filtered-out session has a row too.
 Every exit path renders again under the original folds, which also puts
 a sidebar shown on another frame back: the buffer is shared, so the
 read's render reached that frame too.  The folds themselves are never
@@ -5545,10 +5780,13 @@ window free for a prompt of its own."
         (with-current-buffer sidebar
           ;; Open every project and section in the configured view,
           ;; without touching the reader's fold tables or defaults.
+          ;; The filter is lifted too, so every session the positional
+          ;; jumps count has a key.
           (let ((agent-shell-vertico-sidebar--expanded-projects nil)
                 (agent-shell-vertico-sidebar-expand-by-default t)
                 (agent-shell-vertico-sidebar--section-folds nil)
-                (agent-shell-vertico-sidebar-folded-sections nil))
+                (agent-shell-vertico-sidebar-folded-sections nil)
+                (agent-shell-vertico-sidebar--filter nil))
             (agent-shell-vertico-sidebar--render))
           ;; The keys are drawn over the marks, so the animation gives
           ;; the cells up for the read; the render below restores them.
@@ -5673,9 +5911,17 @@ recently before it instead, leaving the sidebar open."
 
 A child is drawn under its topmost live ancestor, whatever its own
 directory or state, so the group to unfold is that ancestor's.  In the
-state view that means its family's section (`--family-section')."
+state view that means its family's section (`--family-section').
+
+A session the filter hides clears the filter, since the reader asked to
+see that session."
   (let ((node (cons 'session session)))
-    (unless (agent-shell-vertico-sidebar--goto-node node)
+    (unless (or (agent-shell-vertico-sidebar--goto-node node)
+                (and agent-shell-vertico-sidebar--filter
+                     (progn
+                       (agent-shell-vertico-sidebar--set-filter nil)
+                       (message "Sidebar filter cleared")
+                       (agent-shell-vertico-sidebar--goto-node node))))
       (let ((top session))
         (while-let ((parent (agent-shell-vertico-sidebar--parent-of top)))
           (setq top parent))

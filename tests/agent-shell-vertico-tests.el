@@ -16681,6 +16681,301 @@ burst that clears an unread mark is otherwise silent."
       (should-error (agent-shell-vertico-side-conversation alpha)
                     :type 'user-error))))
 
+;;; Filtering the sidebar
+
+(defun agent-shell-vertico-tests--filter-matches (filter buffers)
+  "Return those of BUFFERS the sidebar FILTER string keeps, in order."
+  (let ((parsed (agent-shell-vertico-sidebar--filter-parse filter)))
+    (seq-filter (lambda (buffer)
+                  (agent-shell-vertico-sidebar--filter-match-p parsed buffer))
+                buffers)))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-parse-prefixes ()
+  "Prefixes are case-insensitive and the rest is free text."
+  (let ((filter (agent-shell-vertico-sidebar--filter-parse
+                 "S:needs n:Fix foo  bar O:Tests a:Cod P:Vert")))
+    (should (equal (plist-get filter :state) "needs"))
+    (should (equal (plist-get filter :name) "fix"))
+    (should (equal (plist-get filter :output) "tests"))
+    (should (equal (plist-get filter :agent) "cod"))
+    (should (equal (plist-get filter :project) "vert"))
+    (should (equal (plist-get filter :text) "foo bar"))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-parse-drops-empty-and-unknown ()
+  "A prefix with nothing after it is ignored; an unknown one is text."
+  (should-not (agent-shell-vertico-sidebar--filter-parse "   "))
+  (should-not (agent-shell-vertico-sidebar--filter-parse nil))
+  (let ((filter (agent-shell-vertico-sidebar--filter-parse "s: g:x")))
+    (should-not (plist-get filter :state))
+    (should (equal (plist-get filter :text) "g:x"))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-state-is-status-or-section ()
+  "`s:' matches the status word or the session's own section, not STATE.
+The waiting session's STATE is `done', and the snoozed one's status is
+done too, yet `s:done' keeps neither."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((all (list waiting working snoozed done-1)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:needs" all)
+                     (list waiting)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:wait" all)
+                     (list waiting)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:compl" all)
+                     (list done-1)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:snooz" all)
+                     (list snoozed)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:work" all)
+                     (list working)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "s:done" all)
+                     (list done-1))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-name-matches-title-or-prompt ()
+  "`n:' is a substring of the title or of the last prompt."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((all (list waiting working done-1 done-2 done-3 done-4 done-5)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "n:DONE" all)
+                     (list done-1 done-2 done-3 done-4 done-5)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "n:ait" all)
+                     (list waiting)))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--last-user-message)
+                 (lambda (buffer)
+                   (when (eq buffer done-3) "fix the parser"))))
+        (should (equal (agent-shell-vertico-tests--filter-matches
+                        "n:parser" all)
+                       (list done-3)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-text-agent-and-project ()
+  "`a:' is a prefix of the agent, `p:' and free text are substrings."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((codex "Codex Agent @ codex" "/work/vertico/"
+              '((:agent-config . ((:mode-line-name . "Codex")))
+                (:session . ((:id . "x") (:title . "Wire the filter")))))
+       (claude "Claude Agent @ claude" "/work/other/"
+               '((:agent-config . ((:mode-line-name . "Claude Code")))
+                 (:session . ((:id . "c") (:title . "Read the store"))))))
+    (let ((agent-shell-test-buffers (list codex claude))
+          (all (list codex claude)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "a:cod" all)
+                     (list codex)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "a:CL" all)
+                     (list claude)))
+      (should-not (agent-shell-vertico-tests--filter-matches "a:odex" all))
+      (should (equal (agent-shell-vertico-tests--filter-matches "p:ertic" all)
+                     (list codex)))
+      (should (equal (agent-shell-vertico-tests--filter-matches
+                      "the store" all)
+                     (list claude)))
+      ;; Every part must match.
+      (should-not (agent-shell-vertico-tests--filter-matches
+                   "a:cod the store" all)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-output-matches-last-message ()
+  "`o:' searches the agent's newest message."
+  (agent-shell-vertico-tests--with-state-view
+    (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--last-message)
+               (lambda (buffer)
+                 (when (eq buffer done-2) "All 12 tests pass."))))
+      (should (equal (agent-shell-vertico-tests--filter-matches
+                      "o:TESTS" (list done-1 done-2 done-3))
+                     (list done-2))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-draws-matching-sections-only ()
+  "Only the sections holding a match are drawn, counting what they draw."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:compl")
+    (should (equal agent-shell-vertico-sidebar--filter "s:compl"))
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("Completed · 5")))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list done-1 done-2 done-3 done-4 done-5)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-opens-folds-without-writing ()
+  "A filter shows a folded section's rows and leaves its fold recorded."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-section-folded 'idle t)
+    (agent-shell-vertico-sidebar--set-filter "s:snooz")
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("Snoozed · 1")))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list snoozed)))
+    ;; Completed is hidden by the filter, and its fold survives that.
+    (agent-shell-vertico-sidebar--set-filter "")
+    (should-not agent-shell-vertico-sidebar--filter)
+    (should (agent-shell-vertico-sidebar--section-folded-p 'snoozed))
+    (should (agent-shell-vertico-sidebar--section-folded-p 'idle))
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("Needs input · 1" "Working · 1" "Completed · 5 ⋯"
+                     "Snoozed · 1 ⋯")))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-keeps-a-family-together ()
+  "A matching child draws its parent too, and the header counts both."
+  (agent-shell-vertico-tests--with-family (list (cons child 'blocked))
+    (agent-shell-vertico-sidebar--set-filter "n:child")
+    (should (equal (agent-shell-vertico-tests--section-headers)
+                   '("Needs input · 2")))
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list parent child)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-no-match-line ()
+  "A filter matching nothing says so and draws no row."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "n:zzz")
+    (should-not (agent-shell-vertico-sidebar--session-rows))
+    (should (string-match-p "No sessions match n:zzz" (buffer-string)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-header-line ()
+  "The header line names the filter and what it shows, only while set."
+  (agent-shell-vertico-tests--with-state-view
+    (should-not header-line-format)
+    (agent-shell-vertico-sidebar--set-filter "s:compl")
+    (should (stringp header-line-format))
+    (should (string-match-p "Filter: s:compl" header-line-format))
+    (should (string-match-p "5/8" header-line-format))
+    (agent-shell-vertico-sidebar--set-filter nil)
+    (should-not header-line-format)))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-reapplied-on-render ()
+  "A session that stops matching leaves at the next render."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:needs")
+    (should (equal (mapcar #'car (agent-shell-vertico-sidebar--session-rows))
+                   (list waiting)))
+    (setq agent-shell-test-statuses (list (cons working 'busy)))
+    (agent-shell-vertico-sidebar--render)
+    (should-not (agent-shell-vertico-sidebar--session-rows))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-leaves-display-order-alone ()
+  "Positional jumps and steps count every session, filtered or not."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:compl")
+    (should (equal (agent-shell-vertico-sidebar--display-order)
+                   (list waiting working done-1 done-2 done-3 done-4 done-5
+                         snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-header-toggle-refused ()
+  "Folding a header while filtered is refused and records nothing."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:compl")
+    (goto-char (point-min))
+    (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'section))
+    (should-error (agent-shell-vertico-sidebar-toggle-at-point)
+                  :type 'user-error)
+    (should-error (agent-shell-vertico-sidebar-open) :type 'user-error)
+    (should (zerop (hash-table-count
+                    agent-shell-vertico-sidebar--section-folds)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-project-toggle-refused ()
+  "A project header cannot be folded while filtered either."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((agent-shell-vertico-sidebar-group-by 'project))
+      (agent-shell-vertico-sidebar--set-filter "s:compl")
+      (goto-char (point-min))
+      (should (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'project))
+      (should-error (agent-shell-vertico-sidebar-toggle-project)
+                    :type 'user-error)
+      (should (zerop (hash-table-count
+                      agent-shell-vertico-sidebar--expanded-projects))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-s-tab-toggles-details-only ()
+  "S-TAB under a filter steps between rows and details, writing no fold."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-expand-by-default t))
+      (agent-shell-vertico-sidebar--set-filter "s:compl")
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+      (agent-shell-vertico-sidebar-cycle-global-view)
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+      (agent-shell-vertico-sidebar-cycle-global-view)
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+      (should (agent-shell-vertico-sidebar--session-rows))
+      (should (zerop (hash-table-count
+                      agent-shell-vertico-sidebar--section-folds)))
+      (should agent-shell-vertico-sidebar-expand-by-default)
+      (agent-shell-vertico-sidebar--set-filter nil)
+      (should (agent-shell-vertico-sidebar--section-folded-p 'snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-reveal-clears ()
+  "Revealing a session the filter hides clears the filter."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:needs")
+    (agent-shell-vertico-sidebar--reveal-session snoozed)
+    (should-not agent-shell-vertico-sidebar--filter)
+    (should-not header-line-format)
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-reveal-keeps-a-shown-match ()
+  "Revealing a session the filter shows keeps the filter."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "s:compl")
+    (agent-shell-vertico-sidebar--reveal-session done-3)
+    (should (equal agent-shell-vertico-sidebar--filter "s:compl"))
+    (should (eq (agent-shell-vertico-sidebar--node-at-point) done-3))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-jump-by-key-keys-every-row ()
+  "The key jump keys every session, as the positional jumps count them.
+The filter is back once the read ends."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (agent-shell-vertico-sidebar-sort-by 'name)
+          (agent-shell-vertico-sidebar-jump-keys '(?1 ?2))
+          seen)
+      (agent-shell-vertico-tests--with-jump-by-key
+          (progn (setq seen (agent-shell-vertico-tests--jump-labels-shown))
+                 ?2)
+        (save-selected-window (agent-shell-vertico-sidebar--display-buffer))
+        (with-current-buffer "*Agent Shell Sessions*"
+          (agent-shell-vertico-sidebar--set-filter "n:alpha")
+          (should (equal (mapcar #'car
+                                 (agent-shell-vertico-sidebar--session-rows))
+                         (list alpha))))
+        (agent-shell-vertico-sidebar-jump-by-key)
+        (should (equal seen (list (cons ?1 alpha) (cons ?2 beta))))
+        (should (eq agent-shell-test-displayed-buffer beta))
+        (with-current-buffer "*Agent Shell Sessions*"
+          (should (equal agent-shell-vertico-sidebar--filter "n:alpha"))
+          (should (equal (mapcar #'car
+                                 (agent-shell-vertico-sidebar--session-rows))
+                         (list alpha))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-command-reads-and-applies ()
+  "The command reads the filter, starting from the current one."
+  (agent-shell-vertico-tests--with-state-view
+    (let (initial)
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (_prompt &optional initial-contents &rest _args)
+                   (setq initial initial-contents)
+                   " s:compl ")))
+        (agent-shell-vertico-sidebar-filter)
+        (should (equal agent-shell-vertico-sidebar--filter "s:compl"))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list done-1 done-2 done-3 done-4 done-5)))
+        (should-not initial)
+        (agent-shell-vertico-sidebar-filter)
+        (should (equal initial "s:compl")))
+      ;; Empty input clears it.
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest _args) "")))
+        (agent-shell-vertico-sidebar-filter)
+        (should-not agent-shell-vertico-sidebar--filter)
+        (should (= (length (agent-shell-vertico-sidebar--session-rows)) 7))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-is-bound ()
+  "`f' filters in both maps and under Evil, and the help names it."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "f"))
+                #'agent-shell-vertico-sidebar-filter)))
+  (should (eq (cdr (assoc "f" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-filter))
+  (should-not (assoc "/" agent-shell-vertico-sidebar--evil-bindings))
+  (should (string-match-p "^  f "
+                          (agent-shell-vertico-sidebar--help-text))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here
