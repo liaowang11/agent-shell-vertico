@@ -343,9 +343,26 @@ case-insensitive) makes it `done` with that `result`, `blocked` with that
 `needs`, or `failed` with that `error`. The same words on any earlier line
 are ordinary text, because a reply's summary such as `Blocked: 2 jobs`
 followed by `All done.` would otherwise park a finished session in Needs input
-until the next prompt. When the last line is no marker the turn is `done`,
-and that line is the result. There is no model step, as there is in Claude
-Code; the markers are the whole convention.
+until the next prompt. Claude Code scans the last 800 characters for a
+marker instead (m0303.js:149-218), and so reads that very summary as
+blocked; this is where the two deliberately differ. When the last line is no
+marker the turn is `done`, and that line is the result. There is no model
+step, as there is in Claude Code; the markers are the whole convention.
+
+The marker itself is read as Claude Code reads it (m0303.js:149-152), on
+the last line only: `I'm blocked:` (or `I’m`) counts as `blocked:`; a `—`,
+a `–` or a hyphen between spaces may stand for the colon, a bare hyphen
+not, so `Failed-over nodes` stays a word; and what follows must be three
+characters starting with a non-blank, so `Failed: 3` is text. Since the
+word must start the line, a list item, quote, emphasis or table row that
+mentions one is text too. The cost is the same as a colon's: a last line
+`Blocked — nothing left; all done.` parks the session in Needs input just
+as `Blocked: nothing left` always did. A fence is three or more backticks
+or tildes at any indent, since a fence inside a list item is indented
+(Claude Code allows three spaces), and as in Claude Code it closes only
+on a run of its own character at least as long as the one that opened it
+(m0303.js:76-106). Claude Code's prose rules for a turn with no marker,
+such as a trailing question, are not ported.
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,

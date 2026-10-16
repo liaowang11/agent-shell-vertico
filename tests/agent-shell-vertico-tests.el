@@ -4150,6 +4150,60 @@ does not make the turn wait for the reader or fail."
     (should (equal (agent-shell-vertico-sidebar--get alpha 'needs)
                    "which branch?"))))
 
+(ert-deftest agent-shell-vertico-sidebar-marker-accepts-a-dash ()
+  "A marker may be followed by a dash, as Claude Code reads one."
+  (pcase-dolist (`(,text . ,answer)
+                 '(("needs input — which branch?" blocked . "which branch?")
+                   ("Blocked – waiting on CI" blocked . "waiting on CI")
+                   ("failed - tests do not build"
+                    failed . "tests do not build")
+                   ("result —Fixed the paging" done . "Fixed the paging")))
+    (should (equal (agent-shell-vertico-sidebar--classify-message text)
+                   answer))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-accepts-im-blocked ()
+  "`I'm blocked:' on the last line asks the reader, as `blocked:' does."
+  (should (equal (agent-shell-vertico-sidebar--classify-message
+                  "Tried twice.\nI'm blocked: no access to the repo")
+                 '(blocked . "no access to the repo")))
+  (should (equal (agent-shell-vertico-sidebar--classify-message
+                  "I’m blocked — the token expired")
+                 '(blocked . "the token expired"))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-needs-three-characters ()
+  "A marker says something: three characters, starting with no blank."
+  (dolist (text '("failed: 3" "Blocked:  no" "needs input -  ok"))
+    (should (equal (agent-shell-vertico-sidebar--classify-message text)
+                   (cons 'done text)))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-is-not-a-list-item ()
+  "A marker word in a list item, or joined by a bare hyphen, is text."
+  (dolist (text '("Failed-over nodes recovered."
+                  "- Failed - see the log"
+                  "* Blocked: on review"
+                  "1. Failed: two tests"
+                  "> Needs input: which branch?"
+                  "**Blocked:** waiting on CI"
+                  "| Result: | ok |"
+                  "Failed -see the log"))
+    (should (equal (agent-shell-vertico-sidebar--classify-message text)
+                   (cons 'done text)))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-last-line-skips-tilde-fences ()
+  "A `~~~' fence hides a marker as a backtick fence does."
+  (should (equal (agent-shell-vertico-sidebar--classify-message
+                  "needs input: which branch?\n~~~\nresult: echoed\n~~~\n\n")
+                 '(blocked . "which branch?"))))
+
+(ert-deftest agent-shell-vertico-sidebar-fence-closes-on-its-own-kind ()
+  "A fence closes only on its own character, in a run as long as its own.
+Indentation does not matter, since fences in list items are indented."
+  (dolist (text '("needs input: which?\n~~~\n```\nresult: echoed\n~~~\n"
+                  "needs input: which?\n````\n```\nresult: echoed\n````\n"
+                  "needs input: which?\n    ```\n    result: echoed\n    ```"))
+    (should (equal (agent-shell-vertico-sidebar--classify-message text)
+                   '(blocked . "which?")))))
+
 (ert-deftest agent-shell-vertico-sidebar-turn-ends-stamp-terminal-times ()
   "The first turn end is kept; the latest one moves with every end."
   (agent-shell-vertico-tests--with-alpha

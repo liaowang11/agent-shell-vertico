@@ -3823,8 +3823,23 @@ A subagent's tool calls are not the session's."
     (apply #'concat (reverse chunks))))
 
 (defconst agent-shell-vertico-sidebar--marker-regexp
-  "^[ \t]*\\(result\\|needs input\\|blocked\\|failed\\):[ \t]*\\(.+?\\)[ \t]*$"
-  "A line a turn can end on to say how it ended, read case-insensitively.")
+  (concat "^[ \t]*"
+          "\\(result\\|needs input\\|blocked\\|failed\\|i['’]m blocked\\)"
+          ;; A colon or a dash, as Claude Code reads them (m0303.js:149),
+          ;; but a hyphen only between spaces, so `Failed-over' is a word.
+          "\\(?:[ \t]*[:—–]\\|[ \t]+-[ \t]\\)[ \t]*"
+          ;; At least three characters, the first of them no blank.  Not
+          ;; `.\{2,\}?', which Emacs reads as an optional interval.
+          "\\([^ \t\n]..+?\\)[ \t]*$")
+  "A line a turn can end on to say how it ended, read case-insensitively.
+
+The marker word starts the line, so a list item, a quote or a table row
+that mentions one is text.")
+
+(defconst agent-shell-vertico-sidebar--fence-regexp
+  "\\`[ \t]*\\(`\\{3,\\}\\|~\\{3,\\}\\)"
+  "A line opening or closing a code fence, its run of fence characters.
+Any indentation counts, since a fence inside a list item is indented.")
 
 (defun agent-shell-vertico-sidebar--classify-message (text)
   "Return (STATE . LINE) for agent message TEXT, read as Claude Code does.
@@ -3834,17 +3849,26 @@ Claude Code asks its background sessions to end a turn on a `result:',
 one before it asks a model.  Here a marker counts only when it is the
 message's last non-empty line outside code fences, where Claude Code
 puts it, so a `Blocked:' or `Failed:' line in the middle of an ordinary
-summary is just text.  There is no model step.  `needs input:' and
-`blocked:' give `blocked', `failed:' gives `failed', and `result:'
-gives `done'; LINE is what follows the colon.  When the last line is no
+summary is just text.  There is no model step.  `needs input:',
+`blocked:' and `I'm blocked:' give `blocked', `failed:' gives `failed',
+and `result:' gives `done'; a dash may stand for the colon, and LINE is
+what follows it, at least three characters.  When the last line is no
 marker the turn is done, and LINE is that line, or nil when there is no
-message."
+message.
+
+A fence is three or more backticks or tildes, and as in Claude Code
+it closes only on a run of its own character at least as long."
   (let ((case-fold-search t)
-        fenced last-line)
+        fence last-line)
     (dolist (line (split-string (or text "") "\n"))
       (cond
-       ((string-match-p "\\`[ \t]*```" line) (setq fenced (not fenced)))
-       (fenced nil)
+       ((string-match agent-shell-vertico-sidebar--fence-regexp line)
+        (let ((run (match-string 1 line)))
+          (cond ((null fence) (setq fence run))
+                ((and (eq (aref run 0) (aref fence 0))
+                      (>= (length run) (length fence)))
+                 (setq fence nil)))))
+       (fence nil)
        (t (let ((trimmed (string-trim line)))
             (unless (string-empty-p trimmed)
               (setq last-line trimmed))))))
