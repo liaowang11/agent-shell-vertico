@@ -138,7 +138,9 @@ current project's only shell wins, several mean a project-scoped read, and
 none falls back to reading across every live shell. With nothing live
 anywhere, resolving signals a `user-error` instead: these commands pick an
 existing shell and never start one, which is what `agent-shell` and the
-`agent-shell-*-start-client` commands are for. The macro pins
+`agent-shell-*-start-client` commands are for; the sidebar's dispatch
+(below) is this package's one way to start a shell, and it starts one with a
+prompt rather than resolving an existing one. The macro pins
 `agent-shell--shell-buffer` with `cl-letf` for the duration of the body, which
 is how the answer reaches an `agent-shell` command that takes no shell
 argument. This works because every wrapped command resolves synchronously
@@ -268,6 +270,46 @@ displayed. One setting covers the switch commands, the Embark actions and
 the sidebar, which is why it is a variable here rather than advice in a
 user's configuration.
 
+**Dispatching a prompt.** `agent-shell-vertico-sidebar-dispatch` is Claude
+Code's dispatch box: a prompt that starts a new session working out of sight.
+The target is settled before the prompt is read, so cancelling a picker loses
+no typing (`--dispatch-target`): a session row gives its project and
+`:agent-config`, a project header its project and agent-shell's preference
+(`agent-shell--auto-preferred-config`, else `agent-shell-select-config`), and
+anywhere else, or `C-u`, reads the project with the transcript module's
+`--read-project` (loaded lazily, as resume-past does) and then the agent. The
+prompt is read with its own map and history: `RET` dispatches, `C-RET`,
+`M-RET` (which a terminal can send) and `M-<return>` dispatch and open, as
+Claude Code's ctrl+enter, and `C-j` breaks a line; only an empty prompt is
+refused. The shell starts with `agent-shell--new-shell :no-display t`, so no
+window changes and neither the before-display hook nor the jump history hears
+of it; opening goes through `--display-session`, so both see it once. The row
+is marked before any render: the mode hook has set `fresh`, which would file a
+session holding its prompt under Needs input as "Send a prompt to start", so
+the command clears it and sets `detail` to `> PROMPT` and the `dispatched`
+slot to the prompt; with no session id yet the status is `starting`, Working
+and spinning, and `--detail-for` says `Queued: PROMPT` while the slot is set.
+The wait for readiness is ours (`--dispatch-when-ready`): agent-shell's insert
+would wait on `prompt-ready` itself, but a subscriber's error ends as a message
+from `agent-shell--emit-event`, which would leave a row reading as sent. So
+the prompt goes through `--send-prompt` only once the session has its id, now
+or from our own `prompt-ready` subscription, where agent-shell submits at once
+and never waits a second time; `--new-shell` starts with the `new` strategy,
+so `prompt-ready` comes unasked. A send that signals, or an `error` event
+while `dispatched` is set (a session failing to start), runs
+`--dispatch-failed`: the row reads failed, the prompt goes on the kill ring
+and a message says so. `prompt-ready` sends only while the slot still holds
+the prompt, so a prompt given back is never sent later. `clean-up` reports
+nothing: a session the reader kills on purpose is not a failed dispatch, and
+its record and our subscription die with it. `input-submitted` clears the
+slot. `:no-display` does not stop an agent that has to authenticate from
+asking, so "out of sight" is not guaranteed there. Like every sidebar key,
+`d` is bound in four places plus the help text: the mode map, the `C-c` action
+map, the Evil bindings (as `gc` in `--evil-g-map`, listed in
+`--evil-bindings` and skipped by the direct install as `gr` and `gh` are,
+since Evil's `d` is its delete operator) and the `C-c` key list in
+`--bind-evil-keys`.
+
 **One record per session.** Everything the sidebar remembers about a session
 that agent-shell does not keep is one `agent-shell-vertico-sidebar--session`
 struct per buffer, in `--sessions`, read with `--get`, written with `--set` and
@@ -288,7 +330,8 @@ docstring gives the order. That function answers about the turn in flight, so
 whatever outlives a turn is the sidebar's own: `starting` is a session with no
 ACP session id yet, recorded nowhere because the id's absence is the whole
 answer; `new` is the `fresh` slot, a session the sidebar saw start that nobody
-has prompted; the `state` slot is how the last turn ended (see below), set by
+has prompted, which a dispatched session never is, since it starts with its
+prompt; the `state` slot is how the last turn ended (see below), set by
 the `turn-complete` and `error` events and set to `working`, a value no
 overlay reads, by `input-submitted`, because agent-shell reports what a session
 is doing and not how its last turn ended; `busy` covers an out-of-turn burst;

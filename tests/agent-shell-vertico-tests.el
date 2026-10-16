@@ -1498,6 +1498,339 @@ the magenta of a row's dot, which wins over the section's colour."
   (should (string-match-p "^  H (gh) "
                           (agent-shell-vertico-sidebar--help-text))))
 
+;; Dispatch: a prompt to a new session that starts out of sight.
+
+(defconst agent-shell-vertico-tests--codex-config
+  '((:identifier . codex) (:buffer-name . "Codex"))
+  "The agent configuration ALPHA was started with.")
+
+(defmacro agent-shell-vertico-tests--with-dispatch (prompt &rest body)
+  "Evaluate BODY with ALPHA, an idle session, and BETA, a shell starting.
+
+ALPHA carries an agent configuration and BETA no session id yet, and
+`agent-shell--new-shell' answers BETA.  The prompt reader answers
+PROMPT.  `prepared' collects what `agent-shell-vertico-before-display-
+function' was given and `messages' what was said; the kill ring starts
+empty."
+  (declare (indent 1) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               `((:session . ((:id . "a") (:title . "Review alpha")))
+                 (:agent-config . ,agent-shell-vertico-tests--codex-config)))
+        (beta "Codex Agent @ beta" "/work/alpha/"
+              '((:session . ((:title . "Dispatched"))))))
+     (let ((agent-shell-test-buffers (list alpha))
+           (agent-shell-test-statuses (list (cons alpha 'ready)
+                                            (cons beta 'ready)))
+           (agent-shell-test-start-buffer beta)
+           (agent-shell-vertico-sidebar-dispatch-history nil)
+           (agent-shell-vertico--jump-history nil)
+           (agent-shell-vertico--jump-current nil)
+           (kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil)
+           (interprogram-paste-function nil)
+           prepared
+           messages)
+       (cl-letf (((symbol-function 'read-from-minibuffer)
+                  (lambda (&rest _) ,prompt))
+                 ((symbol-function 'message)
+                  (lambda (format &rest args)
+                    (push (and format (apply #'format-message format args))
+                          messages)))
+                 ((symbol-value 'agent-shell-vertico-before-display-function)
+                  (lambda (buffer) (push buffer prepared))))
+         ,@body))))
+
+(defun agent-shell-vertico-tests--dispatch-from-row (session &optional arg)
+  "Run the dispatch command on SESSION's sidebar row, passing ARG."
+  (with-temp-buffer
+    (agent-shell-vertico-sidebar-mode)
+    (should (agent-shell-vertico-sidebar--goto-node (cons 'session session)))
+    (agent-shell-vertico-sidebar-dispatch arg)))
+
+(defun agent-shell-vertico-tests--prompt-ready (buffer)
+  "Give BUFFER a session id, then run its `prompt-ready' subscribers.
+This is what agent-shell does once the session it was starting exists."
+  (with-current-buffer buffer
+    (setq-local agent-shell--state
+                (cons '(:session . ((:id . "b") (:title . "Dispatched")))
+                      (assq-delete-all :session
+                                       (copy-alist agent-shell--state))))
+    (dolist (subscription (copy-sequence agent-shell-test-subscriptions))
+      (pcase-let ((`(,shell ,event ,on-event) subscription))
+        (when (and (eq shell buffer) (eq event 'prompt-ready))
+          (funcall on-event '((:event . prompt-ready))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-starts-out-of-sight ()
+  "Dispatching from a row starts that row's agent in its project, unseen.
+Nothing is displayed, so neither the before-display hook nor the jump
+history hears of the new session, and the selected window keeps its
+buffer."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let ((shown (window-buffer (selected-window)))
+          read)
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest args)
+                   (setq read args)
+                   "fix the flaky test")))
+        (agent-shell-vertico-tests--dispatch-from-row alpha))
+      (should (equal (mapcar #'cadr (agent-shell-vertico-tests--calls-of
+                                      'agent-shell--new-shell))
+                     `((:location "/work/alpha/"
+                        :config ,agent-shell-vertico-tests--codex-config
+                        :no-display t))))
+      (should-not agent-shell-test-displayed-buffer)
+      (should-not prepared)
+      (should-not agent-shell-vertico--jump-history)
+      (should-not agent-shell-vertico--jump-current)
+      (should (eq (window-buffer (selected-window)) shown))
+      (should (member (format "Dispatched to %s" (buffer-name beta))
+                      messages))
+      ;; The prompt is read with its own keys and its own history.
+      (should (eq (nth 2 read)
+                  agent-shell-vertico-sidebar-dispatch-minibuffer-map))
+      (should (eq (nth 4 read)
+                  'agent-shell-vertico-sidebar-dispatch-history)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-marks-the-row-at-once ()
+  "A dispatched session works and is queued, never asking for a prompt.
+The mode hook marks a shell it saw start as nobody's prompted one; a
+dispatched shell has its prompt already, so it is starting, in the
+Working band, and its row says the prompt is queued."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (should-not (agent-shell-vertico-sidebar--get beta 'fresh))
+    (should (equal (agent-shell-vertico-sidebar--get beta 'dispatched)
+                   "fix the flaky test"))
+    (should (equal (agent-shell-vertico-sidebar--get beta 'detail)
+                   "> fix the flaky test"))
+    (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'starting))
+    (should (eq (agent-shell-vertico-sidebar--band beta) 'working))
+    (should-not (agent-shell-vertico-sidebar--waits-p beta))
+    (should-not (nth 2 (agent-shell-vertico-sidebar--job-state beta)))
+    (should (equal (agent-shell-vertico-sidebar--detail-for
+                    (agent-shell-vertico-sidebar--session-snapshot beta))
+                   "Queued: fix the flaky test"))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-sends-once-when-ready ()
+  "The prompt is sent once, through the shell's own send, when it is ready.
+Sending to a shell that has no session yet would make agent-shell wait
+on `prompt-ready' itself, where a failure is only a message; the
+dispatch waits instead, so the send happens in the sidebar's hands."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (should-not (agent-shell-vertico-tests--calls-of
+                 'agent-shell--prompt-send))
+    (agent-shell-vertico-tests--prompt-ready beta)
+    (should (equal (agent-shell-vertico-tests--calls-of
+                    'agent-shell--prompt-send)
+                   `((,beta (:prompt "fix the flaky test" :disposition nil
+                             :on-delivered nil)))))
+    ;; The wait is over: a second `prompt-ready' sends nothing.
+    (agent-shell-vertico-tests--prompt-ready beta)
+    (should (= (length (agent-shell-vertico-tests--calls-of
+                        'agent-shell--prompt-send))
+               1))
+    (agent-shell-vertico-sidebar--handle-event
+     beta '((:event . input-submitted)
+            (:data . ((:prompt . "fix the flaky test")))))
+    (should-not (agent-shell-vertico-sidebar--get beta 'dispatched))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-to-a-ready-shell-sends-now ()
+  "A shell that already has its session is sent the prompt at once."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (with-current-buffer beta
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "b") (:title . "Dispatched"))))))
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (should (= (length (agent-shell-vertico-tests--calls-of
+                        'agent-shell--prompt-send))
+               1))
+    (should-not (seq-find (lambda (subscription)
+                            (eq (nth 1 subscription) 'prompt-ready))
+                          agent-shell-test-subscriptions))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-failed-send-gives-it-back ()
+  "A send that fails once the shell is ready fails the row, not silently.
+The prompt goes to the kill ring and a message says so; the row reads
+failed rather than as a session that was sent the prompt."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (cl-letf (((symbol-function 'agent-shell--prompt-send)
+               (lambda (&rest _) (user-error "Busy, try later"))))
+      (agent-shell-vertico-tests--prompt-ready beta))
+    (should (equal (current-kill 0) "fix the flaky test"))
+    (should-not (agent-shell-vertico-sidebar--get beta 'dispatched))
+    (should (eq (agent-shell-vertico-sidebar--raw-status beta) 'failed))
+    (should (equal (agent-shell-vertico-sidebar--get beta 'error)
+                   "Busy, try later"))
+    (should (seq-find (lambda (text)
+                        (and text (string-match-p "kill ring" text)))
+                      messages))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-start-error-gives-it-back ()
+  "A session that fails to start gives its dispatched prompt back.
+A later `prompt-ready' sends nothing: the prompt was reported failed."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (agent-shell-vertico-sidebar--handle-event
+     beta '((:event . error)
+            (:data . ((:code . -32000)
+                      (:message . "Authentication required")))))
+    (should (equal (current-kill 0) "fix the flaky test"))
+    (should-not (agent-shell-vertico-sidebar--get beta 'dispatched))
+    (should (seq-find (lambda (text)
+                        (and text (string-match-p "kill ring" text)))
+                      messages))
+    (agent-shell-vertico-tests--prompt-ready beta)
+    (should-not (agent-shell-vertico-tests--calls-of
+                 'agent-shell--prompt-send))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-kill-is-no-failure ()
+  "A dispatched session the reader kills is not reported as a failure."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (agent-shell-vertico-sidebar--handle-event beta '((:event . clean-up)))
+    (should-not kill-ring)
+    (should-not (seq-find (lambda (text)
+                            (and text (string-match-p "fail" text)))
+                          messages))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-refuses-an-empty-prompt ()
+  "An empty prompt starts nothing; any other is fine, however short."
+  (agent-shell-vertico-tests--with-dispatch "  \n "
+    (should-error (agent-shell-vertico-tests--dispatch-from-row alpha)
+                  :type 'user-error)
+    (should-not (agent-shell-vertico-tests--calls-of 'agent-shell--new-shell)))
+  (agent-shell-vertico-tests--with-dispatch "go"
+    (agent-shell-vertico-tests--dispatch-from-row alpha)
+    (should (agent-shell-vertico-tests--calls-of 'agent-shell--new-shell))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-on-a-project-header ()
+  "On a project header the agent is agent-shell's preferred one, else read."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let ((agent-shell-vertico-sidebar-group-by 'project)
+          (other '((:identifier . claude) (:buffer-name . "Claude"))))
+      (dolist (case `((,agent-shell-vertico-tests--codex-config . nil)
+                      (nil . ,other)))
+        (setq agent-shell-test-calls nil)
+        (cl-letf (((symbol-function 'agent-shell--auto-preferred-config)
+                   (lambda () (car case)))
+                  ((symbol-function 'agent-shell-select-config)
+                   (lambda (&rest _) (cdr case))))
+          (with-temp-buffer
+            (agent-shell-vertico-sidebar-mode)
+            (goto-char (point-min))
+            (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                        'project))
+            (agent-shell-vertico-sidebar-dispatch nil)))
+        (should (equal (cadr (car (agent-shell-vertico-tests--calls-of
+                                   'agent-shell--new-shell)))
+                       `(:location "/work/alpha/"
+                         :config ,(or (car case) (cdr case))
+                         :no-display t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-reads-project-then-agent ()
+  "With a prefix, or off a row, the project and then the agent are read.
+Both are read before the prompt, so cancelling a picker loses no typing."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (let ((other '((:identifier . claude) (:buffer-name . "Claude")))
+          order)
+      (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-project)
+                 (lambda () (push 'project order) "/tmp/p/"))
+                ((symbol-function 'agent-shell--auto-preferred-config)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-select-config)
+                 (lambda (&rest _) (push 'agent order) other))
+                ((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest _) (push 'prompt order) "fix it")))
+        ;; A prefix on a row reads, rather than taking the row's.
+        (agent-shell-vertico-tests--dispatch-from-row alpha '(4))
+        (should (equal (reverse order) '(project agent prompt)))
+        ;; Off any row: outside the sidebar altogether.
+        (setq order nil)
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-dispatch nil))
+        (should (equal (reverse order) '(project agent prompt))))
+      (should (equal (mapcar #'cadr (agent-shell-vertico-tests--calls-of
+                                      'agent-shell--new-shell))
+                     (make-list 2 `(:location "/tmp/p/" :config ,other
+                                    :no-display t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-and-open-displays-once ()
+  "Dispatch and open shows the session through the shared display path.
+The before-display hook sees the buffer about to show, once: the
+viewport when the reader prefers it."
+  (dolist (viewport-preferred '(nil t))
+    (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+      (let* ((viewport (generate-new-buffer "Codex Agent @ beta [viewport]"))
+             (agent-shell-prefer-viewport-interaction viewport-preferred)
+             (agent-shell-test-viewport-buffer
+              (and viewport-preferred viewport))
+             (expected (if viewport-preferred viewport beta)))
+        (unwind-protect
+            (progn
+              (cl-letf (((symbol-function 'read-from-minibuffer)
+                         (lambda (&rest _)
+                           (setq agent-shell-vertico-sidebar--dispatch-open t)
+                           "fix the flaky test")))
+                (agent-shell-vertico-tests--dispatch-from-row alpha))
+              (should (equal prepared (list expected)))
+              (should (eq agent-shell-test-displayed-buffer expected)))
+          (kill-buffer viewport))))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-minibuffer-keys ()
+  "C-j breaks a line, C-RET and M-RET dispatch and open, RET dispatches."
+  (let ((map agent-shell-vertico-sidebar-dispatch-minibuffer-map))
+    (should (eq (lookup-key map (kbd "RET")) #'exit-minibuffer))
+    (should (eq (lookup-key map (kbd "C-j")) #'newline))
+    (dolist (key '("C-<return>" "M-RET" "M-<return>"))
+      (should (eq (lookup-key map (kbd key))
+                  #'agent-shell-vertico-sidebar-dispatch-and-open)))
+    (with-temp-buffer
+      (let (agent-shell-vertico-sidebar--dispatch-open exited)
+        (cl-letf (((symbol-function 'exit-minibuffer)
+                   (lambda () (setq exited t))))
+          (agent-shell-vertico-sidebar-dispatch-and-open))
+        (should agent-shell-vertico-sidebar--dispatch-open)
+        (should exited)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-moves-point-to-the-new-row ()
+  "After a dispatch the sidebar shows the new session's row at point."
+  (agent-shell-vertico-tests--with-dispatch "fix the flaky test"
+    (setq agent-shell-test-buffers (list alpha beta))
+    (agent-shell-vertico-tests--with-sidebar
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (agent-shell-vertico-sidebar-dispatch nil)
+      (should (eq (agent-shell-vertico-sidebar--session-at-point) beta)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dispatch-is-bound ()
+  "`d' dispatches in both maps, `gc' under Evil, and the help names it.
+Evil keeps its own `d', the delete operator's key."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "d"))
+                #'agent-shell-vertico-sidebar-dispatch)))
+  (should (eq (cdr (assoc "gc" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-dispatch))
+  (should-not (assoc "d" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (lookup-key agent-shell-vertico-sidebar--evil-g-map (kbd "c"))
+              #'agent-shell-vertico-sidebar-dispatch))
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (_state key definition)
+                 (push (cons (key-description key) definition) bindings)))
+              ((symbol-function 'evil-get-auxiliary-keymap)
+               (lambda (&rest _args) nil)))
+      (agent-shell-vertico-sidebar--bind-evil-keys))
+    (should-not (assoc "g c" bindings))
+    (should-not (assoc "d" bindings))
+    (should (eq (cdr (assoc "C-c d" bindings))
+                #'agent-shell-vertico-sidebar-dispatch)))
+  (should (string-match-p "^  d (gc) "
+                          (agent-shell-vertico-sidebar--help-text))))
+
 (ert-deftest agent-shell-vertico-sidebar-hides-mode-line ()
   (with-temp-buffer
     (agent-shell-vertico-sidebar-mode)

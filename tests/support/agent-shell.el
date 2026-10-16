@@ -500,9 +500,9 @@ Exists as an advice target for strict resume tests."
 (cl-defun agent-shell--new-shell (&rest args)
   "Record a private new-shell action with ARGS.
 Mirrors upstream `agent-shell--new-shell', which takes `:location',
-`:config', and `:no-display', starts a shell, and returns its buffer."
-  (setq agent-shell-test-last-command 'agent-shell--new-shell
-        agent-shell-test-last-args args)
+`:config', and `:no-display', starts a shell, and returns its buffer.
+Logged in `agent-shell-test-calls' too, since a send often follows."
+  (agent-shell-test--log-call 'agent-shell--new-shell args)
   (or agent-shell-test-start-buffer (current-buffer)))
 
 (cl-defun agent-shell--start (&rest args)

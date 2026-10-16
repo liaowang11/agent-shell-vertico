@@ -553,7 +553,8 @@ field), `o` (jump to a session by key), `O` (open in another window),
 `C-j`/`C-k` (move to the next or previous session, passing over section and
 project headers), `TAB` (fold or session details), `S-TAB` (cycle all fold
 levels), `=` (switch between the state and project views), `s` (sort), `f`
-(filter the sessions; see below), `g` (refresh), `c` (new session), `k` (kill),
+(filter the sessions; see below), `g` (refresh), `c` (new session), `d`
+(dispatch a prompt to a new session; see below), `k` (kill),
 `r` (restart), `i` (interrupt),
 `m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation), `F`
 (fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `H` (resume
@@ -567,7 +568,8 @@ activates the current row or metadata field, `o` jumps to a session by key,
 `O` opens the session at point in another window, `TAB` toggles the current
 row, `S-TAB` cycles every row through the fold levels, and `f` filters the
 sessions in place of `evil-find-char`.
-`gr` refreshes, `gh` resumes a past session of the project at point, `D`
+`gr` refreshes, `gh` resumes a past session of the project at point, `gc`
+dispatches a prompt (Evil keeps `d` for its delete operator), `D`
 kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
 read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
@@ -582,6 +584,17 @@ it, `F` forks it, and `Y` copies its session ID; `!`, `z`, `S`, `C`, `A`, `a`,
 while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
 `v` remains Evil's visual-state key.  `?` shows the same key reference.  The
 local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
+
+`d` (`gc` in Evil) dispatches a prompt, as Claude Code's dispatch box does: it
+starts a new session that works out of sight, its row appearing under Working
+at once with the prompt queued until the session can take it.  On a session
+row the new session gets that row's project and agent; on a project header,
+that project and agent-shell's preferred agent; anywhere else, or with `C-u`,
+the project and then the agent are read, before the prompt.  In the prompt,
+`RET` dispatches, `C-RET` or `M-RET` dispatches and opens the session, and
+`C-j` starts a new line; earlier prompts are in the history.  If the session
+fails to start or the prompt cannot be sent, the row reads failed and the
+prompt is put on the kill ring.
 
 `f` reads a filter and applies it when you press `RET`; empty input clears it.
 Every word must match, case aside: `s:needs` a status or section (`s:done`,

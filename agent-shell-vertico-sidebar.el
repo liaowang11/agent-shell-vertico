@@ -30,11 +30,13 @@
 (declare-function agent-shell-status "agent-shell" (&key shell-buffer))
 (declare-function agent-shell-cwd "agent-shell-project")
 (declare-function agent-shell--project-name "agent-shell" ())
-(declare-function agent-shell-subscribe-to "agent-shell"
-                  (&key shell-buffer event on-event))
+;; Keyword arguments are declared as `&rest', which is how the byte
+;; compiler can count a `cl-defun''s arguments.
+(declare-function agent-shell-subscribe-to "agent-shell" (&rest args))
 (declare-function agent-shell-unsubscribe "agent-shell" (&key subscription))
-(declare-function agent-shell--new-shell "agent-shell"
-                  (&key location config no-display))
+(declare-function agent-shell--new-shell "agent-shell" (&rest args))
+(declare-function agent-shell--auto-preferred-config "agent-shell" ())
+(declare-function agent-shell-select-config "agent-shell" (&rest args))
 (declare-function agent-shell-side-parent-buffer "agent-shell-side"
                   (&optional buffer))
 (declare-function agent-shell-side-children "agent-shell-side"
@@ -399,6 +401,15 @@ Its `result:' line when it has one, as Claude Code reads it, and its
 last non-empty line otherwise.")
   (stop-reason nil :documentation "\
 The ACP stop reason the last turn ended with, such as \"end_turn\".")
+  (dispatched nil :documentation "\
+The prompt `agent-shell-vertico-sidebar-dispatch' started the session
+with, until it is submitted.
+
+A dispatched session is started with its prompt in hand, so it is not
+`fresh', and the prompt waits here until the session can take it.  The
+row says it is queued.  `input-submitted' clears it; a failure to start
+or to send gives it back on the kill ring and clears it, and a
+`prompt-ready' finding it gone sends nothing.")
   (fresh nil :documentation "\
 Non-nil when the sidebar saw the session start and nobody has prompted it.
 
@@ -1554,6 +1565,7 @@ repeating those queries during one redisplay."
            :mode (agent-shell-vertico--mode-name buffer)
            :agent (agent-shell-vertico--agent-name buffer))
      (list :detail (agent-shell-vertico-sidebar--detail-text buffer)
+           :dispatched (agent-shell-vertico-sidebar--get buffer 'dispatched)
            :result (agent-shell-vertico-sidebar--get buffer 'result)
            :error (agent-shell-vertico-sidebar--error-for buffer status)
            :updated-at (agent-shell-vertico-sidebar--get buffer 'updated-at)
@@ -1568,11 +1580,16 @@ repeating those queries during one redisplay."
   "Return the one-line detail for SNAPSHOT, as Claude Code picks it.
 
 A waiting session says what it waits for, which for a session nobody
-has prompted is a prompt, and a working one its newest entry.  A
-failure says why, and a stopped turn only that it stopped.  Otherwise
-NEEDS, else the turn's `result:' line, else its newest entry."
-  (pcase-let (((map :state :tempo :needs :detail :result :error) snapshot))
+has prompted is a prompt, and a working one its newest entry, which
+for a session dispatched and not yet sent its prompt is that prompt,
+queued.  A failure says why, and a stopped turn only that it stopped.
+Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
+  (pcase-let (((map :state :tempo :needs :detail :result :error :dispatched)
+               snapshot))
     (cond ((eq tempo 'blocked) needs)
+          ((and (eq tempo 'active) dispatched)
+           (concat "Queued: "
+                   (agent-shell-vertico-sidebar--clean-line dispatched)))
           ((eq tempo 'active) detail)
           ((eq state 'failed)
            (if (stringp error) (concat "Failed: " error) "Failed"))
@@ -4080,6 +4097,11 @@ snooze ends, since the agent cannot go on without the reader."
        (agent-shell-vertico-sidebar--stamp-terminal buffer now)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--mark-unread-at buffer now)
+       ;; A session that failed before its dispatched prompt was sent,
+       ;; while starting most often, will not send it.
+       (when-let* ((prompt (agent-shell-vertico-sidebar--get
+                            buffer 'dispatched)))
+         (agent-shell-vertico-sidebar--dispatch-failed buffer prompt))
        ;; agent-shell emits `error' before it clears its busy flag, so
        ;; the turn the error ends still reads as in flight.  Report the
        ;; session as it is once the turn is over.
@@ -4109,6 +4131,7 @@ snooze ends, since the agent cannot go on without the reader."
        (agent-shell-vertico-sidebar--set buffer 'unread nil)
        (agent-shell-vertico-sidebar--set buffer 'state 'working)
        (agent-shell-vertico-sidebar--set buffer 'fresh nil)
+       (agent-shell-vertico-sidebar--set buffer 'dispatched nil)
        (agent-shell-vertico-sidebar--set buffer 'needs nil)
        (agent-shell-vertico-sidebar--set buffer 'error nil)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
@@ -4686,6 +4709,193 @@ configuration, so it runs alongside it rather than replacing it."
      :config config)
     (agent-shell-vertico-sidebar-refresh)))
 
+;;; Dispatch
+;;
+;; Claude Code's dispatch box: a prompt typed once starts a new session
+;; that goes to work out of sight, and its row appears at once.
+
+(defvar agent-shell-vertico-sidebar-dispatch-history nil
+  "Prompts read by `agent-shell-vertico-sidebar-dispatch'.
+A dispatch that fails gives its prompt back on the kill ring, and it is
+here too, with \\`M-p'.")
+
+(defvar agent-shell-vertico-sidebar--dispatch-open nil
+  "Non-nil when the dispatch prompt was ended asking to open the session.
+Bound around each read by `agent-shell-vertico-sidebar-dispatch'.")
+
+(defun agent-shell-vertico-sidebar-dispatch-and-open ()
+  "End the dispatch prompt, dispatching and opening the new session.
+Claude Code's ctrl+enter; \\`M-RET' too, which a terminal can send."
+  (interactive)
+  (setq agent-shell-vertico-sidebar--dispatch-open t)
+  (exit-minibuffer))
+
+(defvar agent-shell-vertico-sidebar-dispatch-minibuffer-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map minibuffer-local-map)
+    (define-key map (kbd "C-j") #'newline)
+    (define-key map (kbd "C-<return>")
+                #'agent-shell-vertico-sidebar-dispatch-and-open)
+    (define-key map (kbd "M-RET")
+                #'agent-shell-vertico-sidebar-dispatch-and-open)
+    (define-key map (kbd "M-<return>")
+                #'agent-shell-vertico-sidebar-dispatch-and-open)
+    map)
+  "Keymap of the prompt `agent-shell-vertico-sidebar-dispatch' reads.
+\\`RET' dispatches, \\`C-<return>' and \\`M-RET' dispatch and open the
+session, and \\`C-j' starts a new line, as in Claude Code's box.")
+
+(defun agent-shell-vertico-sidebar--dispatch-agent ()
+  "Return the agent configuration agent-shell would start a session with.
+Its automatic preference, else the one the reader picks."
+  (or (agent-shell--auto-preferred-config)
+      (agent-shell-select-config :prompt "Dispatch with agent: ")
+      (user-error "No agent configuration to dispatch with")))
+
+(defun agent-shell-vertico-sidebar--dispatch-target (read)
+  "Return (ROOT . CONFIG), where a dispatch starts and with which agent.
+
+A session row answers both, with its project and the agent it runs; a
+project header answers the project and leaves the agent to agent-shell's
+preference.  Anywhere else, or when READ is non-nil, the project and
+then the agent are read.  The transcript module is loaded for its
+project reader, as `agent-shell-vertico-sidebar-resume-past' loads it."
+  (let ((kind (and (not read)
+                   (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                   (agent-shell-vertico-sidebar--node-kind-at-point)))
+        (node (agent-shell-vertico-sidebar--node-at-point)))
+    (pcase kind
+      ((and 'session (guard (buffer-live-p node)))
+       (cons (agent-shell-vertico-sidebar--project-root node)
+             (or (map-elt (agent-shell-vertico--state node) :agent-config)
+                 (agent-shell-vertico-sidebar--dispatch-agent))))
+      ('project
+       (cons node (agent-shell-vertico-sidebar--dispatch-agent)))
+      (_
+       (require 'agent-shell-vertico-transcript)
+       (let ((root (agent-shell-vertico-transcript--read-project)))
+         (cons root (agent-shell-vertico-sidebar--dispatch-agent)))))))
+
+(defun agent-shell-vertico-sidebar--dispatch-failed (shell prompt &optional
+                                                           reason)
+  "Give back PROMPT, which was dispatched to SHELL and never sent.
+
+The prompt goes on the kill ring and a message says so, as Claude Code
+hands a failed dispatch's query back.  REASON, when non-nil, is why the
+send failed, recorded as the session's failure; an `error' event has
+recorded its own already and passes none."
+  (when reason
+    (agent-shell-vertico-sidebar--set shell 'state 'failed)
+    (agent-shell-vertico-sidebar--set shell 'error reason)
+    (agent-shell-vertico-sidebar--mark-unread-at shell (float-time)))
+  (agent-shell-vertico-sidebar--set shell 'dispatched nil)
+  (kill-new prompt)
+  (agent-shell-vertico-sidebar--schedule-refresh)
+  (message "Dispatch to %s failed%s; the prompt is in the kill ring"
+           (buffer-name shell)
+           (if (stringp reason) (format " (%s)" reason) "")))
+
+(defun agent-shell-vertico-sidebar--dispatch-send (shell prompt)
+  "Send PROMPT, dispatched to SHELL, unless the dispatch is over.
+
+The dispatch is over once the `dispatched' slot no longer holds PROMPT:
+the session failed to start and gave the prompt back, or it was sent.
+A send that signals fails the dispatch here rather than in agent-shell's
+event loop, which would reduce it to a message nobody connects to the
+row."
+  (when (and (buffer-live-p shell)
+             (equal (agent-shell-vertico-sidebar--get shell 'dispatched)
+                    prompt))
+    (condition-case err
+        (agent-shell-vertico-sidebar--send-prompt shell prompt)
+      (error
+       (agent-shell-vertico-sidebar--dispatch-failed
+        shell prompt (error-message-string err))))))
+
+(defun agent-shell-vertico-sidebar--dispatch-when-ready (shell prompt)
+  "Send PROMPT to SHELL once SHELL has its session, now if it has one.
+
+agent-shell can wait for the session itself: its insert subscribes to
+`prompt-ready' when asked to submit to a shell with no session yet.  But
+a subscriber's error ends as a message from the event loop, so a send
+that failed there would leave the row reading as sent.  The wait is
+therefore the sidebar's own, and the send only ever happens once the
+session exists, when agent-shell submits at once and does not wait a
+second time.  `agent-shell--new-shell' starts with the `new' strategy,
+which sets the session up at start, so `prompt-ready' comes unasked."
+  (if (agent-shell-vertico--session-field shell :id)
+      (agent-shell-vertico-sidebar--dispatch-send shell prompt)
+    (let (token)
+      (setq token
+            (agent-shell-subscribe-to
+             :shell-buffer shell
+             :event 'prompt-ready
+             :on-event
+             (lambda (_event)
+               (with-current-buffer shell
+                 (agent-shell-unsubscribe :subscription token))
+               (agent-shell-vertico-sidebar--dispatch-send shell prompt)))))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-dispatch (&optional read)
+  "Dispatch a prompt to a new session that starts out of sight.
+
+On a session row the session starts in that row's project with its
+agent; on a project header, in that project with agent-shell's
+preferred agent.  Anywhere else, or with prefix argument READ, the
+project and then the agent are read.  The agent is settled before the
+prompt is read, so cancelling a picker loses no typing.
+
+In the prompt, \\<agent-shell-vertico-sidebar-dispatch-minibuffer-map>\
+\\[exit-minibuffer] dispatches, \\`C-<return>' and \\`M-RET' dispatch and
+open the session, and \\[newline] starts a new line.
+
+The session starts without being displayed, so no window changes and
+the jump history and `agent-shell-vertico-before-display-function'
+hear of it only when it is opened.  Its row appears at once, under
+Working, with the prompt queued until the session can take it; if the
+session fails to start or the prompt cannot be sent, the row reads
+failed and the prompt is put on the kill ring."
+  (interactive "P")
+  (let* ((target (agent-shell-vertico-sidebar--dispatch-target read))
+         (root (car target))
+         (agent-shell-vertico-sidebar--dispatch-open nil)
+         (prompt (string-trim
+                  (read-from-minibuffer
+                   (format "Dispatch to %s: "
+                           (abbreviate-file-name (directory-file-name root)))
+                   nil agent-shell-vertico-sidebar-dispatch-minibuffer-map
+                   nil 'agent-shell-vertico-sidebar-dispatch-history)))
+         (open agent-shell-vertico-sidebar--dispatch-open))
+    (when (string-empty-p prompt)
+      (user-error "Nothing to dispatch"))
+    (let ((shell (agent-shell--new-shell :location root :config (cdr target)
+                                         :no-display t)))
+      ;; The mode hook has marked the shell as one nobody prompted, and
+      ;; it will be prompted: mark it as what it is before any render.
+      (agent-shell-vertico-sidebar--watch-buffer shell)
+      (agent-shell-vertico-sidebar--set shell 'fresh nil)
+      (agent-shell-vertico-sidebar--set
+       shell 'detail
+       (concat "> " (agent-shell-vertico-sidebar--clean-line prompt)))
+      (agent-shell-vertico-sidebar--set shell 'dispatched prompt)
+      (agent-shell-vertico-sidebar--dispatch-when-ready shell prompt)
+      (when open
+        (agent-shell-vertico--display-session (buffer-name shell)))
+      (agent-shell-vertico-sidebar--show-dispatched shell)
+      (message "Dispatched to %s" (buffer-name shell)))))
+
+(defun agent-shell-vertico-sidebar--show-dispatched (shell)
+  "Redraw the sidebar with point on SHELL's row, as Claude Code follows it."
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (let ((window (get-buffer-window sidebar t)))
+      (with-current-buffer sidebar
+        (agent-shell-vertico-sidebar--render)
+        (if (window-live-p window)
+            (with-selected-window window
+              (agent-shell-vertico-sidebar--reveal-session shell))
+          (agent-shell-vertico-sidebar--reveal-session shell))))))
+
 (defun agent-shell-vertico-sidebar-set-sort ()
   "Choose the sidebar sorting criterion."
   (interactive)
@@ -4982,6 +5192,8 @@ count leaves them out.  Nothing is shown when none waits."
    "  f           Filter the sessions (s: n: o: a: p:); empty clears\n"
    "  g (gr)      Refresh (regular / Evil state)\n"
    "  c           Create a new session\n"
+   "  d (gc)      Dispatch a prompt to a new session out of sight\n"
+   "              (in the prompt: C-RET or M-RET opens it, C-j newline)\n"
    "  m / M       Set mode / model\n"
    "  C           Rename (change the title of) the session\n"
    "  A           Archive the session, stopping and closing it\n"
@@ -5019,6 +5231,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "f") #'agent-shell-vertico-sidebar-filter)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
+    (define-key map (kbd "d") #'agent-shell-vertico-sidebar-dispatch)
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-restart)
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
@@ -5063,6 +5276,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "f") #'agent-shell-vertico-sidebar-filter)
     (define-key map (kbd "g") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-new)
+    (define-key map (kbd "d") #'agent-shell-vertico-sidebar-dispatch)
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-restart)
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
@@ -5093,8 +5307,10 @@ count leaves them out.  Nothing is shown when none waits."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "h") #'agent-shell-vertico-sidebar-resume-past)
+    (define-key map (kbd "c") #'agent-shell-vertico-sidebar-dispatch)
     map)
-  "Prefix map for the Evil `g' bindings: `gr' refresh, `gh' resume.")
+  "Prefix map for the Evil `g' bindings.
+`gr' refreshes, `gh' resumes a past session and `gc' dispatches.")
 
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
@@ -5115,6 +5331,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("f" . agent-shell-vertico-sidebar-filter)
     ("gr" . agent-shell-vertico-sidebar-refresh)
     ("c" . agent-shell-vertico-sidebar-new)
+    ("gc" . agent-shell-vertico-sidebar-dispatch)
     ("D" . agent-shell-vertico-sidebar-kill)
     ("R" . agent-shell-vertico-sidebar-restart)
     ("I" . agent-shell-vertico-sidebar-interrupt)
@@ -5141,9 +5358,10 @@ count leaves them out.  Nothing is shown when none waits."
 The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
 move a whole row at a time; `D'/`R'/`I' are the destructive session
 actions so navigation and lowercase mnemonics remain available.  Refresh is
-`gr' and resuming a past session `gh', which leave `H' to
-`evil-window-top'.  The other mnemonic actions intentionally take
-precedence over their generic Evil commands in this read-only sidebar.")
+`gr', resuming a past session `gh' and dispatching `gc', which leave `H'
+to `evil-window-top' and `d' to Evil's delete operator.  The other
+mnemonic actions intentionally take precedence over their generic Evil
+commands in this read-only sidebar.")
 
 (defun agent-shell-vertico-sidebar--bind-evil-keys ()
   "Install direct Dired-style bindings for Evil sidebar states.
@@ -5165,9 +5383,9 @@ while normal and motion states get the same direct mnemonic commands."
       (evil-local-set-key state (kbd "g")
                           agent-shell-vertico-sidebar--evil-g-map)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
-        (unless (member (car binding) '("gr" "gh"))
+        (unless (member (car binding) '("gr" "gh" "gc"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "=" "s" "f" "g" "c" "k" "r" "i" "m" "M" "C"
+      (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "p" "S"
                      "?" "q"))
         (when-let* ((command (lookup-key
