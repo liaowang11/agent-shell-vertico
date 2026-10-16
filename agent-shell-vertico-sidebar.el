@@ -4130,15 +4130,19 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set
         buffer 'error (or (map-nested-elt event '(:data :message)) t))
        (agent-shell-vertico-sidebar--stamp-terminal buffer now)
+       ;; A failure is a new ask, which no snooze put off, even when the
+       ;; reader is looking; it is unread and announced only when not.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-       (agent-shell-vertico-sidebar--mark-unread-at buffer now)
        ;; A session that failed before its dispatched prompt was sent,
        ;; while starting most often, will not send it.
        (when-let* ((prompt (agent-shell-vertico-sidebar--get
                             buffer 'dispatched)))
          (agent-shell-vertico-sidebar--dispatch-failed buffer prompt))
-       (agent-shell-vertico-sidebar--notify
-        buffer (agent-shell-vertico-sidebar--settled-status buffer)))
+       (if (agent-shell-vertico-sidebar--session-focused-p buffer)
+           (agent-shell-vertico-sidebar--set buffer 'unread nil)
+         (agent-shell-vertico-sidebar--mark-unread-at buffer now)
+         (agent-shell-vertico-sidebar--notify
+          buffer (agent-shell-vertico-sidebar--settled-status buffer))))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)

@@ -4352,6 +4352,26 @@ now in another application."
     (should (equal (agent-shell-vertico-sidebar--get alpha 'error)
                    "Request timed out"))))
 
+(ert-deftest agent-shell-vertico-sidebar-error-skips-a-watched-session ()
+  "An error the reader is looking at is neither announced nor unread.
+It still fails the turn and ends a snooze; unwatched, it is both."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-sidebar--set alpha 'snoozed 1.0)
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (_buffer) t)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . error) (:data . ((:message . "boom"))))))
+      (should-not notifications)
+      (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+      (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . error) (:data . ((:message . "boom")))))
+      (should (= (length notifications) 1))
+      (should (agent-shell-vertico-sidebar--unread-p alpha)))))
+
 (ert-deftest agent-shell-vertico-sidebar-session-seen-starting-is-new ()
   "A session the sidebar saw start is new until it is first prompted."
   (agent-shell-vertico-tests--with-session-buffers

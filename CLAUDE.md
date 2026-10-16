@@ -1243,7 +1243,10 @@ flag (agent-shell.el:5522 before 5534), so `--raw-status` would still answer
 `busy`, and the report would say `Working` with `:unread` nil, since
 `--unread-for` holds a mark back from a busy session. The branch asks
 `--idle-status`, the idle arms of `--raw-status` split out for this, or
-`--exited-status` once the process is gone. A request still pending when a
+`--exited-status` once the process is gone. As a finished turn does, the
+`error` arm marks and reports only when `--session-focused-p` says the reader
+is not in the session, and clears the mark when they are; the snooze ends
+either way, since a failure is a new ask. A request still pending when a
 live agent's prompt fails would make that report `Waiting`. That stale request
 is agent-shell's to clear, on its prompt's failure path as on the success
 path, and the fix belongs in the agent-shell fork; the sidebar keeps no record
