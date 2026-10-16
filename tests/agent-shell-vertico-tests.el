@@ -5052,6 +5052,84 @@ ALPHA is working on a long prompt, so its detail line is cut too."
         (agent-shell-vertico-sidebar--echo-row)
         (should-not echoed)))))
 
+(ert-deftest agent-shell-vertico-sidebar-expanded-row-wraps-detail ()
+  "Expanding a row wraps its cut detail line instead of cutting it."
+  (agent-shell-vertico-tests--with-long-title
+    (agent-shell-vertico-tests--goto-first-row)
+    (agent-shell-vertico-sidebar-toggle-at-point)
+    (let ((text (string-join (mapcar #'string-trim
+                                     (agent-shell-vertico-tests--lines))
+                             " ")))
+      (should (string-match-p "> please review every changed file" text))
+      (should-not (string-match-p "…" text)))
+    ;; Nothing is cut, so the row has no whole text to echo.
+    (should-not (gethash alpha agent-shell-vertico-sidebar--whole-texts))
+    ;; A prompt keeps its start when it still does not fit.
+    (let ((agent-shell-vertico-sidebar-expanded-detail-lines 1))
+      (agent-shell-vertico-sidebar--render)
+      (let ((line (string-trim
+                   (seq-find (lambda (line) (string-match-p ">" line))
+                             (agent-shell-vertico-tests--lines)))))
+        (should (string-prefix-p "> please" line))
+        (should (string-suffix-p "…" line))
+        (should (gethash alpha agent-shell-vertico-sidebar--whole-texts))))))
+
+(ert-deftest agent-shell-vertico-sidebar-expanded-row-shows-message-tail ()
+  "An expanded row shows the end of the message its detail came from."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-extra-info nil)
+          (agent-shell-vertico-sidebar-expanded-detail-lines 3)
+          (agent-shell-vertico-sidebar-width 40))
+      (agent-shell-vertico-tests--stream alpha "First line\n")
+      (agent-shell-vertico-tests--stream alpha "```\ncode\n```\nSecond ")
+      (agent-shell-vertico-tests--stream alpha "line\n\nThird line\n")
+      (agent-shell-vertico-tests--stream alpha "Fourth line")
+      (agent-shell-vertico-tests--end-turn alpha)
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (let ((text (string-join (agent-shell-vertico-tests--lines) "\n")))
+          (should (string-match-p "Fourth line" text))
+          (should-not (string-match-p "Third line" text)))
+        (agent-shell-vertico-tests--goto-first-row)
+        (agent-shell-vertico-sidebar-toggle-at-point)
+        (let ((lines (mapcar #'string-trim
+                             (agent-shell-vertico-tests--row-lines))))
+          (should (member "Second line" lines))
+          (should (member "Third line" lines))
+          (should (member "Fourth line" lines))
+          (should-not (seq-some (lambda (line)
+                                  (string-match-p "First\\|code" line))
+                                lines)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-expanded-detail-is-capped ()
+  "An expanded detail keeps its last lines and marks what it left out."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-vertico-sidebar-group-by 'state)
+          (agent-shell-vertico-sidebar-extra-info nil)
+          (agent-shell-vertico-sidebar-expanded-detail-lines 2)
+          (agent-shell-vertico-sidebar-width 20))
+      (agent-shell-vertico-tests--stream
+       alpha "one two three four five six seven eight nine ten end")
+      (agent-shell-vertico-tests--end-turn alpha)
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--goto-first-row)
+        (agent-shell-vertico-sidebar-toggle-at-point)
+        (let ((details (cdr (seq-remove #'string-empty-p
+                                        (agent-shell-vertico-tests--row-lines)))))
+          (should (= (length details) 2))
+          (should (string-prefix-p "…" (string-trim (car details))))
+          (should (string-suffix-p "ten end" (string-trim (cadr details)))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-error-is-a-failed-status ()
   "A failed turn leaves the session in a failed status, and unread."
   (agent-shell-vertico-tests--with-session-buffers

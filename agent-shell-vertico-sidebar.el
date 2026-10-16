@@ -167,6 +167,16 @@ levels and sets this default to the level it reaches."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-expanded-detail-lines 3
+  "Most lines the detail of an expanded row takes.
+
+An expanded row wraps its detail rather than cutting it, and when the
+detail is the last line of the agent's message, it shows the message's
+last lines instead.  What does not fit is left out from the start, so
+the end of the message stays."
+  :type 'natnum
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-extra-info
     '(agent project model mode activity)
   "Ordered extra information shown for expanded sessions.
@@ -1468,14 +1478,17 @@ See `agent-shell-vertico-sidebar--detail-text-line' for what it says."
   (when-let* ((line (agent-shell-vertico-sidebar--detail-text-line snapshot)))
     (cons (agent-shell-vertico-sidebar--fit line width) t)))
 
-(defun agent-shell-vertico-sidebar--detail-text-line (snapshot)
+(defun agent-shell-vertico-sidebar--detail-text-line
+    (snapshot &optional detail)
   "Return the whole detail line of SNAPSHOT, before it is fitted, or nil.
 
+DETAIL replaces what `agent-shell-vertico-sidebar--detail-for' picks.
 The state view names the state in its section header, so the line is
 the detail alone there.  The project view starts it with the status
 word, drawn in the mark's colour, as Claude Code's directory mode
 does."
-  (let* ((detail (agent-shell-vertico-sidebar--detail-for snapshot))
+  (let* ((detail (or detail
+                     (agent-shell-vertico-sidebar--detail-for snapshot)))
          (detail (and detail
                       (propertize detail
                                   'face 'agent-shell-vertico-sidebar-detail)))
@@ -1491,6 +1504,71 @@ does."
                                " · " 'face 'agent-shell-vertico-sidebar-detail))
                          detail))))
     line))
+
+(defun agent-shell-vertico-sidebar--detail-from-message-p (buffer snapshot)
+  "Return non-nil when SNAPSHOT's detail is the end of BUFFER's message.
+That is the turn's result, or the newest entry while it is the message."
+  (let ((detail (agent-shell-vertico-sidebar--detail-for snapshot)))
+    (and detail
+         (or (eq detail (plist-get snapshot :result))
+             (and (eq detail (plist-get snapshot :detail))
+                  (eq (agent-shell-vertico-sidebar--get buffer 'detail)
+                      'message))))))
+
+(defun agent-shell-vertico-sidebar--expanded-detail-lines
+    (buffer snapshot width)
+  "Return the detail of BUFFER's expanded row at WIDTH as (LINES . CUT).
+
+The detail is wrapped rather than cut, in at most
+`agent-shell-vertico-sidebar-expanded-detail-lines' lines.  A detail
+that is the end of the agent's message shows the message's last lines,
+dropping the oldest whole lines that do not fit, since the end is the
+answer; a line that alone does not fit keeps its end.  Any other detail
+keeps its start.  CUT says the detail itself was not drawn whole.
+Return nil when the row has no detail."
+  (when-let* ((detail (agent-shell-vertico-sidebar--detail-for snapshot)))
+    (let* ((limit (max 1 agent-shell-vertico-sidebar-expanded-detail-lines))
+           (from-message (agent-shell-vertico-sidebar--detail-from-message-p
+                          buffer snapshot))
+           (sources (or (and from-message
+                             (agent-shell-vertico-sidebar--message-tail
+                              buffer limit))
+                        (list detail)))
+           lines)
+      (while
+          (progn
+            (setq lines
+                  (seq-mapcat
+                   (lambda (line)
+                     (agent-shell-vertico-sidebar--wrap-text line width))
+                   (cons (agent-shell-vertico-sidebar--detail-text-line
+                          snapshot (car sources))
+                         (mapcar (lambda (line)
+                                   (propertize
+                                    line
+                                    'face 'agent-shell-vertico-sidebar-detail))
+                                 (cdr sources)))))
+            (and (> (length lines) limit) (cdr sources)))
+        (setq sources (cdr sources)))
+      (cond
+       ((<= (length lines) limit) (cons lines nil))
+       (from-message
+        (let ((kept (last lines limit)))
+          (cons (cons (concat (propertize
+                               "…" 'face 'agent-shell-vertico-sidebar-detail)
+                              (truncate-string-to-width
+                               (car kept) (string-width (car kept)) 1))
+                      (cdr kept))
+                t)))
+       (t
+        (let ((kept (seq-take lines limit)))
+          (cons (append (butlast kept)
+                        (list (concat
+                               (truncate-string-to-width
+                                (car (last kept)) (max 0 (1- width)))
+                               (propertize
+                                "…" 'face 'agent-shell-vertico-sidebar-detail))))
+                t)))))))
 
 (defun agent-shell-vertico-sidebar--snapshot-field (buffer field)
   "Return FIELD from BUFFER's current render snapshot, when available."
@@ -2243,12 +2321,19 @@ parent-child relationship."
                      (agent-shell-vertico-sidebar--title-display-text title)
                      title-width)))))
          (detail-text
-          (agent-shell-vertico-sidebar--detail-text-line snapshot))
-         (detail-line
-          (and detail-text
-               (cons (agent-shell-vertico-sidebar--fit detail-text
-                                                       content-width)
-                     t)))
+          (unless details-visible
+            (agent-shell-vertico-sidebar--detail-text-line snapshot)))
+         (expanded-detail
+          (when details-visible
+            (agent-shell-vertico-sidebar--expanded-detail-lines
+             buffer snapshot content-width)))
+         (detail-rows
+          (if details-visible
+              (mapcar (lambda (line) (cons line t)) (car expanded-detail))
+            (and detail-text
+                 (list (cons (agent-shell-vertico-sidebar--fit
+                              detail-text content-width)
+                             t)))))
          (project-line
           (when (not nested)
             (agent-shell-vertico-sidebar--flat-project-line
@@ -2260,7 +2345,9 @@ parent-child relationship."
     (agent-shell-vertico-sidebar--record-whole-text
      buffer whole-title title-lines
      (agent-shell-vertico-sidebar--detail-for snapshot)
-     (and detail-text (> (string-width detail-text) content-width)))
+     (if details-visible
+         (cdr expanded-detail)
+       (and detail-text (> (string-width detail-text) content-width))))
     (dolist (face (list (and (agent-shell-vertico-sidebar--unread-p buffer)
                              'agent-shell-vertico-sidebar-unread-title)
                         (and (agent-shell-vertico-sidebar--snoozed-p buffer)
@@ -2281,7 +2368,7 @@ parent-child relationship."
                                   age)))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
-            (when detail-line (list detail-line))
+            detail-rows
             (when project-line (list project-line))
             (when-let* ((line (agent-shell-vertico-sidebar--background-line
                                buffer content-width)))
@@ -3382,21 +3469,39 @@ space, as Claude Code cleans the lines of its transcript tail."
     (unless (string-empty-p line)
       line)))
 
-(defun agent-shell-vertico-sidebar--message-last-line (buffer)
-  "Return the last non-empty line of the message BUFFER is streaming.
+(defun agent-shell-vertico-sidebar--message-lines (text)
+  "Return the clean lines of TEXT, newest first, fence lines left out."
+  (delq nil
+        (mapcar (lambda (line)
+                  (unless (string-match-p "\\`[ \t]*```" line)
+                    (agent-shell-vertico-sidebar--clean-line line)))
+                (reverse (split-string text "\n")))))
 
-Only the newest chunks are joined, as many as hold a whole last line,
-so a long message costs no more than its end."
+(defun agent-shell-vertico-sidebar--message-tail (buffer count)
+  "Return the last COUNT non-empty lines of the message BUFFER is streaming.
+
+The lines come oldest first.  Only the newest chunks are joined, as many
+as hold COUNT whole lines, so a long message costs no more than its end."
   (let ((chunks (plist-get (agent-shell-vertico-sidebar--get buffer 'message)
                            :chunks))
-        (tail ""))
-    (while (and chunks
-                (not (string-match-p "\n[^\n]*[^[:space:]]" tail)))
-      (setq tail (concat (pop chunks) tail)))
-    (seq-some (lambda (line)
-                (unless (string-match-p "\\`[ \t]*```" line)
-                  (agent-shell-vertico-sidebar--clean-line line)))
-              (reverse (split-string tail "\n")))))
+        taken lines)
+    (while (and chunks (< (length lines) count))
+      (let ((chunk (pop chunks)))
+        (push chunk taken)
+        ;; Only a newline can complete another line.
+        (when (or (null chunks) (string-search "\n" chunk))
+          (let* ((tail (apply #'concat taken))
+                 (start (and chunks (string-search "\n" tail))))
+            ;; Before the first newline may be only the end of a line.
+            (setq lines (agent-shell-vertico-sidebar--message-lines
+                         (cond ((null chunks) tail)
+                               (start (substring tail (1+ start)))
+                               (t ""))))))))
+    (nreverse (seq-take lines count))))
+
+(defun agent-shell-vertico-sidebar--message-last-line (buffer)
+  "Return the last non-empty line of the message BUFFER is streaming."
+  (car (agent-shell-vertico-sidebar--message-tail buffer 1)))
 
 (defun agent-shell-vertico-sidebar--record-tool-call (buffer event)
   "Record a failed tool call in EVENT as BUFFER's newest entry."
@@ -4210,7 +4315,9 @@ the whole command runs there however it was called."
 
 (defun agent-shell-vertico-sidebar-toggle-session-details ()
   "Toggle metadata lines for the session at point.
-An expanded row also wraps the session's whole title."
+An expanded row also wraps the session's whole title, and its detail,
+which shows the last lines of the agent's message when it is the end of
+that message; see `agent-shell-vertico-sidebar-expanded-detail-lines'."
   (interactive)
   (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
     (unless (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)

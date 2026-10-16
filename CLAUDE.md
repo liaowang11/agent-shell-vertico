@@ -420,7 +420,12 @@ The `unread` slot is never an age: it is a place in the unread queue, which
 Titles stay one line, cut with `…`, unless
 `agent-shell-vertico-sidebar-wrap-titles` is set, so every row has one height.
 An expanded row (`TAB`) wraps its whole title instead, past
-`title-max-length` too, since expanding is asking for more. A row cut either
+`title-max-length` too, since expanding is asking for more. It wraps its
+detail too, in at most `agent-shell-vertico-sidebar-expanded-detail-lines`
+lines (`--expanded-detail-lines`), and when the detail is the end of the
+agent's message (`--detail-from-message-p`: the result, or `message`) it
+shows the message's last lines from `--message-tail`, dropping the oldest
+whole lines that do not fit; any other detail keeps its start. A row cut either
 way is recorded whole by `--record-whole-text` in `--whole-texts`, cleared
 each render, and read back by the title's tooltip and by `--echo-row` on
 `post-command-hook`, which says it once when point reaches the row, never
