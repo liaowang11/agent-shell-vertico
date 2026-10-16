@@ -144,7 +144,9 @@ for titles.  The unread count is left out when there is none.
 
 Hover the Needs input count to name the sessions waiting for input, and click
 it to run `agent-shell-vertico-sidebar-jump`; a click on the label still folds
-the section.  A project header reads the same way, `my-project · 4 · • 1`, and
+the section.  While a filter is on, the click only reaches the sessions the
+filter shows, which are the ones the tooltip names.
+A project header reads the same way, `my-project · 4 · • 1`, and
 when some of its sessions wait for you it ends in `✻ N` at the right edge.
 
 In the state view, and under the project view's Pinned header, the default
@@ -177,7 +179,7 @@ starting its agent session counts as working: its star is blue and spins.  A
 working star spins through Claude Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
 `agent-shell-vertico-sidebar-animate-busy` off it is a still `●`.  A session
 whose agent process has exited is a dot, `∙`.  Output you have not read makes
-the title bold and puts a `•` before the age, in the star's colour; it does not
+the title bold and puts a magenta `•` before the age; it does not
 change the colour or the section, so a finished turn nobody has read is
 Completed, exactly as in the agent view.  The dot is what tells an unread
 finished row from a read one, since the `priority` sort lists unread sessions
@@ -217,7 +219,12 @@ echo area, and hovering the title shows them in its tooltip.
 `p` peeks at the session at point: a window opens below the sidebar with what
 the session asks and the last message it wrote, and `r` there sends it a reply
 without leaving the list.  `RET` opens the session and `q` closes the peek.
-Peeking reads the session, so its unread mark goes.
+Peeking reads the session, so its unread mark goes.  When the session waits on
+a permission, `y` allows, `n` rejects (which also stops the session) and `!`
+always allows; when it asks a one-question form, a digit picks that option, and
+`d` declines any form.  `i` stops the session, as does replying `/stop`, and
+`g` redraws the peek.  Under Evil the keys are the same, with `I` also
+stopping the session and `gr` redrawing, since Evil's `g` is a prefix.
 
 `agent-shell-vertico-sidebar-toggle` shows a hidden sidebar without selecting
 its window and closes a visible sidebar; use
@@ -487,8 +494,8 @@ The `activity` metadata value is the age of the last observed agent event,
 not the time in state the title line shows; an actively streaming session
 therefore shows `now`.
 
-The sidebar has no mode line and no header line of its own: the section and
-project headers carry the counts.  Enable
+The sidebar has no mode line, and no header line except while a filter is on
+(see below): the section and project headers carry the counts.  Enable
 `agent-shell-vertico-sidebar-mode-line-mode` to put a "need you" count in
 every mode line, so it is visible while the sidebar is closed.  It counts the
 sessions waiting for a permission decision or a reply, pinned ones included
@@ -587,7 +594,8 @@ local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
 
 `d` (`gc` in Evil) dispatches a prompt, as Claude Code's dispatch box does: it
 starts a new session that works out of sight, its row appearing under Working
-at once with the prompt queued until the session can take it.  On a session
+at once with the prompt queued until the session can take it; a filter
+hiding that row is cleared, and the message says so.  On a session
 row the new session gets that row's project and agent; on a project header,
 that project and agent-shell's preferred agent; anywhere else, or with `C-u`,
 the project and then the agent are read, before the prompt.  In the prompt,
@@ -603,8 +611,10 @@ newest message, `a:cod` the start of the agent's name, `p:vertico` the project,
 and any other word the title, detail line, project or last prompt.  A side
 conversation and its parent are drawn together when either matches.  While a
 filter is on, the header line names it, every section and project is open and
-cannot be folded, and `S-TAB` steps between rows and details only.  Revealing a
-session the filter hides clears it, and the jumps (`o`, the numbered jumps,
+cannot be folded, and `S-TAB` steps between rows and details only.  A prefix
+with nothing after it, `s:` alone, filters nothing and is no filter.  Revealing
+or dispatching a session the filter hides clears it, and the
+jumps (`o`, the numbered jumps,
 next and previous session) still reach every session.
 
 ## Project-scoped shell commands
