@@ -1270,9 +1270,12 @@ keeps neither; `n:` is in the title or the last prompt, as Claude Code
 matches a name or an intent; `o:` is in the newest message, the result or
 the error, since only the newest message is kept; `a:` starts the agent's
 name, the prefix rule the agent narrowing keys use, though not their
-function, which takes a key character; `p:` is in the project name; free
-text is in the title, the detail line as `--detail-for` draws it, the
-project name or the last prompt. The snapshot answers all but the last
+function, which takes a key character; `p:` is in the project name; each
+free word, on its own, is in the title, the detail line as `--detail-for`
+draws it, the project name or the last prompt, so `3 done` keeps a session
+titled Done 3 and `fix s:done login` needs both `fix` and `login`. That
+differs from Claude Code, which matches the free words joined as one
+phrase; the user chose per-word. The snapshot answers all but the last
 prompt and the newest message, which are read from the session.
 `--render` calls `--forget-empty-section-folds` on every root before
 filtering, so a section the filter hides keeps its fold, then keeps a root

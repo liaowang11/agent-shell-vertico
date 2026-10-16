@@ -2943,8 +2943,9 @@ Words split on whitespace.  A word starting with a prefix of
 `--filter-prefixes', case aside, fills that field (`:state', `:name',
 `:output', `:agent', `:project'), and the last one wins; a prefix with
 nothing after it is ignored.  Every other word, an unknown prefix such
-as `g:x' included, joins the free `:text'.  Values are downcased,
-because every comparison ignores case."
+as `g:x' included, joins the free `:text', a list of words in the order
+typed, each matched on its own.  Values are downcased, because every
+comparison ignores case."
   (let (filter text)
     (dolist (word (split-string (or string "") "[[:space:]]+" t))
       (let ((word (downcase word)))
@@ -2958,8 +2959,7 @@ because every comparison ignores case."
                 (setq filter (plist-put filter field value))))
           (push word text))))
     (when text
-      (setq filter (plist-put filter :text
-                              (string-join (nreverse text) " "))))
+      (setq filter (plist-put filter :text (nreverse text))))
     filter))
 
 (defun agent-shell-vertico-sidebar--filter-has-p (value &rest texts)
@@ -3006,8 +3006,10 @@ comparison ignores case:
   every output a job recorded;
 - `:agent' starts the agent's name, as an agent narrowing key does;
 - `:project' is in the project name;
-- `:text' is in the title, the detail line as drawn, the project name
-  or the last prompt.
+- every word of `:text' is, on its own, in the title, the detail line
+  as drawn, the project name or the last prompt.  Claude Code matches
+  the free words joined as one phrase; here `3 done' keeps a session
+  titled Done 3.
 
 BUFFER's render snapshot answers what it holds; the last prompt and the
 newest message are read from the session."
@@ -3041,11 +3043,16 @@ newest message are read from the session."
                  (agent-shell-vertico-sidebar--filter-has-p
                   project (plist-get snapshot :project-name)))
              (or (null text)
-                 (agent-shell-vertico-sidebar--filter-has-p
-                  text (plist-get snapshot :title)
-                  (agent-shell-vertico-sidebar--detail-for snapshot)
-                  (plist-get snapshot :project-name)
-                  (prompt))))))))
+                 (let ((texts (list (plist-get snapshot :title)
+                                    (agent-shell-vertico-sidebar--detail-for
+                                     snapshot)
+                                    (plist-get snapshot :project-name)
+                                    (prompt))))
+                   (seq-every-p
+                    (lambda (word)
+                      (apply #'agent-shell-vertico-sidebar--filter-has-p
+                             word texts))
+                    text))))))))
 
 (defun agent-shell-vertico-sidebar--filter-roots (filter roots)
   "Return the ROOTS FILTER keeps: those with a match in their family.

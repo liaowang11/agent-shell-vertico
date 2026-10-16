@@ -17983,7 +17983,7 @@ burst that clears an unread mark is otherwise silent."
     (should (equal (plist-get filter :output) "tests"))
     (should (equal (plist-get filter :agent) "cod"))
     (should (equal (plist-get filter :project) "vert"))
-    (should (equal (plist-get filter :text) "foo bar"))))
+    (should (equal (plist-get filter :text) '("foo" "bar")))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-parse-drops-empty-and-unknown ()
   "A prefix with nothing after it is ignored; an unknown one is text."
@@ -17991,7 +17991,7 @@ burst that clears an unread mark is otherwise silent."
   (should-not (agent-shell-vertico-sidebar--filter-parse nil))
   (let ((filter (agent-shell-vertico-sidebar--filter-parse "s: g:x")))
     (should-not (plist-get filter :state))
-    (should (equal (plist-get filter :text) "g:x"))))
+    (should (equal (plist-get filter :text) '("g:x")))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-state-is-status-or-section ()
   "`s:' matches the status word or the session's own section, not STATE.
@@ -18052,6 +18052,31 @@ done too, yet `s:done' keeps neither."
       ;; Every part must match.
       (should-not (agent-shell-vertico-tests--filter-matches
                    "a:cod the store" all)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-free-words-match-alone ()
+  "Each free word matches on its own, anywhere and in any order.
+Claude Code matches the joined words as one phrase; here `3 done' keeps
+the session titled Done 3, and a prefix between two words still leaves
+both to match."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((all (list waiting working done-1 done-2 done-3 done-4 done-5)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "3 done" all)
+                     (list done-3)))
+      (should (equal (agent-shell-vertico-tests--filter-matches "DONE 3" all)
+                     (list done-3)))
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--last-user-message)
+                 (lambda (buffer)
+                   (pcase buffer
+                     ((pred (eq done-1)) "fix the login form")
+                     ((pred (eq done-2)) "fix the parser")
+                     ((pred (eq done-4)) "login page copy")))))
+        (should (equal (agent-shell-vertico-tests--filter-matches
+                        "fix s:done login" all)
+                       (list done-1)))
+        (should (equal (agent-shell-vertico-tests--filter-matches
+                        "login fix" all)
+                       (list done-1)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-output-matches-last-message ()
   "`o:' searches the agent's newest message."
