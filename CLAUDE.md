@@ -557,10 +557,26 @@ does not belong on the render path.
 `--peek-text` (title, status, age, NEEDS, the last message) into `*Agent
 Shell Peek*` and shows it in a side window on the sidebar's side, slot 1,
 which it selects. Showing the message is reading it, so it calls
-`--mark-seen`. `r` reads one line and sends it with `agent-shell-insert
-:submit t :no-focus t :shell-buffer`, so the reader stays in the peek; `RET`
-opens the session through `--display-session`. The peek remembers its session
-in `--peek-session` and refuses once that buffer is dead.
+`--mark-seen`. `r` reads one line and sends it with `--send-prompt`, so the
+reader stays in the peek; `RET` opens the session through
+`--display-session`. The peek remembers its session in `--peek-session` and
+refuses once that buffer is dead.
+
+**Sending a prompt from outside a shell.** Every prompt the package submits
+from a buffer that is not the session's goes through
+`agent-shell-vertico-sidebar--send-prompt`, which runs with the session
+current. Do not simplify that away: `agent-shell-insert` decides where text
+goes from the *current* buffer, and from anything but a shell buffer, with
+`agent-shell-prefer-viewport-interaction` set (as Bill has it), it hands the
+text to the viewport, which signals "Not yet supported" for `:submit` and
+`:no-focus`. That is how `r` in the peek failed. The helper calls the fork's
+`agent-shell--prompt-send`, the shell's own send: an idle session submits, a
+busy one steers or queues by `agent-shell-busy-submit-default-function`
+instead of failing with "Busy, try later", and a session with no ACP session
+yet submits once `prompt-ready` arrives. Without that function it falls back
+to `agent-shell-insert` from the shell buffer. The stub `agent-shell-insert`
+keeps upstream's viewport rule, so a caller submitting from the wrong buffer
+fails in the tests as it does for real.
 
 **Which session needs attention.** `--unread` is the second axis: a buffer to
 the time its unread output arrived, where presence is the whole record. It is

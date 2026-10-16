@@ -53,6 +53,8 @@
                   "agent-shell-vertico-transcript" (&optional select-project))
 (declare-function agent-shell-vertico-transcript--read-project
                   "agent-shell-vertico-transcript" ())
+(declare-function agent-shell--prompt-send "agent-shell-prompt-queue"
+                  (&rest args))
 (declare-function agent-shell--stop-reason-description "agent-shell"
                   (stop-reason))
 
@@ -5480,6 +5482,30 @@ message is reading it, so the session's unread mark goes."
       (user-error "The peeked session is gone"))
     session))
 
+(defun agent-shell-vertico-sidebar--send-prompt (session prompt)
+  "Send PROMPT to SESSION as if typed and submitted there, from anywhere.
+
+This is how the package submits a prompt from outside a shell buffer;
+the peek's reply goes through it.  It runs with SESSION current, and
+that is the point: `agent-shell-insert' decides where text goes from the
+current buffer, and from anything but a shell buffer, with
+`agent-shell-prefer-viewport-interaction' set, it hands the text to the
+viewport, which refuses to submit (\"Not yet supported\").
+
+The prompt goes through `agent-shell--prompt-send', the shell's own
+send, so a busy session steers or queues it as
+`agent-shell-busy-submit-default-function' says, rather than failing
+with \"Busy, try later\", and a session still starting submits it once
+it is ready.  Without that function, which lives in agent-shell's
+prompt queue, PROMPT is inserted and submitted with `agent-shell-insert'
+instead, which still works on an idle session.  Return what the chosen
+function returns."
+  (with-current-buffer session
+    (if (fboundp 'agent-shell--prompt-send)
+        (agent-shell--prompt-send :prompt prompt)
+      (agent-shell-insert :text prompt :submit t :no-focus t
+                          :shell-buffer session))))
+
 (defun agent-shell-vertico-sidebar-peek-reply ()
   "Send one prompt to the session the peek shows, staying in the peek."
   (interactive)
@@ -5490,8 +5516,7 @@ message is reading it, so the session's unread mark goes."
                          (agent-shell-vertico-sidebar--title session))))))
     (when (string-empty-p text)
       (user-error "Nothing to send"))
-    (agent-shell-insert :text text :submit t :no-focus t
-                        :shell-buffer session)
+    (agent-shell-vertico-sidebar--send-prompt session text)
     (message "Sent to %s" (buffer-name session))))
 
 (defun agent-shell-vertico-sidebar-peek-open ()

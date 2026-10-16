@@ -295,13 +295,52 @@ picker, it offers nothing when there is neither a session nor a shell."
   "The subagent whose notification is being dispatched, as upstream binds it.
 Non-nil only around a subagent's content; tests bind it to fake one.")
 
+(defvar agent-shell-test-calls nil
+  "Log of recorded calls, newest first, as (COMMAND BUFFER ARGS).
+Kept beside `agent-shell-test-last-command' for tests that need to see
+more than the last of several calls.")
+
+(defun agent-shell-test--log-call (command args)
+  "Record COMMAND with ARGS, run in the current buffer, as the last call."
+  (setq agent-shell-test-last-command command
+        agent-shell-test-last-buffer (current-buffer)
+        agent-shell-test-last-args args)
+  (push (list command (current-buffer) args) agent-shell-test-calls))
+
 (cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
   "Record an insertion of TEXT into SHELL-BUFFER.
-SUBMIT and NO-FOCUS are recorded with it, as upstream takes them."
+SUBMIT and NO-FOCUS are recorded with it, as upstream takes them.
+
+Upstream decides where the text goes from the current buffer: outside
+an `agent-shell-mode' buffer, with `agent-shell-prefer-viewport-interaction'
+set or a viewport current, it goes to the viewport, whose
+`agent-shell-viewport--show-buffer' signals \"Not yet supported\" for
+SUBMIT and NO-FOCUS.  The stub keeps that rule, so a caller that
+submits from the wrong buffer fails here as it does for real."
+  (when (and (not (derived-mode-p 'agent-shell-mode))
+             (or agent-shell-prefer-viewport-interaction
+                 (derived-mode-p 'agent-shell-viewport-edit-mode)
+                 (derived-mode-p 'agent-shell-viewport-view-mode)))
+    (when (or submit no-focus)
+      (error "Not yet supported")))
   (setq agent-shell-test-last-command 'agent-shell-insert
         agent-shell-test-last-buffer shell-buffer
         agent-shell-test-last-args (list :text text :submit submit
                                          :no-focus no-focus))
+  (push (list 'agent-shell-insert (current-buffer)
+              agent-shell-test-last-args)
+        agent-shell-test-calls)
+  nil)
+
+(cl-defun agent-shell--prompt-send (&key prompt disposition on-delivered)
+  "Record sending PROMPT to the shell in the current buffer.
+DISPOSITION and ON-DELIVERED are recorded with it, as upstream takes
+them.  Upstream submits, steers or queues by the shell's state; the stub
+only records which buffer it ran in."
+  (agent-shell-test--log-call
+   'agent-shell--prompt-send
+   (list :prompt prompt :disposition disposition
+         :on-delivered on-delivered))
   nil)
 
 (defun agent-shell-subagents ()

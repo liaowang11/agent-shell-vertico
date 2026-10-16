@@ -164,6 +164,7 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-last-command) nil)
                     ((symbol-value 'agent-shell-test-last-buffer) nil)
                     ((symbol-value 'agent-shell-test-last-args) nil)
+                    ((symbol-value 'agent-shell-test-calls) nil)
                     ((symbol-value 'agent-shell-test-last-target) nil)
                     ((symbol-value 'agent-shell-test-statuses) nil)
                     ((symbol-value 'agent-shell-test-project-names) nil)
@@ -4747,11 +4748,75 @@ showing a session, so folding it leaves nothing but headers."
                            (lambda (&rest _) "use main")))
                   (agent-shell-vertico-sidebar-peek-reply))
                 (should (eq agent-shell-test-last-command
-                            'agent-shell-insert))
+                            'agent-shell--prompt-send))
                 (should (eq agent-shell-test-last-buffer alpha))
-                (should (equal agent-shell-test-last-args
-                               '(:text "use main" :submit t :no-focus t))))
+                (should (equal (plist-get agent-shell-test-last-args :prompt)
+                               "use main"))
+                (should (eq (current-buffer) peek)))
             (kill-buffer peek)))))))
+
+(defun agent-shell-vertico-tests--peek-reply (session text)
+  "Peek at SESSION and reply TEXT from the peek, returning the peek buffer.
+The caller kills the buffer."
+  (with-current-buffer session
+    (agent-shell-vertico-sidebar-peek))
+  (let ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+    (with-current-buffer peek
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) text)))
+        (agent-shell-vertico-sidebar-peek-reply)))
+    peek))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-reply-when-viewport-preferred ()
+  "A reply from the peek reaches the shell when the viewport is preferred.
+`agent-shell-insert' sends text from anywhere but a shell buffer to the
+viewport, which cannot submit, so the reply is sent from the shell."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-prefer-viewport-interaction t)
+          peek)
+      (save-window-excursion
+        (unwind-protect
+            (progn
+              (setq peek (agent-shell-vertico-tests--peek-reply
+                          alpha "use main"))
+              (should (equal (car agent-shell-test-calls)
+                             (list 'agent-shell--prompt-send alpha
+                                   '(:prompt "use main" :disposition nil
+                                     :on-delivered nil)))))
+          (when (buffer-live-p peek) (kill-buffer peek)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-reply-to-a-busy-session ()
+  "A reply to a working session is handed to agent-shell to steer or queue.
+Inserting into a busy shell fails with \"Busy, try later\"; sending the
+prompt the way the shell's own send does leaves that choice to it."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'busy)))
+          peek)
+      (save-window-excursion
+        (unwind-protect
+            (progn
+              (setq peek (agent-shell-vertico-tests--peek-reply
+                          alpha "also check the docs"))
+              (should (eq agent-shell-test-last-command
+                          'agent-shell--prompt-send))
+              (should (eq agent-shell-test-last-buffer alpha))
+              (should-not (assq 'agent-shell-insert agent-shell-test-calls)))
+          (when (buffer-live-p peek) (kill-buffer peek)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-send-prompt-falls-back-to-insert ()
+  "Without the prompt queue's sender, the prompt is inserted and submitted.
+It is still inserted from the shell buffer, so the viewport preference
+cannot send it to the viewport."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((agent-shell-prefer-viewport-interaction t))
+      (cl-letf (((symbol-function 'agent-shell--prompt-send) nil))
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar--send-prompt alpha "go")))
+      (should (equal (car agent-shell-test-calls)
+                     (list 'agent-shell-insert alpha
+                           '(:text "go" :submit t :no-focus t))))
+      (should (eq agent-shell-test-last-buffer alpha)))))
 
 (ert-deftest agent-shell-vertico-sidebar-peek-is-bound-to-p ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "p"))
