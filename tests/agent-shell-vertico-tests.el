@@ -4803,12 +4803,45 @@ is a still disc, so a working mark still differs in shape."
                (:data . ((:tool-call . ((:status . "failed")
                                         (:title . "Edit x.el")))))))
       (should (equal (funcall detail) "✗ Edit x.el"))
-      ;; A tool call that worked is not news the line reports.
+      ;; A new tool call is the newest entry, as Claude Code's tail
+      ;; describes the latest tool use.
       (agent-shell-vertico-sidebar--handle-event
        alpha '((:event . tool-call-update)
-               (:data . ((:tool-call . ((:status . "completed")
+               (:data . ((:tool-call-id . "t1")
+                         (:tool-call . ((:status . "pending")
                                         (:title . "Read x.el")))))))
-      (should (equal (funcall detail) "✗ Edit x.el")))))
+      (should (equal (funcall detail) "Read x.el"))
+      ;; A later update of the call the line shows refreshes it.
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . tool-call-update)
+               (:data . ((:tool-call-id . "t1")
+                         (:tool-call . ((:status . "completed")
+                                        (:title . "Read x.el:1-40")))))))
+      (should (equal (funcall detail) "Read x.el:1-40"))
+      ;; A call started before newer text does not take the line back
+      ;; when it finishes.
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . tool-call-update)
+               (:data . ((:tool-call-id . "t2")
+                         (:tool-call . ((:status . "in_progress")
+                                        (:title . "grep foo")))))))
+      (agent-shell-vertico-tests--stream alpha "Found it.\n")
+      (should (equal (funcall detail) "Found it."))
+      (dolist (id '("t1" "t2"))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha `((:event . tool-call-update)
+                 (:data . ((:tool-call-id . ,id)
+                           (:tool-call . ((:status . "completed")
+                                          (:title . "done"))))))))
+      (should (equal (funcall detail) "Found it."))
+      ;; A subagent's tool call is not the session's.
+      (let ((agent-shell--subagent-group '("child")))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . tool-call-update)
+                 (:data . ((:tool-call-id . "t3")
+                           (:tool-call . ((:status . "pending")
+                                          (:title . "Read y.el"))))))))
+      (should (equal (funcall detail) "Found it.")))))
 
 (ert-deftest agent-shell-vertico-sidebar-age-is-time-in-the-state ()
   "The age starts when the session entered its band."

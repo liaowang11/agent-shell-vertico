@@ -401,8 +401,14 @@ from the flat view this line was first drawn in).
 NEEDS while blocked, the newest entry while active, `Failed: REASON` or
 `Stopped` for a turn that ended that way, and otherwise NEEDS, then the result,
 then the newest entry. The newest entry is the `detail` slot: `> PROMPT` from
-`input-submitted`, the symbol `message` while chunks stream, or `✗ TITLE` for a
-failed tool call (`--record-tool-call`); subagent events never touch it.
+`input-submitted`, the symbol `message` while chunks stream, a tool call's
+title, or `✗ TITLE` for a failed one (`--record-tool-call`); subagent events
+never touch it. A tool call is drawn as Claude Code's tail describes the
+latest tool use, whatever its status, but only its first titled update is a
+new entry: ACP updates a call as it runs, and one finishing after the agent
+wrote more is not newer than what it wrote. The `tool-calls` slot holds the
+turn's recorded ids, and `detail-tool-call` the one the line shows, which its
+later updates refresh.
 `message` is resolved when drawn by `--message-last-line`, which joins only as
 many of the newest chunks as hold a whole last line, so a long message costs no
 more than its end. In the project view `--detail-line` starts with the status

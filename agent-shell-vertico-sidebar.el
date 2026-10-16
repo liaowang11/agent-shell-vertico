@@ -410,10 +410,18 @@ period, and `:time', when the burst's latest update arrived.")
   (detail nil :documentation "\
 The newest entry in the session's transcript, as Claude Code's tail.
 
-A string, \"> \" before the prompt the reader submitted or \"✗ \" before
-a tool call that failed, or the symbol `message' when the newest entry
-is the agent's message, whose last line is read at render time from
-`message'.")
+A string, \"> \" before the prompt the reader submitted, a tool call's
+title, or \"✗ \" before a tool call that failed, or the symbol `message'
+when the newest entry is the agent's message, whose last line is read at
+render time from `message'.")
+  (tool-calls nil :documentation "\
+The ids of the tool calls the current turn has put in `detail'.
+
+ACP updates a tool call several times as it runs, and only its first
+titled update is a new entry: a call finishing after the agent has
+written more is not newer than what it wrote.")
+  (detail-tool-call nil :documentation "\
+The id of the tool call `detail' shows, so its later updates refresh it.")
   (message nil :documentation "\
 The newest agent message streamed into the session.
 
@@ -3468,7 +3476,8 @@ subagent says is not the message the session has for the reader."
       (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
         (setq entry (plist-put entry :chunks
                                (cons chunk (plist-get entry :chunks))))
-        (agent-shell-vertico-sidebar--set buffer 'detail 'message))
+        (agent-shell-vertico-sidebar--set buffer 'detail 'message)
+        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil))
       (agent-shell-vertico-sidebar--set buffer 'message entry)))))
 
 (defun agent-shell-vertico-sidebar--clean-line (text)
@@ -3521,15 +3530,34 @@ as hold COUNT whole lines, so a long message costs no more than its end."
   (car (agent-shell-vertico-sidebar--message-tail buffer 1)))
 
 (defun agent-shell-vertico-sidebar--record-tool-call (buffer event)
-  "Record a failed tool call in EVENT as BUFFER's newest entry."
-  (let ((call (map-nested-elt event '(:data :tool-call))))
-    (when (and (equal (map-elt call :status) "failed")
-               (not (agent-shell-vertico-sidebar--subagent-event-p)))
-      (agent-shell-vertico-sidebar--set
-       buffer 'detail
-       (concat "✗ " (or (agent-shell-vertico-sidebar--clean-line
-                         (map-elt call :title))
-                        "tool call"))))))
+  "Record the tool call in EVENT as BUFFER's newest entry, when it is.
+
+A failed call is drawn \"✗ TITLE\".  Any other call is its title, as
+Claude Code describes the latest tool use, on its first titled update
+only; later updates refresh the entry while it still shows that call.
+A subagent's tool calls are not the session's."
+  (let* ((data (map-elt event :data))
+         (id (map-elt data :tool-call-id))
+         (call (map-elt data :tool-call))
+         (title (agent-shell-vertico-sidebar--clean-line
+                 (map-elt call :title))))
+    (unless (agent-shell-vertico-sidebar--subagent-event-p)
+      (cond
+       ((equal (map-elt call :status) "failed")
+        (agent-shell-vertico-sidebar--set
+         buffer 'detail (concat "✗ " (or title "tool call")))
+        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil))
+       ((null title))
+       ((and id (equal id (agent-shell-vertico-sidebar--get
+                           buffer 'detail-tool-call)))
+        (agent-shell-vertico-sidebar--set buffer 'detail title))
+       ((not (member id (agent-shell-vertico-sidebar--get buffer 'tool-calls)))
+        (when id
+          (agent-shell-vertico-sidebar--set
+           buffer 'tool-calls
+           (cons id (agent-shell-vertico-sidebar--get buffer 'tool-calls))))
+        (agent-shell-vertico-sidebar--set buffer 'detail title)
+        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call id))))))
 
 (defun agent-shell-vertico-sidebar--detail-text (buffer)
   "Return BUFFER's newest entry as one line, or nil."
@@ -3708,6 +3736,8 @@ nobody has prompted, which asks the reader nothing yet."
         (when-let* ((prompt (agent-shell-vertico-sidebar--clean-line
                              (map-nested-elt event '(:data :prompt)))))
           (concat "> " prompt)))
+       (agent-shell-vertico-sidebar--set buffer 'tool-calls nil)
+       (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
       ('tool-call-update
