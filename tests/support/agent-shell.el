@@ -350,11 +350,90 @@ only records which buffer it ran in."
         agent-shell-test-last-buffer (current-buffer)))
 
 (defun agent-shell-interrupt (&optional force)
-  "Record an interrupt action, ignoring FORCE."
+  "Record an interrupt action and whether it was FORCE'd."
   (interactive)
-  (ignore force)
-  (setq agent-shell-test-last-command 'agent-shell-interrupt
-        agent-shell-test-last-buffer (current-buffer)))
+  (agent-shell-test--log-call 'agent-shell-interrupt (list :force force)))
+
+(cl-defun agent-shell--send-permission-response
+    (&key client request-id option-id cancelled state tool-call-id
+          message-text)
+  "Record a response to permission request REQUEST-ID.
+CLIENT, OPTION-ID, CANCELLED, STATE, TOOL-CALL-ID and MESSAGE-TEXT are
+recorded as upstream takes them.  Like upstream, the answered tool call
+in STATE loses its `:permission-request-id', so a request answered here
+is no longer pending; nothing else upstream does is copied, and no
+event is emitted."
+  (agent-shell-test--log-call
+   'agent-shell--send-permission-response
+   (list :client client :request-id request-id :option-id option-id
+         :cancelled cancelled :tool-call-id tool-call-id
+         :message-text message-text))
+  (when-let* ((tool-calls (map-elt state :tool-calls))
+              (tool-call (map-elt tool-calls tool-call-id)))
+    (map-put! tool-calls tool-call-id
+              (map-delete tool-call :permission-request-id))))
+
+;; Pure functions of agent-shell-elicitation.el, copied as they are so the
+;; package numbers a form's options exactly as upstream does.
+
+(defun agent-shell-elicitation--answerable (fields)
+  "Return FIELDS minus every companion folded into a select.
+A companion contributes through its select, so walking both would count
+one question twice."
+  (seq-remove (lambda (field) (map-elt field :folded-into)) fields))
+
+(defun agent-shell-elicitation--field (elicitation key)
+  "Return ELICITATION's field named KEY, or nil when it has none."
+  (seq-find (lambda (field) (equal (map-elt field :key) key))
+            (map-elt elicitation :fields)))
+
+(defun agent-shell-elicitation--option-controls (elicitation key)
+  "Return the controls of select KEY in ELICITATION, in numbered order.
+
+One per option, then one for the free-text answer when the question has
+one, built the way `agent-shell-elicitation--make-option-line' renders
+them, so point can find the one just picked."
+  (let* ((id (map-elt elicitation :id))
+         (field (agent-shell-elicitation--field elicitation key))
+         (action (if (eq (map-elt field :type) 'multi-select) 'toggle 'select)))
+    (append
+     (seq-map (lambda (option)
+                (list (cons :id id) (cons :key key)
+                      (cons :value (map-elt option :value))
+                      (cons :action action)))
+              (map-elt field :options))
+     (when-let* ((custom-key (map-elt field :custom-key))
+                 ((agent-shell-elicitation--field elicitation custom-key)))
+       (list (list (cons :id id) (cons :key custom-key)
+                   (cons :value nil) (cons :action 'custom)))))))
+
+(defun agent-shell-elicitation--perform (control &optional stay)
+  "Record doing what CONTROL says in the current buffer's form.
+STAY is recorded with it.  As upstream, a form that is not pending
+signals a `user-error'.  A pick stores the value, `custom' stores what
+`read-string' answers, and `submit' and `decline' settle the form with
+the status upstream gives it.  Nothing is rendered or sent."
+  (agent-shell-test--log-call 'agent-shell-elicitation--perform
+                              (list :control control :stay stay))
+  (let* ((forms (map-elt (and (boundp 'agent-shell--state)
+                              agent-shell--state)
+                         :elicitations))
+         (id (map-elt control :id))
+         (form (map-elt forms id)))
+    (unless (and form (eq (map-elt form :status) 'pending))
+      (user-error "This question is no longer awaiting an answer"))
+    (pcase (map-elt control :action)
+      ((or 'select 'custom)
+       (map-put! forms id
+                 (cons (cons :values
+                             (list (cons (map-elt control :key)
+                                         (if (eq (map-elt control :action)
+                                                 'custom)
+                                             (read-string "Answer: ")
+                                           (map-elt control :value)))))
+                       form)))
+      ('submit (map-put! forms id (cons (cons :status 'answered) form)))
+      ('decline (map-put! forms id (cons (cons :status 'declined) form))))))
 
 (defun agent-shell-set-session-mode (&optional on-success)
   "Record a set session mode action, ignoring ON-SUCCESS."

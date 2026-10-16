@@ -55,6 +55,16 @@
                   "agent-shell-vertico-transcript" ())
 (declare-function agent-shell--prompt-send "agent-shell-prompt-queue"
                   (&rest args))
+(declare-function agent-shell--permission-pending-p "agent-shell" (&rest args))
+(declare-function agent-shell--send-permission-response "agent-shell"
+                  (&rest args))
+(declare-function agent-shell-interrupt "agent-shell" (&optional force))
+(declare-function agent-shell-elicitation--answerable
+                  "agent-shell-elicitation" (fields))
+(declare-function agent-shell-elicitation--option-controls
+                  "agent-shell-elicitation" (elicitation key))
+(declare-function agent-shell-elicitation--perform
+                  "agent-shell-elicitation" (control &optional stay))
 (declare-function agent-shell--stop-reason-description "agent-shell"
                   (stop-reason))
 
@@ -1080,28 +1090,65 @@ the `error' event can report a turn as over before agent-shell says so."
 (defconst agent-shell-vertico-sidebar--new-needs "Send a prompt to start"
   "What a session nobody has prompted yet is waiting for.")
 
+(defun agent-shell-vertico-sidebar--pending-permission (buffer)
+  "Return BUFFER's pending permission request, or nil.
+
+The answer is (TOOL-CALL-ID . TOOL-CALL), for the newest tool call
+carrying a `:permission-request-id': agent-shell keeps the newest tool
+call first, and its own keys answer the latest request on screen, so
+this is the request a key pressed in the shell would answer."
+  (seq-find (lambda (entry)
+              (map-elt (cdr entry) :permission-request-id))
+            (map-elt (agent-shell-vertico--state buffer) :tool-calls)))
+
+(defun agent-shell-vertico-sidebar--permission-needs-text (call)
+  "Return what the permission request on tool CALL asks."
+  (concat "Allow: " (or (map-elt call :title) "a tool call")))
+
 (defun agent-shell-vertico-sidebar--permission-needs (buffer)
   "Return what BUFFER's pending permission request asks, or nil."
-  (when-let* ((call (seq-find (lambda (entry)
-                                (map-elt (cdr entry) :permission-request-id))
-                              (map-elt (agent-shell-vertico--state buffer)
-                                       :tool-calls))))
-    (concat "Allow: " (or (map-elt (cdr call) :title) "a tool call"))))
+  (when-let* ((call (agent-shell-vertico-sidebar--pending-permission buffer)))
+    (agent-shell-vertico-sidebar--permission-needs-text (cdr call))))
 
-(defun agent-shell-vertico-sidebar--elicitation-needs (buffer)
-  "Return what BUFFER's pending elicitation form asks, or nil.
+(defun agent-shell-vertico-sidebar--pending-form (buffer)
+  "Return BUFFER's newest pending elicitation form, or nil.
+
+Newest is the form asked last, which is what agent-shell's own form
+commands answer away from a form.  That order is read from
+`:active-requests', as agent-shell reads it: storing a form moves it to
+the front of `:elicitations', so that order says which was touched
+last.  A state with no such request falls back to the first pending
+entry of `:elicitations'."
+  (let* ((state (agent-shell-vertico--state buffer))
+         (forms (map-elt state :elicitations))
+         (pending (lambda (id)
+                    (let ((form (map-elt forms id)))
+                      (and (eq (map-elt form :status) 'pending) form)))))
+    (or (seq-some (lambda (request)
+                    (and (equal (map-elt request :method)
+                                "elicitation/create")
+                         (funcall pending (map-elt request :id))))
+                  (map-elt state :active-requests))
+        (cdr (seq-find (lambda (entry)
+                         (eq (map-elt (cdr entry) :status) 'pending))
+                       forms)))))
+
+(defun agent-shell-vertico-sidebar--form-question (state form)
+  "Return what elicitation FORM in session STATE asks.
 The form's message, or else the title of the tool call that raised it:
 agent-shell drops a message that repeats that title, which is how a
 single question arrives."
-  (let ((state (agent-shell-vertico--state buffer)))
-    (when-let* ((form (seq-find (lambda (entry)
-                                  (eq (map-elt (cdr entry) :status) 'pending))
-                                (map-elt state :elicitations))))
-      (or (map-elt (cdr form) :message)
-          (map-nested-elt state (list :tool-calls
-                                      (map-elt (cdr form) :tool-call-id)
-                                      :title))
-          "Answer a question"))))
+  (or (map-elt form :message)
+      (map-nested-elt state (list :tool-calls
+                                  (map-elt form :tool-call-id)
+                                  :title))
+      "Answer a question"))
+
+(defun agent-shell-vertico-sidebar--elicitation-needs (buffer)
+  "Return what BUFFER's pending elicitation form asks, or nil."
+  (when-let* ((form (agent-shell-vertico-sidebar--pending-form buffer)))
+    (agent-shell-vertico-sidebar--form-question
+     (agent-shell-vertico--state buffer) form)))
 
 (defun agent-shell-vertico-sidebar--job-state (buffer &optional status)
   "Return (STATE TEMPO NEEDS) for BUFFER, in Claude Code's terms.
@@ -4098,7 +4145,10 @@ snooze ends, since the agent cannot go on without the reader."
       (_ nil))
     (when (agent-shell-vertico-sidebar--out-of-turn-p buffer kind)
       (agent-shell-vertico-sidebar--note-out-of-turn buffer now))
-    (agent-shell-vertico-sidebar--schedule-refresh)))
+    (agent-shell-vertico-sidebar--schedule-refresh)
+    ;; agent-shell reduces a subscriber's error to a message; say whose.
+    (with-demoted-errors "agent-shell-vertico: redrawing the peek: %S"
+      (agent-shell-vertico-sidebar--peek-note-event buffer kind))))
 
 (defconst agent-shell-vertico-sidebar--subscription-refused 'refused
   "Marker recorded for a session that would not take a subscription.")
@@ -5397,37 +5447,251 @@ Pinning wakes a snoozed session, and snoozing unpins one."
 (defvar-local agent-shell-vertico-sidebar--peek-session nil
   "The session the peek buffer shows.")
 
+(defvar-local agent-shell-vertico-sidebar--peek-ask nil
+  "The pending request the peek drew, which its answer keys act on.
+A plist from `agent-shell-vertico-sidebar--peek-ask-for', or nil.")
+
+(defvar agent-shell-vertico-sidebar--peek-refresh-timer nil
+  "Idle timer redrawing the peek after its session's streamed output.")
+
+(defvar agent-shell-vertico-sidebar--peek-age-timer nil
+  "Timer keeping the peek's waiting age current while the peek is shown.")
+
+(defconst agent-shell-vertico-sidebar--peek-answer-keys
+  '("y" "n" "!" "d" "1" "2" "3" "4" "5" "6" "7" "8" "9")
+  "Keys `agent-shell-vertico-sidebar-peek-answer' is bound to.
+agent-shell's own: `y', `n' and `!' answer a permission request, a digit
+picks a form's option, and `d' declines a form.")
+
+(defconst agent-shell-vertico-sidebar--permission-keys
+  '(("allow_once" . "y") ("reject_once" . "n") ("allow_always" . "!"))
+  "The peek's key for each kind of permission option.
+
+These are agent-shell's own (`agent-shell--make-permission-action'),
+with one difference: agent-shell rejects with whatever key interrupts
+the shell, falling back to `n', and the peek has no interrupt key in
+common with the shell, so it always rejects with `n'.")
+
 (defvar agent-shell-vertico-sidebar-peek-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-peek-reply)
     (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-peek-open)
     (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-peek-open)
+    (define-key map (kbd "i") #'agent-shell-vertico-sidebar-peek-interrupt)
+    (define-key map (kbd "g") #'agent-shell-vertico-sidebar-peek-refresh)
+    (dolist (key agent-shell-vertico-sidebar--peek-answer-keys)
+      (define-key map key #'agent-shell-vertico-sidebar-peek-answer))
     (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `agent-shell-vertico-sidebar-peek-mode'.")
+
+(defun agent-shell-vertico-sidebar--cancel-peek-timers ()
+  "Cancel the timers that redraw the peek."
+  (dolist (symbol '(agent-shell-vertico-sidebar--peek-refresh-timer
+                    agent-shell-vertico-sidebar--peek-age-timer))
+    (when (timerp (symbol-value symbol))
+      (cancel-timer (symbol-value symbol)))
+    (set symbol nil)))
 
 (define-derived-mode agent-shell-vertico-sidebar-peek-mode special-mode
   "Agent-Shell-Peek"
   "Major mode for the window showing one session's question and message."
   (setq-local truncate-lines nil
-              mode-line-format nil)
+              mode-line-format nil
+              revert-buffer-function
+              (lambda (&rest _) (agent-shell-vertico-sidebar--peek-refresh)))
   (visual-line-mode 1)
+  (add-hook 'kill-buffer-hook #'agent-shell-vertico-sidebar--cancel-peek-timers
+            nil t)
   (when (fboundp 'evil-local-set-key)
     (dolist (state '(normal motion))
       (evil-local-set-key state (kbd "r")
                           #'agent-shell-vertico-sidebar-peek-reply)
       (evil-local-set-key state (kbd "RET")
                           #'agent-shell-vertico-sidebar-peek-open)
+      (dolist (key '("i" "I"))
+        (evil-local-set-key state (kbd key)
+                            #'agent-shell-vertico-sidebar-peek-interrupt))
+      (dolist (key agent-shell-vertico-sidebar--peek-answer-keys)
+        (evil-local-set-key state (kbd key)
+                            #'agent-shell-vertico-sidebar-peek-answer))
       (evil-local-set-key state (kbd "q") #'quit-window))))
 
-(defun agent-shell-vertico-sidebar--peek-text (buffer)
-  "Return what the peek shows for session BUFFER."
+(defun agent-shell-vertico-sidebar--permission-ask (tool-call-id call)
+  "Return the peek's ask for the permission request on tool CALL.
+TOOL-CALL-ID names CALL.  Each option keeps agent-shell's order and its
+key, the first option of a kind only, as agent-shell keys them.  For a
+request the agent marks `defaultToNo', agent-shell gives the allow
+options no key at all, so a stray key cannot approve; the peek keys
+them but asks first."
+  (let ((default-to-no (map-elt call :permission-default-to-no))
+        seen choices)
+    (dolist (action (map-elt call :permission-actions))
+      (let ((kind (map-elt action :kind)))
+        (push (list :key (unless (member kind seen)
+                           (map-elt agent-shell-vertico-sidebar--permission-keys
+                                    kind))
+                    :label (map-elt action :option)
+                    :action action
+                    :confirm (and default-to-no
+                                  (member kind '("allow_once" "allow_always"))
+                                  t))
+              choices)
+        (push kind seen)))
+    (list :kind 'permission
+          :tool-call-id tool-call-id
+          :request-id (map-elt call :permission-request-id)
+          :title (or (map-elt call :title) "a tool call")
+          :needs (agent-shell-vertico-sidebar--permission-needs-text call)
+          :reason (and default-to-no (map-elt call :permission-description))
+          :choices (nreverse choices))))
+
+(defun agent-shell-vertico-sidebar--form-question-field (form)
+  "Return the one question of elicitation FORM the peek answers, or nil.
+
+The peek answers a form asking a single pick-one question.  Questions
+are counted as agent-shell counts them, with
+`agent-shell-elicitation--answerable', since a free-text answer arrives
+as a field of its own folded into the select it answers."
+  (when (and (fboundp 'agent-shell-elicitation--answerable)
+             (fboundp 'agent-shell-elicitation--option-controls)
+             (fboundp 'agent-shell-elicitation--perform))
+    (let ((fields (agent-shell-elicitation--answerable
+                   (map-elt form :fields))))
+      (and (= (length fields) 1)
+           (eq (map-elt (car fields) :type) 'single-select)
+           (car fields)))))
+
+(defun agent-shell-vertico-sidebar--form-option-label (form field control)
+  "Return how the peek names option CONTROL of FIELD in FORM.
+An option by its title, the free-text answer by its heading and what
+has been typed into it, as agent-shell draws them."
+  (if (eq (map-elt control :action) 'custom)
+      (let* ((key (map-elt control :key))
+             (custom (seq-find (lambda (each) (equal (map-elt each :key) key))
+                               (map-elt form :fields)))
+             (heading (or (map-elt custom :title) key))
+             (typed (map-nested-elt form (list :values key))))
+        (if typed (format "%s: %s" heading typed) heading))
+    (let ((option (seq-find (lambda (option)
+                              (equal (map-elt option :value)
+                                     (map-elt control :value)))
+                            (map-elt field :options))))
+      (format "%s" (or (map-elt option :title) (map-elt control :value))))))
+
+(defun agent-shell-vertico-sidebar--form-ask (state form)
+  "Return the peek's ask for elicitation FORM in session STATE.
+Its options are numbered as agent-shell numbers them, from
+`agent-shell-elicitation--option-controls', when the peek can answer
+the form at all."
+  (let* ((field (agent-shell-vertico-sidebar--form-question-field form))
+         (controls (and field
+                        (agent-shell-elicitation--option-controls
+                         form (map-elt field :key)))))
+    (list :kind 'form
+          :id (map-elt form :id)
+          :needs (agent-shell-vertico-sidebar--form-question state form)
+          :answerable (and field t)
+          :choices (seq-map-indexed
+                    (lambda (control index)
+                      (list :key (and (< index 9)
+                                      (number-to-string (1+ index)))
+                            :label
+                            (agent-shell-vertico-sidebar--form-option-label
+                             form field control)
+                            :control control))
+                    controls))))
+
+(defun agent-shell-vertico-sidebar--peek-ask-for (buffer)
+  "Return the pending request the peek shows for session BUFFER, or nil.
+
+A permission request comes before a form, as in the session's NEEDS,
+and within each the newest, which is the one agent-shell's own keys
+answer.  The answer is a plist: `:kind' is `permission' or `form',
+`:needs' what it asks, `:choices' the options with their `:key' and
+`:label', and `:more' how many other requests wait behind it."
+  (let* ((state (agent-shell-vertico--state buffer))
+         (waiting (+ (seq-count (lambda (entry)
+                                  (map-elt (cdr entry) :permission-request-id))
+                                (map-elt state :tool-calls))
+                     (seq-count (lambda (entry)
+                                  (eq (map-elt (cdr entry) :status) 'pending))
+                                (map-elt state :elicitations))))
+         (ask (if-let* ((call (agent-shell-vertico-sidebar--pending-permission
+                               buffer)))
+                  (agent-shell-vertico-sidebar--permission-ask
+                   (car call) (cdr call))
+                (when-let* ((form (agent-shell-vertico-sidebar--pending-form
+                                   buffer)))
+                  (agent-shell-vertico-sidebar--form-ask state form)))))
+    (and ask (append ask (list :more (max 0 (1- waiting)))))))
+
+(defun agent-shell-vertico-sidebar--peek-ask-text (ask)
+  "Return the lines the peek draws for ASK."
+  (let ((detail 'agent-shell-vertico-sidebar-detail))
+    (concat
+     (propertize (plist-get ask :needs)
+                 'face 'agent-shell-vertico-sidebar-blocked)
+     "\n"
+     (when-let* ((reason (plist-get ask :reason)))
+       (concat (propertize reason 'face 'agent-shell-vertico-sidebar-blocked)
+               "\n"))
+     (if (and (eq (plist-get ask :kind) 'form)
+              (not (plist-get ask :answerable)))
+         (concat (propertize
+                  "More than one question · RET to answer in the session"
+                  'face detail)
+                 "\n")
+       (mapconcat (lambda (choice)
+                    (concat "  "
+                            (propertize (or (plist-get choice :key) " ")
+                                        'face 'help-key-binding)
+                            "  "
+                            (plist-get choice :label)
+                            (and (plist-get choice :confirm)
+                                 (propertize " · asks first" 'face detail))
+                            "\n"))
+                  (plist-get ask :choices) ""))
+     (when (> (plist-get ask :more) 0)
+       (concat (propertize (format "+%d more · RET open" (plist-get ask :more))
+                           'face detail)
+               "\n")))))
+
+(defun agent-shell-vertico-sidebar--peek-footer (ask)
+  "Return the peek's key help, naming the keys ASK offers."
+  (let ((keys (delq nil (mapcar (lambda (choice) (plist-get choice :key))
+                                (plist-get ask :choices)))))
+    (string-join
+     (delq nil
+           (list (pcase (plist-get ask :kind)
+                   ('permission (and keys (concat (string-join keys " ")
+                                                  " answer")))
+                   ('form
+                    (concat (cond ((cdr keys)
+                                   (format "1-%d answer · " (length keys)))
+                                  (keys "1 answer · "))
+                            "d decline")))
+                 "r reply" "i stop" "RET open" "q close"))
+     " · ")))
+
+(defun agent-shell-vertico-sidebar--peek-text (buffer &optional ask)
+  "Return what the peek shows for session BUFFER.
+ASK is the pending request it draws, from
+`agent-shell-vertico-sidebar--peek-ask-for', or nil for none."
   (let* ((snapshot (agent-shell-vertico-sidebar--session-snapshot buffer))
          (needs (plist-get snapshot :needs))
+         ;; The detail line of a waiting session is its NEEDS, which the
+         ;; ask block already says.
          (message (or (agent-shell-vertico-sidebar--last-message buffer)
-                      (agent-shell-vertico-sidebar--detail-for snapshot)))
-         (age (agent-shell-vertico-sidebar--age-text snapshot)))
+                      (unless ask
+                        (agent-shell-vertico-sidebar--detail-for snapshot))))
+         (since (or (plist-get snapshot :waiting-since)
+                    (agent-shell-vertico-sidebar--state-since snapshot)))
+         (waiting (and (or ask needs) since
+                       (agent-shell-vertico-sidebar--relative-time since)))
+         (age (unless waiting
+                (agent-shell-vertico-sidebar--age-text snapshot))))
     (concat
      (propertize (agent-shell-vertico-sidebar--title buffer) 'face 'bold)
      " · "
@@ -5436,8 +5700,13 @@ Pinning wakes a snoozed session, and snoozing unpins one."
                  'face (agent-shell-vertico-sidebar--mark-face snapshot))
      (and age (concat " · " age))
      "\n"
-     (and needs
-          (concat (propertize needs 'face 'agent-shell-vertico-sidebar-blocked)
+     (cond (ask (agent-shell-vertico-sidebar--peek-ask-text ask))
+           (needs (concat (propertize
+                           needs 'face 'agent-shell-vertico-sidebar-blocked)
+                          "\n")))
+     (and waiting
+          (concat (propertize (concat "waiting " waiting)
+                              'face 'agent-shell-vertico-sidebar-blocked)
                   "\n"))
      "\n"
      (propertize "Last message" 'face 'agent-shell-vertico-sidebar-section)
@@ -5446,8 +5715,105 @@ Pinning wakes a snoozed session, and snoozing unpins one."
          (string-trim message)
        (propertize "Nothing yet" 'face 'agent-shell-vertico-sidebar-detail))
      "\n\n"
-     (propertize "r reply · RET open · q close"
+     (propertize (agent-shell-vertico-sidebar--peek-footer ask)
                  'face 'agent-shell-vertico-sidebar-detail))))
+
+(defun agent-shell-vertico-sidebar--peek-render ()
+  "Draw the current peek buffer's session into it, from scratch."
+  (let ((session agent-shell-vertico-sidebar--peek-session)
+        (inhibit-read-only t))
+    (erase-buffer)
+    (if (buffer-live-p session)
+        (let ((ask (agent-shell-vertico-sidebar--peek-ask-for session)))
+          (setq agent-shell-vertico-sidebar--peek-ask ask)
+          (insert (agent-shell-vertico-sidebar--peek-text session ask)))
+      (setq agent-shell-vertico-sidebar--peek-ask nil)
+      (insert "Session ended\n\n"
+              (propertize "q close"
+                          'face 'agent-shell-vertico-sidebar-detail)))))
+
+(defun agent-shell-vertico-sidebar--peek-position (position)
+  "Return POSITION in the current buffer as (LINE . COLUMN)."
+  (save-excursion
+    (goto-char position)
+    (cons (line-number-at-pos) (current-column))))
+
+(defun agent-shell-vertico-sidebar--peek-restore (place)
+  "Return the position nearest PLACE, a (LINE . COLUMN), in the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- (car place)))
+    (move-to-column (cdr place))
+    (point)))
+
+(defun agent-shell-vertico-sidebar--peek-refresh ()
+  "Redraw the peek from its session, keeping point where it was.
+
+Point and each window's point and start keep their line and column, so
+a reader partway down the last message stays there.  Redrawing is not
+reading, so the session's unread mark is left alone."
+  (when-let* ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+    (with-current-buffer peek
+      (let ((here (agent-shell-vertico-sidebar--peek-position (point)))
+            (windows
+             (mapcar (lambda (window)
+                       (list window
+                             (agent-shell-vertico-sidebar--peek-position
+                              (window-point window))
+                             (agent-shell-vertico-sidebar--peek-position
+                              (window-start window))))
+                     (get-buffer-window-list peek nil t))))
+        (agent-shell-vertico-sidebar--peek-render)
+        (goto-char (agent-shell-vertico-sidebar--peek-restore here))
+        (pcase-dolist (`(,window ,point ,start) windows)
+          (set-window-start window
+                            (agent-shell-vertico-sidebar--peek-restore start)
+                            t)
+          (set-window-point window
+                            (agent-shell-vertico-sidebar--peek-restore
+                             point)))))))
+
+(defun agent-shell-vertico-sidebar-peek-refresh ()
+  "Redraw the peek from its session."
+  (interactive)
+  (agent-shell-vertico-sidebar--peek-refresh))
+
+(defconst agent-shell-vertico-sidebar--peek-refresh-events
+  '(permission-request permission-response elicitation-request
+                       elicitation-response input-submitted turn-complete error)
+  "Events that redraw the peek at once: they change what the session asks.
+Every other event of the peeked session, a streamed chunk above all,
+redraws it once things go idle.")
+
+(defun agent-shell-vertico-sidebar--peek-note-event (buffer kind)
+  "Redraw the peek if it shows BUFFER, which has had an event of KIND."
+  (when-let* ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer))
+              ((eq (buffer-local-value
+                    'agent-shell-vertico-sidebar--peek-session peek)
+                   buffer)))
+    (if (memq kind agent-shell-vertico-sidebar--peek-refresh-events)
+        (agent-shell-vertico-sidebar--peek-refresh)
+      (unless (timerp agent-shell-vertico-sidebar--peek-refresh-timer)
+        (setq agent-shell-vertico-sidebar--peek-refresh-timer
+              (run-with-idle-timer
+               0.5 nil
+               (lambda ()
+                 (setq agent-shell-vertico-sidebar--peek-refresh-timer nil)
+                 (agent-shell-vertico-sidebar--peek-refresh))))))))
+
+(defun agent-shell-vertico-sidebar--ensure-peek-age-refresh ()
+  "Keep the peek's waiting age current for as long as the peek is shown.
+The sidebar's own minute timer runs only while the sidebar is visible,
+and the peek also opens from a session buffer."
+  (unless (timerp agent-shell-vertico-sidebar--peek-age-timer)
+    (setq agent-shell-vertico-sidebar--peek-age-timer
+          (run-with-timer
+           30 30
+           (lambda ()
+             (let ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+               (if (and peek (get-buffer-window peek t))
+                   (agent-shell-vertico-sidebar--peek-refresh)
+                 (agent-shell-vertico-sidebar--cancel-peek-timers))))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-peek ()
@@ -5463,17 +5829,16 @@ message is reading it, so the session's unread mark goes."
     (with-current-buffer buffer
       (agent-shell-vertico-sidebar-peek-mode)
       (setq agent-shell-vertico-sidebar--peek-session session)
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (agent-shell-vertico-sidebar--peek-text session))
-        (goto-char (point-min))))
+      (agent-shell-vertico-sidebar--peek-render)
+      (goto-char (point-min)))
     (agent-shell-vertico-sidebar--mark-seen session)
     (when-let* ((window (display-buffer-in-side-window
                          buffer
                          `((side . ,agent-shell-vertico-sidebar-side)
                            (slot . 1)
                            (window-height . 0.35)))))
-      (select-window window))))
+      (select-window window)
+      (agent-shell-vertico-sidebar--ensure-peek-age-refresh))))
 
 (defun agent-shell-vertico-sidebar--peek-target ()
   "Return the live session the peek buffer shows, or signal a user error."
@@ -5514,10 +5879,120 @@ function returns."
                 (read-string
                  (format "Reply to %s: "
                          (agent-shell-vertico-sidebar--title session))))))
-    (when (string-empty-p text)
-      (user-error "Nothing to send"))
-    (agent-shell-vertico-sidebar--send-prompt session text)
-    (message "Sent to %s" (buffer-name session))))
+    (cond
+     ((string-empty-p text) (user-error "Nothing to send"))
+     ;; Claude Code's peek stops a job on /stop.  A session with nothing
+     ;; running is not sent the text either: agent-shell has no /stop.
+     ((equal text "/stop")
+      (unless (memq (agent-shell-vertico-sidebar--raw-status session)
+                    '(busy blocked background))
+        (user-error "Nothing to stop"))
+      (agent-shell-vertico-sidebar-peek-interrupt))
+     (t
+      (agent-shell-vertico-sidebar--send-prompt session text)
+      (message "Sent to %s" (buffer-name session))))))
+
+(defun agent-shell-vertico-sidebar-peek-interrupt ()
+  "Stop the session the peek shows, as `agent-shell-interrupt' does.
+agent-shell's own confirmation setting applies."
+  (interactive)
+  (agent-shell-vertico-interrupt-session
+   (agent-shell-vertico-sidebar--peek-target))
+  (agent-shell-vertico-sidebar--peek-refresh))
+
+(defun agent-shell-vertico-sidebar--peek-answer-permission
+    (session ask choice)
+  "Answer permission request ASK of SESSION with CHOICE.
+
+As agent-shell's own prompt: rejecting also stops the session, since the
+agent does not know why it was refused.  An option that asks first
+does so before anything is sent, and the request is checked to be still
+pending only after that, because it can be answered in the shell, or
+cancelled by an interrupt, while the question waits."
+  (unless (and (fboundp 'agent-shell--send-permission-response)
+               (fboundp 'agent-shell--permission-pending-p))
+    (user-error "This agent-shell cannot answer from the peek"))
+  (let ((action (plist-get choice :action))
+        (tool-call-id (plist-get ask :tool-call-id))
+        (request-id (plist-get ask :request-id)))
+    (when (or (not (plist-get choice :confirm))
+              (y-or-n-p (format "%s %s? " (plist-get choice :label)
+                                (plist-get ask :title))))
+      (unless (equal (agent-shell--permission-pending-p
+                      :shell-buffer session :tool-call-id tool-call-id)
+                     request-id)
+        (agent-shell-vertico-sidebar--peek-refresh)
+        (user-error "That request was already answered"))
+      (let ((state (agent-shell-vertico--state session)))
+        ;; The response needs no particular buffer, but the interrupt
+        ;; acts on the current one.
+        (with-current-buffer session
+          (agent-shell--send-permission-response
+           :client (map-elt state :client)
+           :request-id request-id
+           :option-id (map-elt action :option-id)
+           :state state
+           :tool-call-id tool-call-id
+           :message-text (format "Selected: %s" (map-elt action :option)))
+          (when (equal (map-elt action :kind) "reject_once")
+            (agent-shell-interrupt t)))))))
+
+(defun agent-shell-vertico-sidebar--peek-perform (session ask control
+                                                          &optional submit)
+  "Run form CONTROL on ASK of SESSION, then submit the form if SUBMIT.
+Both run with SESSION current, which is the buffer agent-shell's form
+commands act on, and leave point in the shell where it was."
+  (unless (fboundp 'agent-shell-elicitation--perform)
+    (user-error "This agent-shell cannot answer from the peek"))
+  (let ((id (plist-get ask :id)))
+    (unless (eq (map-nested-elt (agent-shell-vertico--state session)
+                                (list :elicitations id :status))
+                'pending)
+      (agent-shell-vertico-sidebar--peek-refresh)
+      (user-error "That question was already answered"))
+    (with-current-buffer session
+      (agent-shell-elicitation--perform control t)
+      (when submit
+        (agent-shell-elicitation--perform
+         (list (cons :id id) (cons :key nil) (cons :value nil)
+               (cons :action 'submit))
+         t)))))
+
+(defun agent-shell-vertico-sidebar-peek-answer (key)
+  "Answer the request the peek shows with KEY, as agent-shell's prompt does.
+
+A permission request takes `y' to allow, `n' to reject, which also
+stops the session, and `!' to always allow.  A form asking one pick-one
+question takes its option's number, and `d' declines any form.  KEY
+answers the request the peek drew, never one that arrived since; the
+peek redraws once it is answered."
+  (interactive (list (key-description (vector last-command-event))))
+  (let* ((session (agent-shell-vertico-sidebar--peek-target))
+         (ask (or agent-shell-vertico-sidebar--peek-ask
+                  (user-error "Nothing here waits on an answer")))
+         (choice (seq-find (lambda (choice)
+                             (equal (plist-get choice :key) key))
+                           (plist-get ask :choices))))
+    (unless (agent-shell-vertico-sidebar--live-p session)
+      (user-error "The session's agent is not running"))
+    (pcase (plist-get ask :kind)
+      ('permission
+       (unless choice
+         (user-error "No option on %s" key))
+       (agent-shell-vertico-sidebar--peek-answer-permission
+        session ask choice))
+      ('form
+       (cond
+        ((equal key "d")
+         (agent-shell-vertico-sidebar--peek-perform
+          session ask (list (cons :id (plist-get ask :id)) (cons :key nil)
+                            (cons :value nil) (cons :action 'decline))))
+        ((not (plist-get ask :answerable))
+         (user-error "Answer this form in the session: RET opens it"))
+        ((not choice) (user-error "No option %s" key))
+        (t (agent-shell-vertico-sidebar--peek-perform
+            session ask (plist-get choice :control) t)))))
+    (agent-shell-vertico-sidebar--peek-refresh)))
 
 (defun agent-shell-vertico-sidebar-peek-open ()
   "Open the session the peek shows, and close the peek."

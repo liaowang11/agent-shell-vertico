@@ -4818,6 +4818,437 @@ cannot send it to the viewport."
                            '(:text "go" :submit t :no-focus t))))
       (should (eq agent-shell-test-last-buffer alpha)))))
 
+;;; Answering from the peek
+
+(defconst agent-shell-vertico-tests--permission-actions
+  '(((:label . "Allow (y)") (:option . "Allow") (:char . "y")
+     (:kind . "allow_once") (:option-id . "allow"))
+    ((:label . "Reject (C-c C-c)") (:option . "Reject") (:char . "C-c C-c")
+     (:kind . "reject_once") (:option-id . "reject"))
+    ((:label . "Always Allow (!)") (:option . "Always Allow") (:char . "!")
+     (:kind . "allow_always") (:option-id . "always")))
+  "A permission request's actions as agent-shell sorts and keys them.")
+
+(defun agent-shell-vertico-tests--permission-call (id request title
+                                                      &rest extra)
+  "Return tool call ID waiting on permission REQUEST to run TITLE.
+EXTRA is more of the tool call's fields, as conses; they come first, so
+they win over the defaults."
+  (cons id (append extra
+                   (list (cons :title title)
+                         (cons :permission-request-id request)
+                         (cons
+                          :permission-actions
+                          agent-shell-vertico-tests--permission-actions)))))
+
+(defun agent-shell-vertico-tests--asking-state (&rest fields)
+  "Return a fresh, mutable session state with FIELDS beside its session.
+The stubs answer a request the way upstream does, by changing the state,
+so a state they are given must not be a quoted constant."
+  (copy-tree
+   (append (list (cons :session '((:id . "a") (:title . "Review alpha")))
+                 (cons :client '((:name . "client"))))
+           fields)))
+
+(defmacro agent-shell-vertico-tests--with-peek (state &rest body)
+  "Peek at ALPHA, whose state is STATE, and run BODY in the peek buffer.
+ALPHA is blocked and listed; `peek' names the peek buffer."
+  (declare (indent 1) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/" ,state))
+     (let ((agent-shell-test-statuses (list (cons alpha 'blocked)))
+           (agent-shell-test-buffers (list alpha)))
+       (save-window-excursion
+         (with-current-buffer alpha
+           (agent-shell-vertico-sidebar-peek))
+         (let ((peek (get-buffer agent-shell-vertico-sidebar--peek-buffer)))
+           (unwind-protect
+               (with-current-buffer peek
+                 ,@body)
+             (when (buffer-live-p peek)
+               (kill-buffer peek))))))))
+
+(defun agent-shell-vertico-tests--peek-string ()
+  "Return the peek buffer's text."
+  (with-current-buffer agent-shell-vertico-sidebar--peek-buffer
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun agent-shell-vertico-tests--calls-of (command)
+  "Return the logged calls of COMMAND, oldest first, as (BUFFER ARGS)."
+  (mapcar #'cdr (seq-filter (lambda (call) (eq (car call) command))
+                            (reverse agent-shell-test-calls))))
+
+(defun agent-shell-vertico-tests--sent-permission (field)
+  "Return FIELD of the first permission response the stub recorded."
+  (plist-get (cadr (car (agent-shell-vertico-tests--calls-of
+                         'agent-shell--send-permission-response)))
+             field))
+
+(defun agent-shell-vertico-tests--answer-elsewhere (buffer tool-call-id)
+  "Answer BUFFER's request on TOOL-CALL-ID as if from the shell."
+  (with-current-buffer buffer
+    (setf (alist-get :permission-request-id
+                     (alist-get tool-call-id
+                                (alist-get :tool-calls agent-shell--state)
+                                nil nil #'equal))
+          nil)))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-lists-permission-options ()
+  "The peek keys a permission request's options as agent-shell keys them."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should (string-match-p "^Allow: Run make$" text))
+      (should (string-match-p "^  y +Allow$" text))
+      (should (string-match-p "^  n +Reject$" text))
+      (should (string-match-p "^  ! +Always Allow$" text))
+      (should (string-match-p "y n ! answer" text))
+      (should-not (string-match-p "more" text))
+      ;; Said once, not again as the last message.
+      (should (string-match-p "^Last message\nNothing yet$" text)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-allows-the-shown-request ()
+  "y allows the request on screen, in the session, and redraws the peek."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (agent-shell-vertico-sidebar-peek-answer "y")
+    (should (equal (agent-shell-vertico-tests--calls-of
+                    'agent-shell--send-permission-response)
+                   `((,alpha (:client ((:name . "client")) :request-id "r1"
+                              :option-id "allow" :cancelled nil
+                              :tool-call-id "tc1"
+                              :message-text "Selected: Allow")))))
+    (should-not (agent-shell-vertico-tests--calls-of 'agent-shell-interrupt))
+    (should-not (string-match-p "^  y +Allow$"
+                                (agent-shell-vertico-tests--peek-string)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-reject-also-stops ()
+  "n rejects the request and stops the session, as agent-shell's prompt does."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (agent-shell-vertico-sidebar-peek-answer "n")
+    (should (equal (mapcar (lambda (call) (list (car call) (cadr call)))
+                           (reverse agent-shell-test-calls))
+                   `((agent-shell--send-permission-response ,alpha)
+                     (agent-shell-interrupt ,alpha))))
+    (should (equal (plist-get (nth 2 (car (last agent-shell-test-calls)))
+                              :option-id)
+                   "reject"))
+    (should (equal (nth 2 (car agent-shell-test-calls)) '(:force t)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-shows-the-newest-request ()
+  "With several requests the peek shows the newest, as agent-shell answers.
+The rest are counted, and the next one is shown once that is answered."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls
+             (agent-shell-vertico-tests--permission-call
+              "tc2" "r2" "Run tests")
+             (agent-shell-vertico-tests--permission-call
+              "tc1" "r1" "Run make")))
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should (string-match-p "^Allow: Run tests$" text))
+      (should (string-match-p "^\\+1 more" text)))
+    (agent-shell-vertico-sidebar-peek-answer "y")
+    (should (equal (agent-shell-vertico-tests--sent-permission :request-id)
+                   "r2"))
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should (string-match-p "^Allow: Run make$" text))
+      (should-not (string-match-p "more" text)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-refuses-an-answered-request ()
+  "A request answered elsewhere since the peek drew it is not answered again."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (agent-shell-vertico-tests--answer-elsewhere alpha "tc1")
+    (should (string-match-p
+             "already answered"
+             (cadr (should-error (agent-shell-vertico-sidebar-peek-answer "y")
+                                 :type 'user-error))))
+    (should-not agent-shell-test-calls)
+    (should-not (string-match-p "^  y +Allow$"
+                                (agent-shell-vertico-tests--peek-string)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-key-without-an-option ()
+  "A key the drawn request does not offer sends nothing."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (should-error (agent-shell-vertico-sidebar-peek-answer "1")
+                  :type 'user-error)
+    (should-error (agent-shell-vertico-sidebar-peek-answer "d")
+                  :type 'user-error)
+    (should-not agent-shell-test-calls)))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-default-to-no-asks-first ()
+  "A request that defaults to no is allowed only after a y-or-n question.
+Its reason is shown, and the request is checked again after the
+question, since it can be answered in the shell while the question waits."
+  (let ((actions (list (nth 1 agent-shell-vertico-tests--permission-actions)
+                       (nth 0 agent-shell-vertico-tests--permission-actions)
+                       (nth 2 agent-shell-vertico-tests--permission-actions))))
+    (agent-shell-vertico-tests--with-peek
+        (agent-shell-vertico-tests--asking-state
+         (list :tool-calls
+               (agent-shell-vertico-tests--permission-call
+                "tc1" "r1" "Delete build"
+                (cons :permission-default-to-no t)
+                (cons :permission-description "Removes every file")
+                (cons :permission-actions actions))))
+      (let ((text (agent-shell-vertico-tests--peek-string)))
+        (should (string-match-p "^Removes every file$" text))
+        (should (string-match-p "^  n +Reject\n  y +Allow · asks first$"
+                                text)))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+        (agent-shell-vertico-sidebar-peek-answer "y"))
+      (should-not agent-shell-test-calls)
+      ;; Answered in the shell while the question waited.
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (&rest _)
+                   (agent-shell-vertico-tests--answer-elsewhere alpha "tc1")
+                   t)))
+        (should-error (agent-shell-vertico-sidebar-peek-answer "y")
+                      :type 'user-error))
+      (should-not agent-shell-test-calls))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-default-to-no-allows-on-yes ()
+  "Saying yes to the question allows a request that defaults to no."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls
+             (agent-shell-vertico-tests--permission-call
+              "tc1" "r1" "Delete build"
+              (cons :permission-default-to-no t))))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+      (agent-shell-vertico-sidebar-peek-answer "y"))
+    (should (equal (agent-shell-vertico-tests--sent-permission :option-id)
+                   "allow"))))
+
+(defun agent-shell-vertico-tests--colour-form (id &rest fields)
+  "Return pending form ID asking which colour, with FIELDS.
+With no FIELDS, it is one single-select question with a free-text answer."
+  (cons id
+        (list (cons :id id)
+              (cons :status 'pending)
+              (cons :message "Which colour?")
+              (cons :fields
+                    (or fields
+                        (list (list (cons :key "q0") (cons :title "Colour")
+                                    (cons :type 'single-select)
+                                    (cons :custom-key "q0_custom")
+                                    (cons :options
+                                          (list (list (cons :value "red")
+                                                      (cons :title "Red"))
+                                                (list (cons :value "blue")
+                                                      (cons :title "Blue")))))
+                              (list (cons :key "q0_custom")
+                                    (cons :title "Other")
+                                    (cons :type 'string)
+                                    (cons :folded-into "q0"))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-answers-a-one-question-form ()
+  "A form asking one question is answered by its option's number.
+The pick and the submit both run in the session, leaving point there."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :elicitations (agent-shell-vertico-tests--colour-form 7))
+       (list :active-requests
+             (list (cons :method "elicitation/create") (cons :id 7))))
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should (string-match-p "^Which colour\\?$" text))
+      (should (string-match-p "^  1 +Red$" text))
+      (should (string-match-p "^  2 +Blue$" text))
+      (should (string-match-p "^  3 +Other$" text))
+      (should (string-match-p "1-3 answer · d decline" text)))
+    (agent-shell-vertico-sidebar-peek-answer "2")
+    (should (equal (agent-shell-vertico-tests--calls-of
+                    'agent-shell-elicitation--perform)
+                   `((,alpha (:control ((:id . 7) (:key . "q0")
+                                        (:value . "blue") (:action . select))
+                              :stay t))
+                     (,alpha (:control ((:id . 7) (:key) (:value)
+                                        (:action . submit))
+                              :stay t)))))
+    (should-not (string-match-p "Which colour"
+                                (agent-shell-vertico-tests--peek-string)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-declines-a-form ()
+  "d declines the form on screen."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :elicitations (agent-shell-vertico-tests--colour-form 7)))
+    (agent-shell-vertico-sidebar-peek-answer "d")
+    (should (equal (agent-shell-vertico-tests--calls-of
+                    'agent-shell-elicitation--perform)
+                   `((,alpha (:control ((:id . 7) (:key) (:value)
+                                        (:action . decline))
+                              :stay t)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-leaves-longer-forms-alone ()
+  "A form asking more than one question is answered in the session."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :elicitations
+             (agent-shell-vertico-tests--colour-form
+              7
+              (list (cons :key "q0") (cons :type 'single-select)
+                    (cons :options (list (list (cons :value "red")))))
+              (list (cons :key "q1") (cons :type 'string)))))
+    (let ((text (agent-shell-vertico-tests--peek-string)))
+      (should (string-match-p "^Which colour\\?$" text))
+      (should (string-match-p "RET to answer in the session" text))
+      (should-not (string-match-p "^  1 " text)))
+    (should (string-match-p
+             "RET"
+             (cadr (should-error (agent-shell-vertico-sidebar-peek-answer "1")
+                                 :type 'user-error))))
+    (should-not (agent-shell-vertico-tests--calls-of
+                 'agent-shell-elicitation--perform))))
+
+(ert-deftest agent-shell-vertico-sidebar-needs-names-the-newest-form ()
+  "NEEDS names the form asked last, the one the peek and agent-shell answer.
+agent-shell stores a touched form at the front of `:elicitations', so the
+order it was asked in is read from `:active-requests'."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--asking-state
+               (list :elicitations
+                     (list 1 (cons :id 1) (cons :status 'pending)
+                           (cons :message "First?"))
+                     (list 2 (cons :id 2) (cons :status 'pending)
+                           (cons :message "Second?")))
+               (list :active-requests
+                     (list (cons :method "elicitation/create") (cons :id 2))
+                     (list (cons :method "session/prompt") (cons :id 0))
+                     (list (cons :method "elicitation/create")
+                           (cons :id 1))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'blocked))))
+      (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                     '(done blocked "Second?"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-shows-the-waiting-age ()
+  "A peek at a session that waits says for how long; one that does not, not."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (agent-shell-vertico-sidebar--set alpha 'waiting-since
+                                      (- (float-time) 125))
+    (agent-shell-vertico-sidebar--peek-refresh)
+    (should (string-match-p "^waiting 2m$"
+                            (agent-shell-vertico-tests--peek-string)))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  (agent-shell-vertico-tests--asking-state)))
+    (setq agent-shell-test-statuses (list (cons alpha 'ready)))
+    (agent-shell-vertico-sidebar--peek-refresh)
+    (should-not (string-match-p "waiting"
+                                (agent-shell-vertico-tests--peek-string)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-follows-the-session-events ()
+  "The peek redraws on its session's events that change what it asks.
+Streamed chunks wait for an idle moment, and other sessions are ignored."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (agent-shell-vertico-tests--answer-elsewhere alpha "tc1")
+    (unwind-protect
+        (progn
+          (with-current-buffer alpha
+            (agent-shell-vertico-tests--stream alpha "Working on it"))
+          (should (string-match-p "^  y +Allow$"
+                                  (agent-shell-vertico-tests--peek-string)))
+          (with-temp-buffer
+            (agent-shell-vertico-sidebar--handle-event
+             (current-buffer) '((:event . permission-response))))
+          (should (string-match-p "^  y +Allow$"
+                                  (agent-shell-vertico-tests--peek-string)))
+          ;; agent-shell runs its subscribers with the shell current.
+          (with-current-buffer alpha
+            (agent-shell-vertico-sidebar--handle-event
+             alpha '((:event . permission-response))))
+          (should-not (string-match-p
+                       "^  y +Allow$"
+                       (agent-shell-vertico-tests--peek-string))))
+      (when (timerp agent-shell-vertico-sidebar--peek-refresh-timer)
+        (cancel-timer agent-shell-vertico-sidebar--peek-refresh-timer)
+        (setq agent-shell-vertico-sidebar--peek-refresh-timer nil)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-refresh-keeps-point ()
+  "Redrawing the peek leaves point on the line it was on."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (goto-char (point-min))
+    (search-forward "Last message")
+    (forward-char -4)
+    (let ((line (line-number-at-pos))
+          (column (current-column)))
+      (agent-shell-vertico-sidebar--peek-refresh)
+      (should (= (line-number-at-pos) line))
+      (should (= (current-column) column)))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-stop-reply-stops ()
+  "Replying /stop stops a session that is working or waiting."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state)
+    (setq agent-shell-test-statuses (list (cons alpha 'busy)))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) " /stop ")))
+      (agent-shell-vertico-sidebar-peek-reply))
+    (should (equal (mapcar #'car agent-shell-test-calls)
+                   '(agent-shell-interrupt)))
+    (should (eq agent-shell-test-last-buffer alpha))
+    (setq agent-shell-test-calls nil
+          agent-shell-test-statuses (list (cons alpha 'ready)))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "/stop")))
+      (should-error (agent-shell-vertico-sidebar-peek-reply)
+                    :type 'user-error))
+    (should-not agent-shell-test-calls)))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-i-stops ()
+  "i in the peek stops the session it shows."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state)
+    (agent-shell-vertico-sidebar-peek-interrupt)
+    (should (equal (mapcar (lambda (call) (list (car call) (cadr call)))
+                           agent-shell-test-calls)
+                   `((agent-shell-interrupt ,alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-keys ()
+  "The peek answers with agent-shell's keys and stops with i."
+  (dolist (key '("y" "n" "!" "d" "1" "9"))
+    (should (eq (lookup-key agent-shell-vertico-sidebar-peek-mode-map key)
+                #'agent-shell-vertico-sidebar-peek-answer)))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-peek-mode-map "i")
+              #'agent-shell-vertico-sidebar-peek-interrupt))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-peek-mode-map "g")
+              #'agent-shell-vertico-sidebar-peek-refresh)))
+
+(ert-deftest agent-shell-vertico-sidebar-peek-on-an-ended-session ()
+  "Once its session is gone the peek says so and answers nothing."
+  (agent-shell-vertico-tests--with-peek
+      (agent-shell-vertico-tests--asking-state
+       (list :tool-calls (agent-shell-vertico-tests--permission-call
+                          "tc1" "r1" "Run make")))
+    (kill-buffer alpha)
+    (agent-shell-vertico-sidebar--peek-refresh)
+    (should (string-match-p "^Session ended"
+                            (agent-shell-vertico-tests--peek-string)))
+    (should-error (agent-shell-vertico-sidebar-peek-answer "y")
+                  :type 'user-error)
+    (should-not agent-shell-test-calls)))
+
 (ert-deftest agent-shell-vertico-sidebar-peek-is-bound-to-p ()
   (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "p"))
               #'agent-shell-vertico-sidebar-peek))

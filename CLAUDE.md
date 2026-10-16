@@ -369,7 +369,13 @@ the three fields Claude Code keeps for every job: STATE (`working`,
 `blocked`, `done`, `failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
 reader is asked: `Allow: TITLE` from the pending tool call, a pending
 elicitation form's question (`--elicitation-needs`), or the `needs input:`
-line). They are derived from the status rather than stored, so the two
+line). The request named is the newest of its kind, the one agent-shell's own
+keys answer: `--pending-permission` takes the first tool call carrying a
+`:permission-request-id`, since agent-shell keeps the newest first, and
+`--pending-form` the newest `elicitation/create` in `:active-requests`, since
+storing a form moves it to the front of `:elicitations`. The peek reads the
+same two functions, so the row and the peek never name different requests.
+They are derived from the status rather than stored, so the two
 cannot disagree. A session nobody has prompted follows Claude Code's rule: it
 is working and blocked, with NEEDS `Send a prompt to start`, so it is filed in
 the attention band and drawn yellow. A shell the reader has just opened asks
@@ -561,6 +567,54 @@ which it selects. Showing the message is reading it, so it calls
 reader stays in the peek; `RET` opens the session through
 `--display-session`. The peek remembers its session in `--peek-session` and
 refuses once that buffer is dead.
+
+**Answering from the peek.** Bill's rule is that the peek answers as
+agent-shell's own prompt does, so it keys what it shows the way agent-shell
+keys it: a permission request takes `y` (allow), `n` (reject) and `!` (always
+allow), by option kind, the first option of a kind only; a form takes a digit
+per option, numbered by agent-shell's `--option-controls`, and `d` declines.
+agent-shell rejects with whatever key interrupts the shell, falling back to
+`n`; the peek always uses `n`. Rejecting also stops the session with
+`(agent-shell-interrupt t)`, as agent-shell's prompt does. A request the agent
+marks `defaultToNo` gets no key for its allow options in agent-shell, so a
+stray key cannot approve; the peek keeps the keys but asks `y-or-n-p` first
+(`· asks first`), and shows the request's reason. The peek draws one request,
+`--peek-ask-for`'s answer stored in `--peek-ask`: a permission before a form,
+the newest of each (see the job fields), with `+N more` for the rest. A key
+answers that drawn request, never one that arrived since, and the request is
+checked to be still pending after any confirmation and right before sending,
+because the shell, or an interrupt, can answer it while `y-or-n-p` waits.
+Permissions go through the internal `agent-shell--send-permission-response`:
+the public responder hook runs before a request is drawn, and pressing the
+shell's button keymap cannot name a request. It needs no particular buffer,
+but the interrupt after a reject does, so both run with the session current.
+A form is answered from the peek only when it asks one pick-one question,
+counted with agent-shell's `--answerable` (a free-text answer arrives as a
+companion field folded into its select, so counting fields would refuse every
+AskUserQuestion); a digit runs `agent-shell-elicitation--perform` with the
+pick and then with `submit`, both with the session current because that is
+the buffer `--perform` acts on. agent-shell's form waits for `y` after a pick;
+the peek submits at once, as its permission keys do. Any other form says to
+answer it in the session, and only `d` works on it. The peek draws `waiting
+AGE` while the session waits, from the `waiting-since` slot (restamped by each
+request, so it ages from the newest, which is the one drawn). `i`, and `I` in
+evil, stops the session through `agent-shell-vertico-interrupt-session`, so
+agent-shell's confirmation applies; a reply of `/stop` does the same when the
+session is busy, blocked or in the background and is refused otherwise, as
+agent-shell has no `/stop` to send. Whether a `session/cancel` outside a turn
+stops background work is the agent's business. The peek redraws itself:
+`--handle-event` ends with `--peek-note-event`, which redraws at once on the
+events that change what the session asks and coalesces the rest, streamed
+chunks above all, on a half-second idle timer. agent-shell runs subscribers
+with the shell current and reduces their errors to a message, so the redraw
+switches to the peek itself and is wrapped in `with-demoted-errors`.
+`--peek-refresh` keeps point and every window's point and start by line and
+column, draws `Session ended` once the session is gone, and is bound to `g`
+(and is the peek's `revert-buffer-function`). The sidebar's minute timer runs
+only while the sidebar is visible, so the peek has its own 30-second timer,
+running while the peek is shown. A request that arrives while the peek is the
+selected window still marks the session unread and notifies: the peek is not
+the session, and `--session-focused-p` is left as it is.
 
 **Sending a prompt from outside a shell.** Every prompt the package submits
 from a buffer that is not the session's goes through
