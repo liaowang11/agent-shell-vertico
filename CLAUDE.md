@@ -658,7 +658,12 @@ session is busy, blocked or in the background and is refused otherwise, as
 agent-shell has no `/stop` to send. Both refuse a session whose agent is not
 `--live-p`, as the answer keys do: the cancel goes through
 `acp-send-notification`, which starts a client that is not running, so it
-would bring a dead agent back for a session it never had.
+would bring a dead agent back for a session it never had. The guard that
+covers every interrupt is in the core's `agent-shell-vertico-interrupt-session`,
+which asks `agent-shell-vertico--agent-live-p` (`--live-p` delegates to it, so
+the core never requires the sidebar): the sidebar's `i`/`I`, the jump's `i`
+and the Embark `i` all go through it. The peek still asks first, because
+`/stop` is refused on the same answer before it reaches that command.
 Whether a `session/cancel` outside a turn
 stops background work is the agent's business. The peek redraws itself:
 `--handle-event` ends with `--peek-note-event`, which redraws at once on the

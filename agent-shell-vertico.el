@@ -1329,12 +1329,27 @@ Call this only after Embark is loaded."
                         (agent-shell-vertico--session-buffer buffer))
     (call-interactively #'agent-shell-view-traffic)))
 
+(defun agent-shell-vertico--agent-live-p (buffer)
+  "Return nil when BUFFER's agent process has started and is gone.
+
+A session with no client yet, or a client not started yet, is live:
+only a process that ran and stopped says the agent is gone."
+  (let* ((client (map-elt (agent-shell-vertico--state buffer) :client))
+         (process (and client (map-elt client :process))))
+    (or (null process) (process-live-p process))))
+
 (defun agent-shell-vertico-interrupt-session (buffer)
-  "Interrupt BUFFER."
+  "Interrupt BUFFER.
+A session whose agent process has exited is refused: the cancel goes
+through acp, which starts a client to send it, so the interrupt would
+start a new agent instead of stopping one."
   (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
-  (with-current-buffer (agent-shell-vertico--ensure-shell-buffer
-                        (agent-shell-vertico--session-buffer buffer))
-    (call-interactively #'agent-shell-interrupt)))
+  (let ((shell (agent-shell-vertico--ensure-shell-buffer
+                (agent-shell-vertico--session-buffer buffer))))
+    (unless (agent-shell-vertico--agent-live-p shell)
+      (user-error "The session's agent is not running"))
+    (with-current-buffer shell
+      (call-interactively #'agent-shell-interrupt))))
 
 (defun agent-shell-vertico-set-session-mode (buffer)
   "Set session mode for BUFFER."

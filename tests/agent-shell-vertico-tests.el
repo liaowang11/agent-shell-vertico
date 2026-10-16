@@ -8012,6 +8012,49 @@ which buffer it runs in is the whole of its behaviour."
       (should (eq agent-shell-test-last-command 'agent-shell-restart))
       (should (eq agent-shell-test-last-buffer alpha)))))
 
+(ert-deftest agent-shell-vertico-interrupt-session-refuses-a-dead-agent ()
+  "Interrupting a session whose agent process has exited is refused.
+The cancel goes through acp, which starts a client to send it, so a
+dead agent would be started again.  A live agent is interrupted."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:client . ((:process . fake-proc))))))
+    (let ((agent-shell-test-calls nil)
+          (live nil))
+      (cl-letf (((symbol-function 'process-live-p)
+                 (lambda (_process) live)))
+        (should (string-match-p
+                 "agent is not running"
+                 (cadr (should-error
+                        (agent-shell-vertico-interrupt-session
+                         (buffer-name alpha))
+                        :type 'user-error))))
+        (should-not (agent-shell-vertico-tests--calls-of
+                     'agent-shell-interrupt))
+        (setq live t)
+        (agent-shell-vertico-interrupt-session (buffer-name alpha))
+        (should (equal (mapcar #'car (agent-shell-vertico-tests--calls-of
+                                      'agent-shell-interrupt))
+                       (list alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-interrupt-refuses-a-dead-agent ()
+  "The sidebar's `I' and the jump's `i' refuse a session whose agent exited."
+  (agent-shell-vertico-tests--with-background
+      '((:client . ((:process . fake-proc))))
+    (let ((agent-shell-test-calls nil))
+      (cl-letf (((symbol-function 'process-live-p) #'ignore))
+        (should-error (agent-shell-vertico-tests--sidebar-action
+                       #'agent-shell-vertico-sidebar-interrupt)
+                      :type 'user-error)
+        (should-error (funcall
+                       (car (alist-get
+                             ?i
+                             agent-shell-vertico-sidebar-jump-dispatch-alist))
+                       alpha)
+                      :type 'user-error))
+      (should-not (agent-shell-vertico-tests--calls-of
+                   'agent-shell-interrupt)))))
+
 (ert-deftest agent-shell-vertico-new-shell-dispatches-to-agent-shell-new-shell ()
   (agent-shell-vertico-new-shell)
   (should (eq agent-shell-test-last-command 'agent-shell-new-shell)))

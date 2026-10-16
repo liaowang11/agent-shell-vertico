@@ -1003,7 +1003,8 @@ session actions follow `agent-shell-manager` closely:
 - `r` restart the selected shell
 - `t` view traffic
 - `T` open transcript
-- `i` interrupt session
+- `i` interrupt session (refused once its agent process has exited, since
+  the cancel would start a new one)
 - `m` set session mode
 - `M` set session model
 - `C` rename the session (needs an agent with the sessionIndex extension)

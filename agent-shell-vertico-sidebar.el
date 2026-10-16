@@ -1500,12 +1500,8 @@ their places.  See
 
 (defun agent-shell-vertico-sidebar--live-p (buffer)
   "Return nil when BUFFER's agent process has started and is gone.
-
-A session with no client yet, or a client not started yet, is live:
-only a process that ran and stopped says the agent is gone."
-  (let* ((client (map-elt (agent-shell-vertico--state buffer) :client))
-         (process (and client (map-elt client :process))))
-    (or (null process) (process-live-p process))))
+See `agent-shell-vertico--agent-live-p', which answers it."
+  (agent-shell-vertico--agent-live-p buffer))
 
 (defconst agent-shell-vertico-sidebar--exited-error "Agent process exited"
   "Why a session failed when its agent process is gone and nothing said.")
@@ -4623,7 +4619,9 @@ With a mouse EVENT, move to the clicked position before dispatching."
    #'agent-shell-vertico-restart-session))
 
 (defun agent-shell-vertico-sidebar-interrupt ()
-  "Interrupt the session at point."
+  "Interrupt the session at point.
+A session whose agent process has exited is refused, as
+`agent-shell-vertico-interrupt-session' refuses it."
   (interactive)
   (agent-shell-vertico-sidebar--call-session-action
    #'agent-shell-vertico-interrupt-session))
