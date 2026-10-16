@@ -1354,7 +1354,11 @@ the magenta of a row's dot, which wins over the section's colour."
       (let ((refresh-prefix (cdr (assoc "g" bindings))))
         (should (keymapp refresh-prefix))
         (should (eq (lookup-key refresh-prefix (kbd "r"))
-                    #'agent-shell-vertico-sidebar-refresh)))
+                    #'agent-shell-vertico-sidebar-refresh))
+        (should (eq (lookup-key refresh-prefix (kbd "h"))
+                    #'agent-shell-vertico-sidebar-resume-past)))
+      ;; The two-key entries are reached through the `g' prefix alone.
+      (should-not (assoc "gh" bindings))
       (should (eq (cdr (assoc "gr"
                               agent-shell-vertico-sidebar--evil-bindings))
                   #'agent-shell-vertico-sidebar-refresh)))))
@@ -1374,6 +1378,124 @@ the magenta of a row's dot, which wins over the section's colour."
            (let ((key (key-description (vector ?\C-c event))))
              (should (eq (cdr (assoc key bindings)) command)))))
        agent-shell-vertico-sidebar-action-map))))
+
+(defmacro agent-shell-vertico-tests--capturing-resume (&rest body)
+  "Evaluate BODY recording what the sidebar's resume command asked for.
+`roots' collects the project roots passed to the per-project reader,
+`everywhere' the argument lists passed to the all-projects reader."
+  (declare (indent 0) (debug t))
+  `(let (roots everywhere)
+     (cl-letf (((symbol-function
+                 'agent-shell-vertico-transcript--resume-project-root)
+                (lambda (root) (push root roots)))
+               ((symbol-function 'agent-shell-vertico-transcript-resume)
+                (lambda (&rest args) (push args everywhere))))
+       ,@body)))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-uses-row-project ()
+  "On a session row, past sessions are read from that session's project."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-tests--capturing-resume
+          (should (agent-shell-vertico-sidebar--goto-node
+                   (cons 'session beta)))
+          (agent-shell-vertico-sidebar-resume-past)
+          (should (equal roots '("/work/beta/")))
+          (should-not everywhere))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-uses-project-header ()
+  "On a project header, past sessions are read from that project."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'project))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-tests--capturing-resume
+          (goto-char (point-min))
+          (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                      'project))
+          (agent-shell-vertico-sidebar-resume-past)
+          (should (equal roots '("/work/alpha/"))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-header-uses-mru-window ()
+  "On a section header, the session in the window used last decides."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Review beta"))))))
+    (let ((agent-shell-test-buffers (list alpha beta))
+          (original (selected-window))
+          (original-buffer (window-buffer (selected-window))))
+      (unwind-protect
+          (agent-shell-vertico-tests--capturing-resume
+            (set-window-buffer original beta)
+            (agent-shell-vertico-sidebar-focus)
+            (goto-char (point-min))
+            (should (eq (agent-shell-vertico-sidebar--node-kind-at-point)
+                        'section))
+            (agent-shell-vertico-sidebar-resume-past)
+            (should (equal roots '("/work/beta/"))))
+        (when (window-live-p original)
+          (select-window original)
+          (set-window-buffer original original-buffer))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-reads-a-project ()
+  "With no session at point or in the last window, a project is read."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-tests--capturing-resume
+          (cl-letf (((symbol-function 'get-mru-window)
+                     (lambda (&rest _args) nil))
+                    ((symbol-function
+                      'agent-shell-vertico-transcript--read-project)
+                     (lambda () "/picked/")))
+            (goto-char (point-min))
+            (agent-shell-vertico-sidebar-resume-past)
+            (should (equal roots '("/picked/")))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-prefix-reads-everywhere ()
+  "A prefix argument searches every project rather than asking for one."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha)))
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-tests--capturing-resume
+          (should (agent-shell-vertico-sidebar--goto-node
+                   (cons 'session alpha)))
+          (agent-shell-vertico-sidebar-resume-past '(4))
+          (should (equal everywhere '((nil))))
+          (should-not roots))))))
+
+(ert-deftest agent-shell-vertico-sidebar-resume-past-is-bound ()
+  "`H' resumes in both maps, `gh' under Evil, and the help names it."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "H"))
+                #'agent-shell-vertico-sidebar-resume-past)))
+  (should (eq (cdr (assoc "gh" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-resume-past))
+  (should-not (assoc "H" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (lookup-key agent-shell-vertico-sidebar--evil-g-map (kbd "h"))
+              #'agent-shell-vertico-sidebar-resume-past))
+  (should (string-match-p "^  H (gh) "
+                          (agent-shell-vertico-sidebar--help-text))))
 
 (ert-deftest agent-shell-vertico-sidebar-hides-mode-line ()
   (with-temp-buffer

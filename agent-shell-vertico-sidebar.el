@@ -47,6 +47,12 @@
 (declare-function dired-other-window "dired" (dirname))
 (declare-function agent-shell-subagents "agent-shell-subagents" ())
 (declare-function agent-shell-insert "agent-shell" (&rest args))
+(declare-function agent-shell-vertico-transcript--resume-project-root
+                  "agent-shell-vertico-transcript" (project-root))
+(declare-function agent-shell-vertico-transcript-resume
+                  "agent-shell-vertico-transcript" (&optional select-project))
+(declare-function agent-shell-vertico-transcript--read-project
+                  "agent-shell-vertico-transcript" ())
 (declare-function agent-shell--stop-reason-description "agent-shell"
                   (stop-reason))
 
@@ -4234,6 +4240,46 @@ With a mouse EVENT, move to the clicked position before dispatching."
   (agent-shell-vertico-sidebar--call-session-action
    #'agent-shell-vertico-open-transcript))
 
+(defun agent-shell-vertico-sidebar--resume-project ()
+  "Return the project root past sessions are resumed from, or nil.
+
+The session row at point names its project, as does a project header.
+Anywhere else, a section header included, the session in the window
+used most recently before the sidebar decides, a viewport counting as
+its session.  A session's project is the directory it started in, so
+one started in a subdirectory offers the transcripts recorded there."
+  (pcase (agent-shell-vertico-sidebar--node-kind-at-point)
+    ('session
+     (let ((buffer (agent-shell-vertico-sidebar--node-at-point)))
+       (when (buffer-live-p buffer)
+         (agent-shell-vertico-sidebar--project-root buffer))))
+    ('project (agent-shell-vertico-sidebar--node-at-point))
+    (_
+     (when-let* ((window (get-mru-window nil nil t))
+                 (session (agent-shell-vertico-sidebar--session-for-buffer
+                           (window-buffer window))))
+       (agent-shell-vertico-sidebar--project-root session)))))
+
+(defun agent-shell-vertico-sidebar-resume-past (&optional all-projects)
+  "Resume a past session of the project at point from its transcripts.
+
+The project is the session row's or the project header's at point,
+else that of the session in the window used last, else one read from
+the known projects.  With prefix argument ALL-PROJECTS, offer every
+project's transcripts instead, which parses the whole store.
+
+The transcript module is loaded when this is called, as
+`agent-shell-vertico-open-transcript' loads it, so the sidebar still
+loads with the core alone."
+  (interactive "P")
+  (require 'agent-shell-vertico-transcript)
+  (if all-projects
+      (agent-shell-vertico-transcript-resume nil)
+    (agent-shell-vertico-transcript--resume-project-root
+     (or (agent-shell-vertico-sidebar--resume-project)
+         (agent-shell-vertico-transcript--read-project))))
+  (agent-shell-vertico-sidebar-refresh))
+
 (defun agent-shell-vertico-sidebar-new ()
   "Create a new agent-shell session."
   (interactive)
@@ -4511,6 +4557,7 @@ count leaves them out.  Nothing is shown when none waits."
    "  a / F       Start a side conversation / fork the session\n"
    "  Y           Copy the session ID\n"
    "  t / T       Traffic / transcript (regular); reverse in Evil\n"
+   "  H (gh)      Resume a past session of the project at point\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
@@ -4552,6 +4599,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "H") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
@@ -4594,6 +4642,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
     (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
     (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
+    (define-key map (kbd "H") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
@@ -4610,8 +4659,9 @@ count leaves them out.  Nothing is shown when none waits."
 (defconst agent-shell-vertico-sidebar--evil-g-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-refresh)
+    (define-key map (kbd "h") #'agent-shell-vertico-sidebar-resume-past)
     map)
-  "Prefix map for the Evil `gr' refresh binding.")
+  "Prefix map for the Evil `g' bindings: `gr' refresh, `gh' resume.")
 
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
@@ -4643,6 +4693,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("Y" . agent-shell-vertico-sidebar-copy-session-id)
     ("t" . agent-shell-vertico-sidebar-open-transcript)
     ("T" . agent-shell-vertico-sidebar-view-traffic)
+    ("gh" . agent-shell-vertico-sidebar-resume-past)
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
@@ -4656,8 +4707,9 @@ count leaves them out.  Nothing is shown when none waits."
 The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
 move a whole row at a time; `D'/`R'/`I' are the destructive session
 actions so navigation and lowercase mnemonics remain available.  Refresh is
-`gr', and the other mnemonic actions intentionally take precedence over
-their generic Evil commands in this read-only sidebar.")
+`gr' and resuming a past session `gh', which leave `H' to
+`evil-window-top'.  The other mnemonic actions intentionally take
+precedence over their generic Evil commands in this read-only sidebar.")
 
 (defun agent-shell-vertico-sidebar--bind-evil-keys ()
   "Install direct Dired-style bindings for Evil sidebar states.
@@ -4679,10 +4731,11 @@ while normal and motion states get the same direct mnemonic commands."
       (evil-local-set-key state (kbd "g")
                           agent-shell-vertico-sidebar--evil-g-map)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
-        (unless (equal (car binding) "gr")
+        (unless (member (car binding) '("gr" "gh"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "g" "c" "k" "r" "i" "m" "M" "C"
-                     "A" "a" "F" "Y" "t" "T" "u" "!" "z" "P" "p" "S" "?" "q"))
+                     "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "p" "S"
+                     "?" "q"))
         (when-let* ((command (lookup-key
                               agent-shell-vertico-sidebar-action-map
                               (kbd key))))

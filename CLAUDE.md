@@ -18,7 +18,8 @@ Four modules form a small dependency graph:
   sessions in Claude Code's agent-view states, driven by `agent-shell` event
   subscriptions; also owns which sessions need attention, pins and snoozes,
   the peek window, the command that jumps to them, the mode-line count, and
-  the notification hook. Requires the core.
+  the notification hook. Requires the core; loads the transcript module
+  only when the reader resumes a past session from it.
 - `agent-shell-vertico-transcript.el` — browsing, searching, and resuming the
   Markdown transcripts `agent-shell` writes; requires the core independently
   of the sidebar.
@@ -485,6 +486,22 @@ cancel: pinning wakes a session and snoozing unpins one.
 is snoozed, so whatever the sort a pinned session leads. The state and project
 views draw pinned sessions under a Pinned header, which counts them; the band,
 and so the mode line's count, is unchanged.
+
+**Resuming from the sidebar.** `agent-shell-vertico-sidebar-resume-past`
+(`H`, `gh` under Evil) resumes a past session of a project through the
+transcript module's reader, which it requires when called, as
+`agent-shell-vertico-open-transcript` does, so the sidebar still loads with
+the core alone. `--resume-project` picks the project: the session row or
+project header at point, else the session in the window used last
+(`get-mru-window`, as `-focus` returns to it; not
+`--rendered-focused-session`, which is nil while the sidebar is selected),
+else `--read-project`. A session's project is the directory it started in,
+so a session started in a subdirectory offers the transcripts recorded
+there. A prefix calls `(agent-shell-vertico-transcript-resume nil)`, which
+offers every project; forwarding the prefix would instead ask for one.
+Claude Code's picker was adopted and its past-session rows were not:
+everything in the sidebar is keyed by a live buffer, and loading the store
+does not belong on the render path.
 
 **Peeking at a session.** `agent-shell-vertico-sidebar-peek` writes
 `--peek-text` (title, status, age, NEEDS, the last message) into `*Agent
