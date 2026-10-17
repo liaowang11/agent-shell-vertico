@@ -18415,6 +18415,63 @@ The filter is back once the read ends."
         (should (equal agent-shell-vertico-sidebar--filter "n:done"))
         (should (= (length (agent-shell-vertico-sidebar--session-rows)) 5))))))
 
+(defmacro agent-shell-vertico-tests--with-minibuffer-probe (probe &rest body)
+  "Evaluate BODY with <f5> in the minibuffer running PROBE, a command.
+The binding is removed afterwards, since the suite shares one Emacs."
+  (declare (indent 1) (debug t))
+  `(let ((old (lookup-key minibuffer-local-map (kbd "<f5>"))))
+     (define-key minibuffer-local-map (kbd "<f5>") ,probe)
+     (unwind-protect (progn ,@body)
+       (define-key minibuffer-local-map (kbd "<f5>") old))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-typed-in-the-minibuffer ()
+  "Typing draws the sidebar as it goes, and TAB completes the word.
+Driven through the real minibuffer by a keyboard macro, so the preview
+hook and the table's reading of the word run as they do for a reader."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((sidebar (current-buffer))
+          rows-mid contents)
+      (switch-to-buffer sidebar)
+      (agent-shell-vertico-tests--with-minibuffer-probe
+          (lambda ()
+            (interactive)
+            (setq contents (minibuffer-contents-no-properties)
+                  rows-mid (with-current-buffer sidebar
+                             (mapcar
+                              #'car
+                              (agent-shell-vertico-sidebar--session-rows)))))
+        (execute-kbd-macro (vconcat "f" "S:wor" [tab] [f5] [return])))
+      (should (equal contents "s:working"))
+      (should (equal rows-mid (list working)))
+      (should (equal agent-shell-vertico-sidebar--filter "s:working"))
+      (should (equal (car agent-shell-vertico-sidebar--filter-history)
+                     "s:working")))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-quit-in-the-minibuffer ()
+  "Quitting the read puts back the filter it started from."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((sidebar (current-buffer))
+          filter-mid)
+      (switch-to-buffer sidebar)
+      (agent-shell-vertico-sidebar--set-filter "n:done")
+      (agent-shell-vertico-tests--with-minibuffer-probe
+          (lambda ()
+            (interactive)
+            (setq filter-mid (buffer-local-value
+                              'agent-shell-vertico-sidebar--filter sidebar))
+            (abort-recursive-edit))
+        ;; `should-error' does not catch a quit.
+        (should (eq (condition-case nil
+                        (progn
+                          (execute-kbd-macro
+                           (vconcat "f" [?\C-a ?\C-k] "s:work" [f5]))
+                          'returned)
+                      (quit 'quit))
+                    'quit)))
+      (should (equal filter-mid "s:work"))
+      (should (equal agent-shell-vertico-sidebar--filter "n:done"))
+      (should (= (length (agent-shell-vertico-sidebar--session-rows)) 5)))))
+
 (ert-deftest agent-shell-vertico-sidebar-filter-preview-skips-no-change ()
   "A preview that would store the same filter draws nothing again."
   (agent-shell-vertico-tests--with-state-view

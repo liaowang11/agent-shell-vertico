@@ -5200,11 +5200,15 @@ candidate.  SIDEBAR is drawn through the input on every command."
         (lambda ()
           (add-hook 'post-command-hook
                     (lambda ()
-                      (agent-shell-vertico-sidebar--filter-preview
-                       sidebar (minibuffer-contents-no-properties)))
+                      ;; An error would drop the hook and end the preview.
+                      (with-demoted-errors "Sidebar filter preview: %S"
+                        (agent-shell-vertico-sidebar--filter-preview
+                         sidebar (minibuffer-contents-no-properties))))
                     nil t))
       (dlet ((crm-separator "[ \t]+")
-             (crm-prompt "%p"))
+             (crm-prompt "%p")
+             ;; The filter ignores case, and its values are downcased.
+             (completion-ignore-case t))
         (string-join
          (completing-read-multiple
           "Filter sessions (s: n: o: a: p:): " table nil nil
