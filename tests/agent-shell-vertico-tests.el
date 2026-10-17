@@ -18367,25 +18367,101 @@ The filter is back once the read ends."
 (ert-deftest agent-shell-vertico-sidebar-filter-command-reads-and-applies ()
   "The command reads the filter, starting from the current one."
   (agent-shell-vertico-tests--with-state-view
-    (let (initial)
-      (cl-letf (((symbol-function 'read-from-minibuffer)
-                 (lambda (_prompt &optional initial-contents &rest _args)
-                   (setq initial initial-contents)
-                   " s:compl ")))
+    (let (initial history)
+      (cl-letf (((symbol-function 'completing-read-multiple)
+                 (lambda (_prompt _table &optional _pred _require
+                                  initial-input hist &rest _args)
+                   (setq initial initial-input
+                         history hist)
+                   '("s:compl"))))
         (agent-shell-vertico-sidebar-filter)
         (should (equal agent-shell-vertico-sidebar--filter "s:compl"))
         (should (equal (mapcar #'car
                                (agent-shell-vertico-sidebar--session-rows))
                        (list done-1 done-2 done-3 done-4 done-5)))
         (should-not initial)
+        (should (eq history 'agent-shell-vertico-sidebar--filter-history))
+        ;; The current filter is offered with room for the next word.
         (agent-shell-vertico-sidebar-filter)
-        (should (equal initial "s:compl")))
+        (should (equal initial "s:compl ")))
       ;; Empty input clears it.
-      (cl-letf (((symbol-function 'read-from-minibuffer)
-                 (lambda (&rest _args) "")))
+      (cl-letf (((symbol-function 'completing-read-multiple)
+                 (lambda (&rest _args) nil)))
         (agent-shell-vertico-sidebar-filter)
         (should-not agent-shell-vertico-sidebar--filter)
         (should (= (length (agent-shell-vertico-sidebar--session-rows)) 7))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-previews-while-typed ()
+  "The sidebar draws the filter being typed, and quitting restores it."
+  (agent-shell-vertico-tests--with-state-view
+    (agent-shell-vertico-sidebar--set-filter "n:done")
+    (let ((sidebar (current-buffer))
+          seen)
+      (cl-letf (((symbol-function 'completing-read-multiple)
+                 (lambda (&rest _args)
+                   (agent-shell-vertico-sidebar--filter-preview
+                    sidebar "s:work")
+                   (with-current-buffer sidebar
+                     (setq seen (mapcar
+                                 #'car
+                                 (agent-shell-vertico-sidebar--session-rows))))
+                   (signal 'quit nil))))
+        ;; `should-error' does not catch a quit.
+        (should (eq (condition-case nil
+                        (progn (agent-shell-vertico-sidebar-filter) 'returned)
+                      (quit 'quit))
+                    'quit))
+        (should (equal seen (list working)))
+        (should (equal agent-shell-vertico-sidebar--filter "n:done"))
+        (should (= (length (agent-shell-vertico-sidebar--session-rows)) 5))))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-preview-skips-no-change ()
+  "A preview that would store the same filter draws nothing again."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((sidebar (current-buffer))
+          (renders 0))
+      (agent-shell-vertico-sidebar--set-filter "s:compl")
+      (advice-add 'agent-shell-vertico-sidebar--render :before
+                  (lambda (&rest _) (cl-incf renders))
+                  '((name . count-renders)))
+      (unwind-protect
+          (progn
+            (agent-shell-vertico-sidebar--filter-preview sidebar " s:compl ")
+            (should (= renders 0))
+            (agent-shell-vertico-sidebar--filter-preview sidebar "s:compl n:")
+            (should (= renders 0))
+            (agent-shell-vertico-sidebar--filter-preview sidebar "s:")
+            (should (= renders 1))
+            (should-not agent-shell-vertico-sidebar--filter)
+            (agent-shell-vertico-sidebar--filter-preview sidebar "s")
+            (should (= renders 2)))
+        (advice-remove 'agent-shell-vertico-sidebar--render 'count-renders)))))
+
+(ert-deftest agent-shell-vertico-sidebar-filter-completes-prefix-values ()
+  "Only a word after a known prefix completes, to the values in use."
+  (agent-shell-vertico-tests--with-state-view
+    (with-current-buffer done-1
+      (push '(:agent-config . ((:buffer-name . "Claude Code")))
+            agent-shell--state))
+    (let ((values (agent-shell-vertico-sidebar--filter-values)))
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "s:" values)
+                     '("s:completed" "s:done" "s:needs" "s:snoozed"
+                       "s:waiting" "s:working")))
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "A:cl" values)
+                     '("a:claude")))
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "p:" values)
+                     '("p:a")))
+      ;; Free words, free-text prefixes and an empty word offer nothing,
+      ;; so Enter keeps what was typed.
+      (should-not (agent-shell-vertico-sidebar--filter-word-candidates
+                   "fix" values))
+      (should-not (agent-shell-vertico-sidebar--filter-word-candidates
+                   "n:" values))
+      (should-not (agent-shell-vertico-sidebar--filter-word-candidates
+                   "" values)))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-of-nothing-is-no-filter ()
   "A filter that parses to nothing, a bare prefix, is stored as none.

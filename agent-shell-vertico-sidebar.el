@@ -5094,20 +5094,131 @@ that message; see `agent-shell-vertico-sidebar-expanded-detail-lines'."
     ('session (agent-shell-vertico-sidebar-toggle-session-details))
     (_ (user-error "Point is not on a project or session row"))))
 
+(defvar agent-shell-vertico-sidebar--filter-history nil
+  "Filters read by `agent-shell-vertico-sidebar-filter', newest first.")
+
+(defvar crm-separator)
+
+(defun agent-shell-vertico-sidebar--filter-normalize (string)
+  "Return the filter STRING stores as, or nil for none.
+A blank or nil STRING is none, and so is one that parses to nothing,
+such as a bare prefix: it would filter nothing while still keeping the
+folds from moving."
+  (let ((string (string-trim (or string ""))))
+    (and (agent-shell-vertico-sidebar--filter-parse string) string)))
+
 (defun agent-shell-vertico-sidebar--set-filter (string)
   "Filter this sidebar through STRING and draw it again.
-A blank or nil STRING clears the filter, and so does one that parses to
-nothing, such as a bare prefix: it would filter nothing while still
-keeping the folds from moving."
+STRING is stored as `--filter-normalize' answers."
   (setq agent-shell-vertico-sidebar--filter
-        (let ((string (string-trim (or string ""))))
-          (and (agent-shell-vertico-sidebar--filter-parse string) string)))
+        (agent-shell-vertico-sidebar--filter-normalize string))
   (agent-shell-vertico-sidebar--render))
+
+(defun agent-shell-vertico-sidebar--filter-preview (sidebar input)
+  "Draw SIDEBAR filtered through INPUT, the filter being typed.
+Nothing is drawn when INPUT parses as the filter in force, so a key that
+does not change what is shown, such as a space or a prefix still
+waiting for its value, costs no render."
+  (when (buffer-live-p sidebar)
+    (with-current-buffer sidebar
+      (unless (equal (agent-shell-vertico-sidebar--filter-parse input)
+                     (agent-shell-vertico-sidebar--filter-parse
+                      agent-shell-vertico-sidebar--filter))
+        (agent-shell-vertico-sidebar--set-filter input)))))
+
+(defun agent-shell-vertico-sidebar--filter-values ()
+  "Return what the completing prefixes complete to, by prefix letter.
+
+An alist from \"s\", \"a\" and \"p\" to sorted, downcased words, taken
+from the live sessions, so every completion keeps at least one: the
+words of `--filter-state-labels', the agent names and the project
+names.  A filter word cannot hold a space, so a value with one offers
+its first word, which still matches, since `s:' and `a:' match a start
+and `p:' a substring.  `n:' and `o:' complete to nothing, being free
+text."
+  (let (states agents projects)
+    (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
+      (let ((snapshot (agent-shell-vertico-sidebar--snapshot buffer)))
+        (setq states (append (agent-shell-vertico-sidebar--filter-state-labels
+                              snapshot)
+                             states))
+        (push (plist-get snapshot :agent) agents)
+        (push (plist-get snapshot :project-name) projects)))
+    (cl-flet ((words (texts)
+                (sort (delete-dups
+                       (delq nil
+                             (mapcar (lambda (text)
+                                       (and (stringp text)
+                                            (car (split-string
+                                                  (downcase text)
+                                                  "[[:space:]]+" t))))
+                                     texts)))
+                      #'string<)))
+      (list (cons "s" (words states))
+            (cons "a" (words agents))
+            (cons "p" (words projects))))))
+
+(defun agent-shell-vertico-sidebar--filter-word-candidates (word values)
+  "Return the completions of filter WORD from VALUES, an alist by prefix.
+
+Only a word that starts with a prefix VALUES holds completes, to every
+value under that prefix; the completion style does the narrowing.  Any
+other word, an empty one included, completes to nothing, so a reader
+that selects a candidate on Enter, as Vertico does, keeps a free word
+as typed rather than replacing it with a candidate that contains it."
+  (when (string-match "\\`\\([[:alpha:]]\\):" word)
+    (let ((prefix (downcase (match-string 1 word))))
+      (mapcar (lambda (value) (concat prefix ":" value))
+              (alist-get prefix values nil nil #'equal)))))
+
+(defun agent-shell-vertico-sidebar--filter-word-at-point ()
+  "Return the filter word before point in the minibuffer."
+  (buffer-substring-no-properties
+   (save-excursion
+     (skip-chars-backward "^ \t" (minibuffer-prompt-end))
+     (point))
+   (point)))
+
+(defun agent-shell-vertico-sidebar--read-filter (sidebar initial)
+  "Read a filter for SIDEBAR, starting from INITIAL, and return it.
+
+The words are read with `completing-read-multiple', separated by
+whitespace, and each is completed by `--filter-word-candidates'.  The
+word is taken from the minibuffer rather than from what the table is
+given, because a style such as orderless asks the table for every
+candidate.  SIDEBAR is drawn through the input on every command."
+  (let* ((values (with-current-buffer sidebar
+                   (agent-shell-vertico-sidebar--filter-values)))
+         (table (completion-table-dynamic
+                 (lambda (_string)
+                   (agent-shell-vertico-sidebar--filter-word-candidates
+                    (if (minibufferp)
+                        (agent-shell-vertico-sidebar--filter-word-at-point)
+                      "")
+                    values)))))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (add-hook 'post-command-hook
+                    (lambda ()
+                      (agent-shell-vertico-sidebar--filter-preview
+                       sidebar (minibuffer-contents-no-properties)))
+                    nil t))
+      (dlet ((crm-separator "[ \t]+")
+             (crm-prompt "%p"))
+        (string-join
+         (completing-read-multiple
+          "Filter sessions (s: n: o: a: p:): " table nil nil
+          (and initial (concat initial " "))
+          'agent-shell-vertico-sidebar--filter-history)
+         " ")))))
 
 (defun agent-shell-vertico-sidebar-filter ()
   "Show only the sessions matching a filter read from the minibuffer.
 
-The filter is applied once it is entered, and empty input clears it.
+The sidebar follows the filter as it is typed; Enter keeps it, empty
+input clears it, and quitting restores the filter in force before.  The
+values of `s:', `a:' and `p:' complete to those of the live sessions,
+and earlier filters are in the history.
 Every word must match a session, case aside: `s:WORD' its status or
 section, `n:WORD' its title or last prompt, `o:WORD' the agent's newest
 message, `a:WORD' the start of the agent's name, `p:WORD' its project,
@@ -5127,9 +5238,15 @@ every session."
     (with-current-buffer sidebar
       (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
         (user-error "The named sidebar buffer is not an agent-shell sidebar"))
-      (agent-shell-vertico-sidebar--set-filter
-       (read-from-minibuffer "Filter sessions (s: n: o: a: p:): "
-                             agent-shell-vertico-sidebar--filter)))))
+      (let ((before agent-shell-vertico-sidebar--filter)
+            (input nil))
+        (unwind-protect
+            (setq input (agent-shell-vertico-sidebar--read-filter
+                         sidebar before))
+          (when (buffer-live-p sidebar)
+            (with-current-buffer sidebar
+              (agent-shell-vertico-sidebar--set-filter
+               (or input before)))))))))
 
 (defun agent-shell-vertico-sidebar-refresh ()
   "Refresh the visible agent-shell sidebar."

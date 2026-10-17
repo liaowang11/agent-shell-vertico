@@ -1263,11 +1263,25 @@ Text is passed on unshortened, so trimming and markup stripping belong to
 the caller's channel, not here.
 
 **Filtering the sidebar.** `agent-shell-vertico-sidebar-filter` (`f`)
-reads a filter in the minibuffer and applies it on Enter, one render, with
-no live update; empty input clears it, and so does input `--filter-parse`
-reads as nothing (`s:` alone), so `--filter` is non-nil only when it filters:
-every fold guard tests the string and the render the parse, and the two must
-agree. The string is kept in the
+reads a filter in the minibuffer and draws it as it is typed:
+`--read-filter` adds `--filter-preview` to the minibuffer's
+`post-command-hook`, as elfeed's live filter does, and the preview renders
+only when the input parses differently from the filter in force, so a space
+or a bare prefix costs nothing. Enter keeps the input, and a quit, or any
+other non-local exit, sets the filter back to what it was. Empty input
+clears it, and so does input `--filter-parse` reads as nothing (`s:` alone),
+so `--filter` is non-nil only when it filters (`--filter-normalize`): every
+fold guard tests the string and the render the parse, and the two must
+agree. The words are read with `completing-read-multiple` split on
+whitespace, with history in `--filter-history`. Only a word after `s:`, `a:`
+or `p:` completes, to the values of the live sessions
+(`--filter-values`, whose state words come from `--filter-state-labels`, so
+each completion keeps a session); any other word completes to nothing,
+because Vertico takes the selected candidate on Enter and would otherwise
+replace a free word with a project or agent that contains it. The table
+reads the word from the minibuffer (`--filter-word-at-point`), because
+orderless asks a table for every candidate rather than for the word. The
+string is kept in the
 buffer-local `--filter`, so it applies on every frame showing the sidebar,
 and every render reapplies it, so a session that stops matching leaves.
 `--filter-parse` reads Claude Code's prefixes, `s:` `n:` `o:` `a:`, plus
