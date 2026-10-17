@@ -18099,6 +18099,20 @@ burst that clears an unread mark is otherwise silent."
     (should (equal (plist-get filter :project) "vert"))
     (should (equal (plist-get filter :text) '("foo" "bar")))))
 
+(ert-deftest agent-shell-vertico-sidebar-filter-parse-whole-keywords ()
+  "Each prefix can be spelled out as a whole word, case aside."
+  (let ((filter (agent-shell-vertico-sidebar--filter-parse
+                 "Status:needs name:fix output:tests agent:cod project:vert")))
+    (should (equal (plist-get filter :state) "needs"))
+    (should (equal (plist-get filter :name) "fix"))
+    (should (equal (plist-get filter :output) "tests"))
+    (should (equal (plist-get filter :agent) "cod"))
+    (should (equal (plist-get filter :project) "vert"))
+    (should-not (plist-get filter :text)))
+  ;; A word that only starts like a keyword is free text.
+  (should (equal (agent-shell-vertico-sidebar--filter-parse "stat:x")
+                 '(:text ("stat:x")))))
+
 (ert-deftest agent-shell-vertico-sidebar-filter-parse-drops-empty-and-unknown ()
   "A prefix with nothing after it is ignored; an unknown one is text."
   (should-not (agent-shell-vertico-sidebar--filter-parse "   "))
@@ -18440,12 +18454,13 @@ hook and the table's reading of the word run as they do for a reader."
                              (mapcar
                               #'car
                               (agent-shell-vertico-sidebar--session-rows)))))
-        (execute-kbd-macro (vconcat "f" "S:wor" [tab] [f5] [return])))
-      (should (equal contents "s:working"))
+        (execute-kbd-macro
+         (vconcat "f" "sta" [tab] "wor" [tab] [f5] [return])))
+      (should (equal contents "status:working"))
       (should (equal rows-mid (list working)))
-      (should (equal agent-shell-vertico-sidebar--filter "s:working"))
+      (should (equal agent-shell-vertico-sidebar--filter "status:working"))
       (should (equal (car agent-shell-vertico-sidebar--filter-history)
-                     "s:working")))))
+                     "status:working")))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-quit-in-the-minibuffer ()
   "Quitting the read puts back the filter it started from."
@@ -18511,14 +18526,31 @@ hook and the table's reading of the word run as they do for a reader."
       (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
                       "p:" values)
                      '("p:a")))
-      ;; Free words, free-text prefixes and an empty word offer nothing,
-      ;; so Enter keeps what was typed.
+      ;; A whole keyword completes in its own spelling.
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "Agent:" values)
+                     '("agent:claude")))
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "project:" values)
+                     '("project:a")))
+      ;; A word that starts a keyword, an empty one included, completes
+      ;; to the keywords it starts.
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "" values)
+                     '("status:" "name:" "output:" "agent:" "project:")))
+      (should (equal (agent-shell-vertico-sidebar--filter-word-candidates
+                      "St" values)
+                     '("status:")))
+      ;; Other free words and free-text prefixes offer nothing, so Enter
+      ;; keeps what was typed.
       (should-not (agent-shell-vertico-sidebar--filter-word-candidates
                    "fix" values))
       (should-not (agent-shell-vertico-sidebar--filter-word-candidates
                    "n:" values))
       (should-not (agent-shell-vertico-sidebar--filter-word-candidates
-                   "" values)))))
+                   "name:" values))
+      (should-not (agent-shell-vertico-sidebar--filter-word-candidates
+                   "g:x" values)))))
 
 (ert-deftest agent-shell-vertico-sidebar-filter-of-nothing-is-no-filter ()
   "A filter that parses to nothing, a bare prefix, is stored as none.

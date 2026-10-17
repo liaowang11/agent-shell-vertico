@@ -2927,25 +2927,28 @@ Both views ask, because a section stays empty whichever is drawn."
                    agent-shell-vertico-sidebar--section-folds))))))
 
 (defconst agent-shell-vertico-sidebar--filter-prefixes
-  '(("s" . :state) ("n" . :name) ("o" . :output) ("a" . :agent)
+  '(("status" . :state) ("name" . :name) ("output" . :output)
+    ("agent" . :agent) ("project" . :project)
+    ("s" . :state) ("n" . :name) ("o" . :output) ("a" . :agent)
     ("p" . :project))
   "Filter prefixes and the field of a parsed filter each one fills.
+Each field has a whole word, the one completion offers, and a letter:
 Claude Code's `s:', `n:', `o:' and `a:', and `p:' for the project.")
 
 (defun agent-shell-vertico-sidebar--filter-parse (string)
   "Return the filter STRING asks for as a plist, or nil for none.
 
 Words split on whitespace.  A word starting with a prefix of
-`--filter-prefixes', case aside, fills that field (`:state', `:name',
-`:output', `:agent', `:project'), and the last one wins; a prefix with
-nothing after it is ignored.  Every other word, an unknown prefix such
-as `g:x' included, joins the free `:text', a list of words in the order
-typed, each matched on its own.  Values are downcased, because every
-comparison ignores case."
+`--filter-prefixes' and a colon, case aside, fills that field
+\(`:state', `:name', `:output', `:agent', `:project'), and the last one
+wins; a prefix with nothing after it is ignored.  Every other word, an
+unknown prefix such as `g:x' or `stat:x' included, joins the free
+`:text', a list of words in the order typed, each matched on its own.
+Values are downcased, because every comparison ignores case."
   (let (filter text)
     (dolist (word (split-string (or string "") "[[:space:]]+" t))
       (let ((word (downcase word)))
-        (if-let* (((string-match "\\`\\([a-z]\\):\\(.*\\)\\'" word))
+        (if-let* (((string-match "\\`\\([a-z]+\\):\\(.*\\)\\'" word))
                   (field (alist-get
                           (match-string 1 word)
                           agent-shell-vertico-sidebar--filter-prefixes
@@ -5127,9 +5130,10 @@ waiting for its value, costs no render."
         (agent-shell-vertico-sidebar--set-filter input)))))
 
 (defun agent-shell-vertico-sidebar--filter-values ()
-  "Return what the completing prefixes complete to, by prefix letter.
+  "Return what the completing prefixes complete to, by field.
 
-An alist from \"s\", \"a\" and \"p\" to sorted, downcased words, taken
+An alist from `:state', `:agent' and `:project' to sorted, downcased
+words, taken
 from the live sessions, so every completion keeps at least one: the
 words of `--filter-state-labels', the agent names and the project
 names.  A filter word cannot hold a space, so a value with one offers
@@ -5154,22 +5158,34 @@ text."
                                                   "[[:space:]]+" t))))
                                      texts)))
                       #'string<)))
-      (list (cons "s" (words states))
-            (cons "a" (words agents))
-            (cons "p" (words projects))))))
+      (list (cons :state (words states))
+            (cons :agent (words agents))
+            (cons :project (words projects))))))
 
 (defun agent-shell-vertico-sidebar--filter-word-candidates (word values)
-  "Return the completions of filter WORD from VALUES, an alist by prefix.
+  "Return the completions of filter WORD from VALUES, an alist by field.
 
-Only a word that starts with a prefix VALUES holds completes, to every
-value under that prefix; the completion style does the narrowing.  Any
-other word, an empty one included, completes to nothing, so a reader
-that selects a candidate on Enter, as Vertico does, keeps a free word
-as typed rather than replacing it with a candidate that contains it."
-  (when (string-match "\\`\\([[:alpha:]]\\):" word)
-    (let ((prefix (downcase (match-string 1 word))))
-      (mapcar (lambda (value) (concat prefix ":" value))
-              (alist-get prefix values nil nil #'equal)))))
+A word starting with a prefix and a colon completes to every value
+VALUES holds for that prefix's field, in the prefix as typed; the
+completion style does the narrowing.  A word with no colon that starts
+a whole-word prefix, an empty one included, completes to the prefixes
+it starts.  Any other word completes to nothing, so a reader that
+selects a candidate on Enter, as Vertico does, keeps a free word as
+typed rather than replacing it with a candidate that contains it."
+  (let ((word (downcase word)))
+    (if (string-match "\\`\\([[:alpha:]]+\\):" word)
+        (let* ((prefix (match-string 1 word))
+               (field (alist-get
+                       prefix agent-shell-vertico-sidebar--filter-prefixes
+                       nil nil #'equal)))
+          (mapcar (lambda (value) (concat prefix ":" value))
+                  (alist-get field values)))
+      (unless (string-search ":" word)
+        (seq-keep (lambda (entry)
+                    (and (length> (car entry) 1)
+                         (string-prefix-p word (car entry))
+                         (concat (car entry) ":")))
+                  agent-shell-vertico-sidebar--filter-prefixes)))))
 
 (defun agent-shell-vertico-sidebar--filter-word-at-point ()
   "Return the filter word before point in the minibuffer."
@@ -5183,7 +5199,8 @@ as typed rather than replacing it with a candidate that contains it."
   "Read a filter for SIDEBAR, starting from INITIAL, and return it.
 
 The words are read with `completing-read-multiple', separated by
-whitespace, and each is completed by `--filter-word-candidates'.  The
+whitespace, and each is completed by `--filter-word-candidates': a
+prefix by its whole word, then its value.  The
 word is taken from the minibuffer rather than from what the table is
 given, because a style such as orderless asks the table for every
 candidate.  SIDEBAR is drawn through the input on every command."
@@ -5211,7 +5228,8 @@ candidate.  SIDEBAR is drawn through the input on every command."
              (completion-ignore-case t))
         (string-join
          (completing-read-multiple
-          "Filter sessions (s: n: o: a: p:): " table nil nil
+          "Filter sessions (status: name: output: agent: project:): "
+          table nil nil
           (and initial (concat initial " "))
           'agent-shell-vertico-sidebar--filter-history)
          " ")))))
@@ -5221,13 +5239,16 @@ candidate.  SIDEBAR is drawn through the input on every command."
 
 The sidebar follows the filter as it is typed; Enter keeps it, empty
 input clears it, and quitting restores the filter in force before.  The
-values of `s:', `a:' and `p:' complete to those of the live sessions,
-and earlier filters are in the history.
-Every word must match a session, case aside: `s:WORD' its status or
-section, `n:WORD' its title or last prompt, `o:WORD' the agent's newest
-message, `a:WORD' the start of the agent's name, `p:WORD' its project,
-and any other word the title, detail line, project or last prompt.  A
-family is drawn whole when any member matches.
+prefixes complete, and the values of `status:', `agent:' and `project:'
+complete to those of the live sessions; earlier filters are in the
+history.
+Every word must match a session, case aside: `status:WORD' its status
+or section, `name:WORD' its title or last prompt, `output:WORD' the
+agent's newest message, `agent:WORD' the start of the agent's name,
+`project:WORD' its project, and any other word the title, detail line,
+project or last prompt.  Each prefix has a one-letter short form, its
+first letter, as in Claude Code.  A family is drawn whole when any
+member matches.
 
 While filtered, every section and project is drawn open and its fold
 cannot be toggled, the header line names the filter, and revealing or

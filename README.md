@@ -606,19 +606,24 @@ fails to start or the prompt cannot be sent, the row reads failed and the
 prompt is put on the kill ring.
 
 `f` reads a filter, and the sidebar follows it as you type: `RET` keeps it,
-empty input clears it, and `C-g` puts back the filter you started from.  After
-`s:`, `a:` or `p:`, completion offers the statuses, agents and projects of the
-live sessions, and `M-p` recalls earlier filters.  Every word must match, case
-aside: `s:needs` a status or section (`s:done`, `s:work`, `s:snooz`), `n:fix`
-the title or last prompt, `o:tests` the agent's newest message, `a:cod` the
-start of the agent's name, `p:vertico` the project, and any other word the
-title, detail line, project or last prompt.  A side conversation and its parent
-are drawn together when either matches.  While a filter is on, the header line
-names it, every section and project is open and cannot be folded, and `S-TAB`
-steps between rows and details only.  A prefix with nothing after it, `s:`
-alone, filters nothing and is no filter.  Revealing or dispatching a session the
-filter hides clears it, and the jumps (`o`, the numbered jumps, next and
-previous session) still reach every session.
+empty input clears it, and `C-g` puts back the filter you started from.  The
+prefixes complete (`st` `TAB` gives `status:`), then their values: the
+statuses, agents and projects of the live sessions.  `M-p` recalls earlier
+filters.  Every word must match, case aside: `status:needs` a status or section
+(`status:done`, `status:work`, `status:snooz`), `name:fix` the title or last
+prompt, `output:tests` the agent's newest message, `agent:cod` the start of the
+agent's name, `project:vertico` the project, and any other word the title,
+detail line, project or last prompt.  Each prefix also has Claude Code's
+one-letter form: `s:`, `n:`, `o:`, `a:` and `p:`.  A side conversation and its
+parent are drawn together when either matches.  While a filter is on, the
+header line names it, every section and project is open and cannot be folded,
+and `S-TAB` steps between rows and details only.  A prefix with nothing after
+it, `status:` alone, filters nothing and is no filter.  Revealing or
+dispatching a session the filter hides clears it, and the jumps (`o`, the
+numbered jumps, next and previous session) still reach every session.
+
+With Vertico, `RET` takes the selected candidate, so a free word that starts a
+prefix (`pro`, `name`) becomes that prefix; `M-RET` keeps the input as typed.
 
 ## Project-scoped shell commands
 

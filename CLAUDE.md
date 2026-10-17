@@ -1273,20 +1273,25 @@ clears it, and so does input `--filter-parse` reads as nothing (`s:` alone),
 so `--filter` is non-nil only when it filters (`--filter-normalize`): every
 fold guard tests the string and the render the parse, and the two must
 agree. The words are read with `completing-read-multiple` split on
-whitespace, with history in `--filter-history`. Only a word after `s:`, `a:`
-or `p:` completes, to the values of the live sessions
-(`--filter-values`, whose state words come from `--filter-state-labels`, so
-each completion keeps a session); any other word completes to nothing,
-because Vertico takes the selected candidate on Enter and would otherwise
-replace a free word with a project or agent that contains it. The table
+whitespace, with history in `--filter-history` (`--filter-word-candidates`).
+A word with no colon that starts a prefix's whole word completes to those
+whole words, the user's call because the letters were hard to remember. A
+word after a status, agent or project prefix completes, in the spelling
+typed, to the values of the live sessions (`--filter-values`, whose state
+words come from `--filter-state-labels`, so each completion keeps a
+session). Any other word completes to nothing, because Vertico takes the
+selected candidate on Enter and would otherwise replace a free word with a
+project or agent that contains it; a free word that starts a prefix (`pro`)
+still meets that, and `M-RET` is the way out. The table
 reads the word from the minibuffer (`--filter-word-at-point`), because
 orderless asks a table for every candidate rather than for the word. The
 string is kept in the
 buffer-local `--filter`, so it applies on every frame showing the sidebar,
 and every render reapplies it, so a session that stops matching leaves.
 `--filter-parse` reads Claude Code's prefixes, `s:` `n:` `o:` `a:`, plus
-`p:` for the project; a prefix with nothing after it is dropped and an
-unknown one is free text. `--filter-match-p` asks every part, case aside:
+`p:` for the project, each also spelled as a whole word (`status:`, `name:`,
+`output:`, `agent:`, `project:`, the forms completion offers); a prefix
+with nothing after it is dropped and an unknown one is free text. `--filter-match-p` asks every part, case aside:
 `s:` starts the status word or the label of the session's own section or
 band, never the STATE field, which says `done` for a session waiting on
 the reader, and a snoozed session answers to Snoozed alone, so `s:done`
