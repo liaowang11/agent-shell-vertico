@@ -2313,6 +2313,51 @@ title, which is how a single question arrives."
         (should (gethash alpha agent-shell-vertico-sidebar--subscriptions))
         (should (gethash beta agent-shell-vertico-sidebar--subscriptions))))))
 
+(ert-deftest agent-shell-vertico-sidebar-recovers-a-lost-subscription ()
+  "A replaced state reconnects events without leaving a stale New row."
+  (dolist (established '(nil t))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((alpha "Codex Agent @ alpha" "/work/alpha/"
+                '((:session . nil))))
+      (let ((agent-shell-test-buffers (list alpha))
+            (agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--watch-buffer alpha)
+        (agent-shell-vertico-sidebar--set alpha 'pinned 10.0)
+        ;; Startup replaces the state after the first subscription.  A
+        ;; later discovery must reconnect even though our token is cached.
+        (with-current-buffer alpha
+          (setq-local agent-shell--state
+                      (list (cons :session
+                                  (when established '((:id . "a")))))))
+        (agent-shell-vertico-sidebar--watch-existing)
+        (when established
+          (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                      'done))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'fresh)))
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'pinned)
+                       10.0))
+        (unless established
+          ;; Reconnecting before initialization must not lose the fact
+          ;; that this session has not yet had a chance to take a prompt.
+          (with-current-buffer alpha
+            (setf (alist-get :session agent-shell--state)
+                  '((:id . "a"))))
+          (agent-shell-vertico-sidebar--watch-existing)
+          (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                      'new)))
+        ;; Deliver through the installed state, not the cached callback:
+        ;; the next real prompt and completion must update the row again.
+        (dolist (event '(((:event . input-submitted)
+                         (:data . ((:prompt . "go"))))
+                        ((:event . turn-complete)
+                         (:data . ((:stop-reason . "end_turn"))))))
+          (dolist (entry (with-current-buffer alpha
+                          (map-elt agent-shell--state
+                                   :event-subscriptions)))
+            (funcall (map-elt entry :on-event) event)))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))))))
+
 (ert-deftest agent-shell-vertico-sidebar-renders-past-a-refused-subscription ()
   "A session that cannot take a subscription does not blank the sidebar.
 

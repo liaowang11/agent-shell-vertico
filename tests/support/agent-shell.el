@@ -30,6 +30,9 @@
 (defvar agent-shell-prefer-viewport-interaction nil)
 (defvar agent-shell-transcript-file-path-function nil)
 
+(defvar-local agent-shell--state nil
+  "Stub: buffer-local session state, populated by session fixtures.")
+
 (define-derived-mode agent-shell-mode fundamental-mode "Agent-Shell")
 
 (defvar-local agent-shell--transcript-file nil
@@ -209,12 +212,27 @@ Kept in the shape agent-shell's own function has, reading the
   "Record a subscription for SHELL-BUFFER, EVENT, and ON-EVENT."
   (let ((subscription (list shell-buffer event on-event)))
     (push subscription agent-shell-test-subscriptions)
+    (with-current-buffer shell-buffer
+      (setq-local agent-shell--state (copy-alist agent-shell--state))
+      (setf (alist-get :event-subscriptions agent-shell--state)
+            (cons (list (cons :token subscription)
+                        (cons :event event)
+                        (cons :on-event on-event))
+                  (map-elt agent-shell--state :event-subscriptions))))
     subscription))
 
 (cl-defun agent-shell-unsubscribe (&key subscription)
   "Remove stubbed SUBSCRIPTION."
   (setq agent-shell-test-subscriptions
-        (delq subscription agent-shell-test-subscriptions)))
+        (delq subscription agent-shell-test-subscriptions))
+  (when (buffer-live-p (car subscription))
+    (with-current-buffer (car subscription)
+      (setq-local agent-shell--state (copy-alist agent-shell--state))
+      (setf (alist-get :event-subscriptions agent-shell--state)
+            (seq-remove (lambda (entry)
+                          (equal (map-elt entry :token) subscription))
+                        (map-elt agent-shell--state
+                                 :event-subscriptions))))))
 
 (defvar agent-shell-session-choices-function nil)
 

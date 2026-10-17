@@ -310,7 +310,11 @@ moving.  Answering the decision removes the session from the list.
 The sidebar follows `agent-shell` events, so a completed turn in another
 window is marked unread.  Submitting a new prompt clears the mark, since the
 previous turn has by then been seen, and so does seeing the session in the
-selected window.
+selected window.  If agent-shell replaces a session's state and loses the
+sidebar's subscription, the next refresh reconnects it.  An established
+session is then no longer labelled New: events missed during the gap mean
+its prompt history is unknown.  Missed messages and notifications are not
+replayed; existing sidebar records are kept.
 
 The unread sessions are a queue, in the order they became unread, and
 `agent-shell-vertico-sidebar-jump` visits the head.  `u` puts a session at

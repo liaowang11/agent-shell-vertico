@@ -4234,6 +4234,9 @@ dispatched prompt the dead agent never sent is given back."
   "Subscribe to events from BUFFER when supported by agent-shell.
 
 When SCHEDULE is non-nil, mark the sidebar dirty after subscribing.
+Reconnect when the remembered token is absent from BUFFER's state.  A
+reconnected session with an ACP id has unknown history, so clear its
+`fresh' flag; before initialization it can still be known to be new.
 
 A session can refuse the subscription: `agent-shell-subscribe-to' extends
 the session's own state alist with `map-put!', which signals
@@ -4247,8 +4250,19 @@ renders neither retry it nor report it again."
              (with-current-buffer buffer
                (derived-mode-p 'agent-shell-mode))
              (fboundp 'agent-shell-subscribe-to)
-             (not (gethash buffer agent-shell-vertico-sidebar--subscriptions)))
-    (let ((subscription
+             (let ((token (gethash
+                           buffer agent-shell-vertico-sidebar--subscriptions)))
+               (not (or (eq token
+                            agent-shell-vertico-sidebar--subscription-refused)
+                        (and token
+                             (seq-some
+                              (lambda (entry)
+                                (equal token (map-elt entry :token)))
+                              (map-elt (agent-shell-vertico--state buffer)
+                                       :event-subscriptions)))))))
+    (let ((previous (gethash
+                     buffer agent-shell-vertico-sidebar--subscriptions))
+          (subscription
            (condition-case error
                (agent-shell-subscribe-to
                 :shell-buffer buffer
@@ -4261,6 +4275,14 @@ renders neither retry it nor report it again."
               agent-shell-vertico-sidebar--subscription-refused))))
       (puthash buffer subscription
                agent-shell-vertico-sidebar--subscriptions)
+      ;; Events lost with a replaced state may include the first prompt
+      ;; or a restore.  An established session's history is now unknown,
+      ;; not evidence that it has never been prompted.
+      (when (and previous
+                 (not (eq subscription
+                          agent-shell-vertico-sidebar--subscription-refused))
+                 (agent-shell-vertico--session-field buffer :id))
+        (agent-shell-vertico-sidebar--set buffer 'fresh nil))
       (unless (agent-shell-vertico-sidebar--get buffer 'created-at)
         (agent-shell-vertico-sidebar--set buffer 'created-at (float-time))
         ;; Only a session seen before its ACP session exists is known to
