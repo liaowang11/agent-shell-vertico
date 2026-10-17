@@ -6838,7 +6838,7 @@ recently before it instead, leaving the sidebar open."
   (interactive)
   (let ((buffer (get-buffer "*Agent Shell Sessions*")))
     (if (and buffer (eq (window-buffer (selected-window)) buffer))
-        (select-window (or (get-mru-window nil nil t)
+        (select-window (or (get-mru-window nil t t)
                            (user-error "No other window to return to")))
       (let* ((session (agent-shell-vertico-sidebar--session-for-buffer
                        (window-buffer (selected-window))))

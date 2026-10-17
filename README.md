@@ -230,7 +230,8 @@ stopping the session and `gr` redrawing, since Evil's `g` is a prefix.
 its window and closes a visible sidebar; use
 `agent-shell-vertico-sidebar-focus` to enter it.  Focusing puts point on the
 row of the session you came from, and calling it again from the sidebar returns
-to the window you were in before.
+to the window you were in before, including a dedicated popup window such as
+Doom's agent-shell popup.
 
 `TAB` folds or expands a section or project header, or toggles metadata for
 only the session at point.  `RET`/mouse-1 activates the selected row or metadata field;

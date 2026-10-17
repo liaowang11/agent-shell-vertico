@@ -2098,6 +2098,35 @@ root would open the wrong group and leave its row hidden."
         (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
           (kill-buffer sidebar))))))
 
+(ert-deftest agent-shell-vertico-sidebar-focus-returns-to-dedicated-window ()
+  "Leaving the sidebar returns to a dedicated popup, not another window."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (original (selected-window))
+          popup)
+      (unwind-protect
+          (progn
+            (setq popup (split-window original))
+            (set-window-buffer popup alpha)
+            (set-window-dedicated-p popup 'popup)
+            (set-window-parameter popup 'no-other-window t)
+            (select-window original)
+            (select-window popup)
+            (agent-shell-vertico-sidebar-focus)
+            (let ((sidebar (selected-window)))
+              (should-not (eq sidebar popup))
+              (agent-shell-vertico-sidebar-focus)
+              (should (eq (selected-window) popup))
+              (should (window-live-p sidebar))))
+        (when (window-live-p popup)
+          (delete-window popup))
+        (when (window-live-p original)
+          (select-window original))
+        (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+          (kill-buffer sidebar))))))
+
 (ert-deftest agent-shell-vertico-sidebar-focus-returns-past-deleted-window ()
   "With the window it was entered from deleted, leaving picks the next one."
   (agent-shell-vertico-tests--with-session-buffers
