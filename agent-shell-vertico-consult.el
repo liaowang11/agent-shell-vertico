@@ -140,7 +140,9 @@ Two cases show up as an unhighlighted preview:
 
 - A file above `consult-preview-partial-size' is read into a buffer with
   no file name, where `set-auto-mode' cannot detect Markdown and leaves
-  Fundamental mode.  Set the mode there directly.
+  Fundamental mode.  Set the mode there directly.  Consult names that
+  buffer with a leading space, and Font Lock mode refuses to turn on in
+  such a buffer, so highlight it with `font-lock-ensure' instead.
 
 In the tree-sitter view mode, native code-block fontification is off for
 the mode call: it runs each visible block's own major mode and a
@@ -167,8 +169,13 @@ reader already had open is left as it is."
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (eq major-mode 'fundamental-mode)
-          (delay-mode-hooks (funcall mode))
-          (font-lock-mode 1))
+          (delay-mode-hooks (funcall mode)))
+        ;; Consult names its partial preview with a leading space, where
+        ;; Font Lock mode refuses to turn on.  It holds only the file's
+        ;; first `consult-preview-partial-chunk' bytes, so highlighting it
+        ;; all at once costs little.
+        (unless (or font-lock-mode buffer-file-name)
+          (font-lock-ensure))
         (unless (eq buffer open)
           (agent-shell-vertico-transcript--defer-embedded-ranges))))
     buffer))

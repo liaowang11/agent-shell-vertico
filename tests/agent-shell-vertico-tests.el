@@ -99,6 +99,11 @@ The real Markdown modes are not available to the suite.")
   "Test Markdown Child"
   "Stand-in for a mode built on a Markdown major mode.")
 
+(define-derived-mode agent-shell-vertico-tests--fontified-markdown-mode
+  text-mode "Test Fontified Markdown"
+  "Stand-in for a Markdown major mode that highlights headings."
+  (setq-local font-lock-defaults '((("^## .*" . 'bold)))))
+
 (defmacro agent-shell-vertico-tests--with-sidebar (&rest body)
   "Evaluate BODY in a freshly initialized named sidebar buffer."
   (declare (indent 0) (debug t))
@@ -11350,6 +11355,34 @@ Polymode Markdown buffer unable to fontify."
                               #'string-match-p))
          nil))
       (should (eq seen-mode 'text-mode)))))
+
+(ert-deftest agent-shell-vertico-consult-preview-highlights-partial-preview ()
+  "A partial preview of a large transcript is highlighted too.
+Consult reads the start of a file above `consult-preview-partial-size'
+into a buffer named with a leading space, where Font Lock mode refuses
+to turn on, so the Markdown mode alone left it plain."
+  (let (buffer)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-consult--preview-major-mode)
+                     (lambda ()
+                       'agent-shell-vertico-tests--fontified-markdown-mode)))
+            (setq buffer
+                  (agent-shell-vertico-consult--open-preview
+                   "/tmp/large-transcript.md"
+                   (lambda (_file)
+                     ;; As `consult--find-file-temporarily-1' builds one.
+                     (with-current-buffer
+                         (generate-new-buffer " Preview:large-transcript.md")
+                       (insert "## User\n\nhello\n")
+                       (agent-shell-vertico-tests--fontified-markdown-mode)
+                       (font-lock-mode 1)
+                       (current-buffer))))))
+          (should-not (buffer-local-value 'font-lock-mode buffer))
+          (should (eq (get-text-property 1 'face buffer) 'bold)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest agent-shell-vertico-consult-preview-defers-inline-ranges ()
   "A preview leaves its inline parsers to jit-lock, as the reader does."
