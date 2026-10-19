@@ -9271,7 +9271,12 @@ directory comparison would keep."
   (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
          (transcript-dir (expand-file-name ".agent-shell/transcripts" root))
          (subdir (expand-file-name "packages/api" root))
-         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+         ;; As upstream's `agent-shell--dot-subdir-in-repo': the store moves
+         ;; with the project, which is what makes it the project's own.
+         (agent-shell-dot-subdir-function
+          (lambda (subdir)
+            (expand-file-name (file-name-concat ".agent-shell" subdir)
+                              default-directory))))
     (unwind-protect
         (progn
           (make-directory transcript-dir t)
@@ -9404,6 +9409,44 @@ it per project multiplies the cost by the number of projects."
       (delete-directory root t)
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-shared-store-inside-a-project ()
+  "A store every project shares does not belong to the project holding it.
+Bill's store sits under ~/PARA/, itself a known project; treating it as
+that project's own store gave PARA every transcript in it."
+  (let* ((home (make-temp-file "agent-shell-vertico-home-" t))
+         (para (expand-file-name "PARA/" home))
+         (other-root (expand-file-name "Repositories/other/" home))
+         (transcript-dir (expand-file-name "resources/transcripts/" para))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir)))
+    (unwind-protect
+        (progn
+          (make-directory transcript-dir t)
+          (make-directory other-root t)
+          (with-temp-file (expand-file-name "other.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n" other-root)
+                    "**Session ID:** other\n\n---\n\n## User\n\nhello\n"))
+          (with-temp-file (expand-file-name "para.md" transcript-dir)
+            (insert (format "**Working Directory:** %s\n" para)
+                    "**Session ID:** para\n\n---\n\n## User\n\nhello\n"))
+          (should
+           (equal
+            (mapcar #'agent-shell-vertico-transcript-record-session-id
+                    (agent-shell-vertico-transcript--records-for-project para))
+            '("para")))
+          (should
+           (equal
+            (sort
+             (mapcar
+              (lambda (record)
+                (cons (agent-shell-vertico-transcript-record-session-id record)
+                      (agent-shell-vertico-transcript-record-project-name
+                       record)))
+              (agent-shell-vertico-transcript--all-records
+               (list para other-root)))
+             (lambda (left right) (string< (car left) (car right))))
+            '(("other" . "other") ("para" . "PARA")))))
+      (delete-directory home t))))
 
 (ert-deftest agent-shell-vertico-transcript-parse-file-reads-changed-files-only ()
   "A transcript is read again only once it changes, whatever root asks.

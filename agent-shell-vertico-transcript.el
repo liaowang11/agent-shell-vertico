@@ -345,6 +345,13 @@ Remote prefixes identify the host through which Emacs reached a path.  They
 do not identify the project, so project-membership comparisons ignore them."
   (or (file-remote-p directory 'localname) directory))
 
+(defvar agent-shell-vertico-transcript--root-cache nil
+  "When non-nil, a table from a working directory to the root it names.
+It also maps (:directory . ROOT) to ROOT's transcript directory.
+Bound by a caller assigning many records among one list of roots, since
+a store's records share few working directories and comparing each
+record with every root was most of the time a listing took.")
+
 (defvar agent-shell-vertico-transcript--truename-cache
   (make-hash-table :test #'equal)
   "Directory names to (TIME TRUENAME . CASE-INSENSITIVE).
@@ -434,13 +441,26 @@ each session ran on."
           (cdr root)
           (string-prefix-p (cdr root) (cdr directory))))))
 
+(defun agent-shell-vertico-transcript--shared-store-p (transcript-directory)
+  "Return non-nil when TRANSCRIPT-DIRECTORY is the store every project uses.
+It is when the filesystem root resolves to the same store: a store of
+the project's own, such as upstream's `.agent-shell/transcripts/', moves
+with the project, and a shared one does not, wherever it happens to sit."
+  (string=
+   (agent-shell-vertico-transcript--normalize-directory transcript-directory)
+   (agent-shell-vertico-transcript--normalize-directory
+    (agent-shell-vertico-transcript--cached-directory "/"))))
+
 (defun agent-shell-vertico-transcript--record-in-project-p
     (record project-root transcript-directory)
   "Return non-nil when RECORD belongs to PROJECT-ROOT.
 TRANSCRIPT-DIRECTORY identifies project-local stores.  Shared stores use
-the record's working directory to distinguish projects."
+the record's working directory to distinguish projects, even one inside
+PROJECT-ROOT, as a store under ~/PARA/ is inside a ~/PARA/ project."
   (let ((working-directory
          (agent-shell-vertico-transcript-record-working-directory record))
+        (shared
+         (agent-shell-vertico-transcript--shared-store-p transcript-directory))
         (project-root
          (agent-shell-vertico-transcript--comparison-directory project-root))
         (transcript-directory
@@ -449,10 +469,11 @@ the record's working directory to distinguish projects."
     (or
      ;; A project-local store is authoritative even when a transcript was
      ;; written from a subdirectory or carries a path from another machine.
-     (agent-shell-vertico-transcript--same-directory-p
-      transcript-directory project-root)
-     (agent-shell-vertico-transcript--in-directory-p
-      transcript-directory project-root)
+     (and (not shared)
+          (or (agent-shell-vertico-transcript--same-directory-p
+               transcript-directory project-root)
+              (agent-shell-vertico-transcript--in-directory-p
+               transcript-directory project-root)))
      ;; A shared store needs the header to disambiguate projects, but a
      ;; working directory anywhere under the root still belongs to it.
      (and working-directory
@@ -462,7 +483,9 @@ the record's working directory to distinguish projects."
 (defun agent-shell-vertico-transcript--records-for-project (project-root)
   "Return transcript records belonging to PROJECT-ROOT, newest first."
   (let ((directory
-         (agent-shell-vertico-transcript--directory project-root)))
+         (agent-shell-vertico-transcript--directory project-root))
+        (agent-shell-vertico-transcript--root-cache
+         (make-hash-table :test #'equal)))
     (when (file-directory-p directory)
       (let ((records
              (mapcar
@@ -607,13 +630,6 @@ first and is ascending by line within one transcript."
               (forward-line 1))
             (nreverse matches))))))))
 
-(defvar agent-shell-vertico-transcript--root-cache nil
-  "When non-nil, a table from a working directory to the root it names.
-It also maps (:directory . ROOT) to ROOT's transcript directory.
-Bound by a caller assigning many records among one list of roots, since
-a store's records share few working directories and comparing each
-record with every root was most of the time a listing took.")
-
 (defun agent-shell-vertico-transcript--root-for-working-directory
     (working-directory project-roots)
   "Return the deepest of PROJECT-ROOTS holding WORKING-DIRECTORY."
@@ -757,6 +773,8 @@ Nothing is sorted here, because rg has already done it."
           (agent-shell-vertico-transcript--rg-matches
            directories query))
          (cache (make-hash-table :test #'equal))
+         (agent-shell-vertico-transcript--root-cache
+          (make-hash-table :test #'equal))
          records)
     (dolist (entry matches)
       (when-let* ((record
