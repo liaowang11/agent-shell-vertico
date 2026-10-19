@@ -9330,6 +9330,117 @@ carries a TRAMP prefix that no local project root can match verbatim."
       (delete-directory other-root t)
       (delete-directory transcript-dir t))))
 
+(ert-deftest agent-shell-vertico-transcript-membership-across-home-directories ()
+  "A project under one home matches the same path under another.
+A store synced between machines records each session's working directory
+under the home of the machine it ran on, and those homes differ."
+  (dolist (case
+           '(("/Users/bill.liao/Repositories/x/" "/Users/wliao/Repositories/x/" t)
+             ("/Users/bill.liao/Repositories/x/sub/"
+              "/Users/wliao/Repositories/x/" t)
+             ("/rpc:bill.liao@work-m4:/Users/bill.liao/Repositories/x/"
+              "/Users/wliao/Repositories/x/" t)
+             ("/home/wliao/Repositories/x/" "/Users/bill.liao/Repositories/x/" t)
+             ("/Users/bill.liao/Repositories/x/" "/Users/wliao/Repositories/y/"
+              nil)
+             ("/Users/bill.liao/Repositories/xy/" "/Users/wliao/Repositories/x/"
+              nil)
+             ("/Users/bill.liao/Repositories/x/" "/Users/wliao/x/" nil)
+             ("/opt/src/x/" "/srv/src/x/" nil)
+             ("/opt/src/x/" "/Users/wliao/opt/src/x/" nil)))
+    (should
+     (eq (and (agent-shell-vertico-transcript--working-directory-in-project-p
+               (nth 0 case) (nth 1 case))
+              t)
+         (nth 2 case)))))
+
+(ert-deftest agent-shell-vertico-transcript-all-records-parse-shared-store-once ()
+  "Roots sharing one store parse it once, each record going to its root.
+A flat store is every known project's transcript directory, so parsing
+it per project multiplies the cost by the number of projects."
+  (let* ((root (make-temp-file "agent-shell-vertico-root-" t))
+         (nested (expand-file-name "modules/" root))
+         (other-root (make-temp-file "agent-shell-vertico-other-" t))
+         (transcript-dir (make-temp-file "agent-shell-vertico-shared-" t))
+         (agent-shell-dot-subdir-function (lambda (_subdir) transcript-dir))
+         (parsed 0)
+         (parse (symbol-function
+                 'agent-shell-vertico-transcript--parse-file)))
+    (unwind-protect
+        (progn
+          (make-directory nested)
+          (dolist (spec `(("top.md" ,root "top")
+                          ("nested.md" ,nested "nested")
+                          ("other.md" ,other-root "other")))
+            (with-temp-file (expand-file-name (car spec) transcript-dir)
+              (insert (format "**Working Directory:** %s\n"
+                              (directory-file-name (cadr spec)))
+                      (format "**Session ID:** %s\n\n---\n\n" (caddr spec))
+                      "## User\n\nhello\n")))
+          (cl-letf (((symbol-function
+                      'agent-shell-vertico-transcript--parse-file)
+                     (lambda (&rest args)
+                       (cl-incf parsed)
+                       (apply parse args))))
+            (let ((records
+                   (agent-shell-vertico-transcript--all-records
+                    (list root nested other-root))))
+              (should (= parsed 3))
+              (should
+               (equal
+                (sort
+                 (mapcar
+                  (lambda (record)
+                    (cons
+                     (agent-shell-vertico-transcript-record-session-id record)
+                     (agent-shell-vertico-transcript-record-project-root
+                      record)))
+                  records)
+                 (lambda (left right) (string< (car left) (car right))))
+                (list
+                 (cons "nested" (file-name-as-directory nested))
+                 (cons "other" (file-name-as-directory other-root))
+                 (cons "top" (file-name-as-directory root))))))))
+      (delete-directory root t)
+      (delete-directory other-root t)
+      (delete-directory transcript-dir t))))
+
+(ert-deftest agent-shell-vertico-transcript-parse-file-reads-changed-files-only ()
+  "A transcript is read again only once it changes, whatever root asks.
+A store shared by every project is read whole by every listing."
+  (let* ((file (make-temp-file "agent-shell-vertico-cached-" nil ".md"))
+         (reads 0)
+         (read (symbol-function 'agent-shell-vertico-transcript--read-file)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-shell-vertico-transcript--read-file)
+                   (lambda (&rest args)
+                     (cl-incf reads)
+                     (apply read args))))
+          (with-temp-file file
+            (insert "**Session ID:** first\n\n---\n\n## User\n\nhello\n"))
+          (agent-shell-vertico-transcript--parse-file file "/tmp/one/")
+          (let ((record
+                 (agent-shell-vertico-transcript--parse-file
+                  file "/tmp/two/")))
+            (should (= reads 1))
+            (should (equal (agent-shell-vertico-transcript-record-project-root
+                            record)
+                           "/tmp/two/"))
+            (should (equal (agent-shell-vertico-transcript-record-project-name
+                            record)
+                           "two")))
+          (with-temp-file file
+            (insert "**Session ID:** second, longer\n\n---\n\n"
+                    "## User\n\nhello\n"))
+          (should
+           (equal (agent-shell-vertico-transcript-record-session-id
+                   (agent-shell-vertico-transcript--parse-file
+                    file "/tmp/one/"))
+                  "second, longer"))
+          (should (= reads 2)))
+      (remhash file agent-shell-vertico-transcript--records-cache)
+      (delete-file file))))
+
 (ert-deftest agent-shell-vertico-transcript-records-match-remote-project-root ()
   "A remote project root matches a transcript from that remote project.
 Both paths carry a TRAMP prefix, which identifies where the project was
@@ -9637,7 +9748,7 @@ that omits them."
             (should
              (seq-find
               (lambda (issue)
-                (string-match-p "missing or names another directory" issue))
+                (string-match-p "missing or names no known project" issue))
               issues))
             (should-not
              (seq-find

@@ -173,6 +173,22 @@ too), reads that buffer's `agent-shell--transcript-file`, and opens it through
 alone: this is a command to bind, not advice, so nothing changes for anyone
 who has not bound it.
 
+**Which project a transcript belongs to.** A store inside the project root
+(upstream's `.agent-shell/transcripts/`) answers for every file in it. A
+store outside it may be shared by every project, so only the header's
+working directory answers there (`--record-in-project-p`), and a file
+goes to the deepest known root that holds that directory
+(`--root-for-record`). The comparison drops a TRAMP prefix and, for two
+paths under different homes (`/Users/NAME/`, `/home/NAME/`), compares what
+follows each home, because a store synced between machines records the
+home of the machine each session ran on. Since a shared store is read whole
+by every listing, three caches keep that affordable: `--records-cache`
+re-reads a file only once its size or time changes, `--comparison-keys`
+and `--truename-cache` keep each comparison off the file system, and
+`--all-records` parses a shared directory once with `--root-cache` bound,
+mapping each working directory to its root. Measured against a 2,757-file
+store and 219 roots: 0.5 s warm for every project, 0.4 s for one.
+
 **Searching transcripts is per match, browsing is per transcript.** A
 search row is one rg match, the way `consult-ripgrep` works, not one
 transcript with a match count: which line a match is on is the answer the

@@ -265,8 +265,8 @@ transcript headed by frontmatter, the matching key is read instead (see
         (buffer-substring-no-properties
          (line-beginning-position) (line-end-position)))))))
 
-(defun agent-shell-vertico-transcript--parse-file (file project-root)
-  "Return a transcript record parsed from FILE for PROJECT-ROOT."
+(defun agent-shell-vertico-transcript--read-file (file)
+  "Return a transcript record read from FILE, with no project assigned."
   (with-temp-buffer
     (insert-file-contents file nil 0 65536)
     (let* ((agent (agent-shell-vertico-transcript--header-value "Agent"))
@@ -281,15 +281,9 @@ transcript headed by frontmatter, the matching key is read instead (see
            (model (agent-shell-vertico-transcript--header-value "Model"))
            (title (agent-shell-vertico-transcript--header-value "Title"))
            (preview (agent-shell-vertico-transcript--first-user-message))
-           (attributes (file-attributes file))
-           (normalized-root
-            (agent-shell-vertico-transcript--normalize-directory
-             project-root)))
+           (attributes (file-attributes file)))
       (agent-shell-vertico-transcript-record-create
        :file file
-       :project-root normalized-root
-       :project-name
-       (agent-shell-vertico-transcript--directory-basename normalized-root)
        :agent agent
        :model model
        :session-id session-id
@@ -301,6 +295,41 @@ transcript headed by frontmatter, the matching key is read instead (see
              working-directory))
        :preview (or preview "(empty transcript)")
        :modified-time (file-attribute-modification-time attributes)))))
+
+(defvar agent-shell-vertico-transcript--records-cache
+  (make-hash-table :test #'equal)
+  "Transcripts already read, mapping a file to its size, time and record.
+
+A store shared by every project is read whole by every listing, where a
+store per project read only that project's files, so each file is read
+again only once it has changed.")
+
+(defun agent-shell-vertico-transcript--parse-file (file project-root)
+  "Return a transcript record parsed from FILE for PROJECT-ROOT.
+FILE is read only when it has changed since it was last read; see
+`agent-shell-vertico-transcript--records-cache'."
+  (let* ((attributes (file-attributes file))
+         (stamp (and attributes
+                     (cons (file-attribute-size attributes)
+                           (file-attribute-modification-time attributes))))
+         (cached (gethash file agent-shell-vertico-transcript--records-cache))
+         (record
+          (if (and stamp cached (equal (car cached) stamp))
+              (cdr cached)
+            (let ((record (agent-shell-vertico-transcript--read-file file)))
+              (when stamp
+                (puthash file (cons stamp record)
+                         agent-shell-vertico-transcript--records-cache))
+              record)))
+         (record (copy-agent-shell-vertico-transcript-record record))
+         (normalized-root
+          (agent-shell-vertico-transcript--normalize-directory project-root)))
+    (setf (agent-shell-vertico-transcript-record-project-root record)
+          normalized-root
+          (agent-shell-vertico-transcript-record-project-name record)
+          (agent-shell-vertico-transcript--directory-basename
+           normalized-root))
+    record))
 
 (defun agent-shell-vertico-transcript--same-directory-p (left right)
   "Return non-nil when LEFT and RIGHT name the same directory."
@@ -316,22 +345,94 @@ Remote prefixes identify the host through which Emacs reached a path.  They
 do not identify the project, so project-membership comparisons ignore them."
   (or (file-remote-p directory 'localname) directory))
 
+(defvar agent-shell-vertico-transcript--truename-cache
+  (make-hash-table :test #'equal)
+  "Directory names to (TIME TRUENAME . CASE-INSENSITIVE).
+A shared store compares every record with every known project, and
+asking the file system for each comparison was most of the time a
+listing took.  An entry is trusted for
+`agent-shell-vertico-transcript--truename-lifetime' seconds.")
+
+(defconst agent-shell-vertico-transcript--truename-lifetime 60
+  "Seconds a cached directory truename is trusted.")
+
+(defun agent-shell-vertico-transcript--truename (directory)
+  "Return (TRUENAME . CASE-INSENSITIVE) for DIRECTORY, through a cache."
+  (let* ((directory (file-name-as-directory directory))
+         (now (float-time))
+         (entry (gethash directory
+                         agent-shell-vertico-transcript--truename-cache)))
+    (if (and entry
+             (< (- now (car entry))
+                agent-shell-vertico-transcript--truename-lifetime))
+        (cdr entry)
+      (cdr
+       (puthash directory
+                (cons now
+                      (cons (file-name-as-directory (file-truename directory))
+                            (file-name-case-insensitive-p directory)))
+                agent-shell-vertico-transcript--truename-cache)))))
+
+(defun agent-shell-vertico-transcript--in-directory-p (directory root)
+  "Return non-nil when DIRECTORY is ROOT or sits under it.
+As `file-in-directory-p' answers for local paths, through
+`agent-shell-vertico-transcript--truename' so repeated comparisons cost
+no file system calls, and without requiring ROOT to exist."
+  (let ((directory (agent-shell-vertico-transcript--truename directory))
+        (root (agent-shell-vertico-transcript--truename root)))
+    (string-prefix-p (car root) (car directory) (cdr root))))
+
+(defun agent-shell-vertico-transcript--home-relative (directory)
+  "Return DIRECTORY relative to the home it sits under, or nil.
+
+A home is recognised by its shape, `/Users/NAME/' or `/home/NAME/', not
+by asking this machine: a synced store records paths under the homes of
+the machines its sessions ran on.  The result ends in a slash, and is
+empty for the home itself."
+  (let ((directory (file-name-as-directory directory)))
+    (when (string-match "\\`/\\(?:Users\\|home\\)/[^/]+/" directory)
+      (substring directory (match-end 0)))))
+
+(defvar agent-shell-vertico-transcript--comparison-keys
+  (make-hash-table :test #'equal)
+  "Directory names to what membership compares them by.
+See `agent-shell-vertico-transcript--comparison-key'.")
+
+(defun agent-shell-vertico-transcript--comparison-key (directory)
+  "Return (LOCAL . HOME-RELATIVE) for comparing DIRECTORY's membership.
+LOCAL is DIRECTORY normalized with any remote prefix dropped, and
+HOME-RELATIVE is what follows the home it sits under, or nil.  Both
+depend on the name alone, so each name is worked out once: a listing
+compares a few hundred working directories with every known project."
+  (or (gethash directory agent-shell-vertico-transcript--comparison-keys)
+      (let ((local
+             (agent-shell-vertico-transcript--normalize-directory
+              (agent-shell-vertico-transcript--comparison-directory
+               directory))))
+        (puthash directory
+                 (cons local
+                       (agent-shell-vertico-transcript--home-relative local))
+                 agent-shell-vertico-transcript--comparison-keys))))
+
 (defun agent-shell-vertico-transcript--working-directory-in-project-p
     (working-directory project-root)
   "Return non-nil when WORKING-DIRECTORY names PROJECT-ROOT or sits under it.
 
 A session or the invoking project can be reached over TRAMP, making either
 path carry a remote prefix.  The prefix names the host that opened the
-project, not the project itself, so the comparison drops it from both paths."
-  (let ((working-directory
-         (agent-shell-vertico-transcript--comparison-directory
-          working-directory))
-        (project-root
-         (agent-shell-vertico-transcript--comparison-directory project-root)))
+project, not the project itself, so the comparison drops it from both paths.
+Paths under two different homes are compared by what follows each home,
+because a store synced between machines records the home of the machine
+each session ran on."
+  (let ((directory
+         (agent-shell-vertico-transcript--comparison-key working-directory))
+        (root (agent-shell-vertico-transcript--comparison-key project-root)))
     (or
-     (agent-shell-vertico-transcript--same-directory-p
-      working-directory project-root)
-     (file-in-directory-p working-directory project-root))))
+     (string= (car directory) (car root))
+     (agent-shell-vertico-transcript--in-directory-p (car directory) (car root))
+     (and (cdr directory)
+          (cdr root)
+          (string-prefix-p (cdr root) (cdr directory))))))
 
 (defun agent-shell-vertico-transcript--record-in-project-p
     (record project-root transcript-directory)
@@ -350,7 +451,8 @@ the record's working directory to distinguish projects."
      ;; written from a subdirectory or carries a path from another machine.
      (agent-shell-vertico-transcript--same-directory-p
       transcript-directory project-root)
-     (file-in-directory-p transcript-directory project-root)
+     (agent-shell-vertico-transcript--in-directory-p
+      transcript-directory project-root)
      ;; A shared store needs the header to disambiguate projects, but a
      ;; working directory anywhere under the root still belongs to it.
      (and working-directory
@@ -505,6 +607,47 @@ first and is ascending by line within one transcript."
               (forward-line 1))
             (nreverse matches))))))))
 
+(defvar agent-shell-vertico-transcript--root-cache nil
+  "When non-nil, a table from a working directory to the root it names.
+It also maps (:directory . ROOT) to ROOT's transcript directory.
+Bound by a caller assigning many records among one list of roots, since
+a store's records share few working directories and comparing each
+record with every root was most of the time a listing took.")
+
+(defun agent-shell-vertico-transcript--root-for-working-directory
+    (working-directory project-roots)
+  "Return the deepest of PROJECT-ROOTS holding WORKING-DIRECTORY."
+  (let ((cache agent-shell-vertico-transcript--root-cache))
+    (if (and cache (gethash working-directory cache))
+        (car (gethash working-directory cache))
+      (let ((root
+             (car
+              (seq-sort-by
+               (lambda (root)
+                 (length
+                  (agent-shell-vertico-transcript--normalize-directory root)))
+               #'>
+               (seq-filter
+                (lambda (root)
+                  (agent-shell-vertico-transcript--working-directory-in-project-p
+                   working-directory root))
+                project-roots)))))
+        (when cache
+          (puthash working-directory (list root) cache))
+        root))))
+
+(defun agent-shell-vertico-transcript--cached-directory (project-root)
+  "Return PROJECT-ROOT's transcript directory, through the root cache.
+See `agent-shell-vertico-transcript--root-cache'."
+  (let ((cache agent-shell-vertico-transcript--root-cache)
+        (key (cons :directory project-root)))
+    (or (and cache (gethash key cache))
+        (let ((directory
+               (agent-shell-vertico-transcript--directory project-root)))
+          (when cache
+            (puthash key directory cache))
+          directory))))
+
 (defun agent-shell-vertico-transcript--root-for-record
     (record project-roots)
   "Return the project root for RECORD among PROJECT-ROOTS."
@@ -512,21 +655,13 @@ first and is ascending by line within one transcript."
    (when-let* ((working-directory
                 (agent-shell-vertico-transcript-record-working-directory
                  record)))
-     (car
-      (seq-sort-by
-       (lambda (root)
-         (length (agent-shell-vertico-transcript--normalize-directory root)))
-       #'>
-       (seq-filter
-        (lambda (root)
-          (agent-shell-vertico-transcript--working-directory-in-project-p
-           working-directory root))
-        project-roots))))
+     (agent-shell-vertico-transcript--root-for-working-directory
+      working-directory project-roots))
    (seq-find
     (lambda (root)
-      (file-in-directory-p
+      (agent-shell-vertico-transcript--in-directory-p
        (agent-shell-vertico-transcript-record-file record)
-       (agent-shell-vertico-transcript--directory root)))
+       (agent-shell-vertico-transcript--cached-directory root)))
     project-roots)))
 
 (defun agent-shell-vertico-transcript--project-record (file project-roots)
@@ -2129,21 +2264,40 @@ through and landed on whatever preceded the first one."
 
 (defun agent-shell-vertico-transcript--all-records (&optional project-roots)
   "Return deduplicated records for PROJECT-ROOTS.
-When PROJECT-ROOTS is nil, use all known local projects."
-  (let ((seen (make-hash-table :test #'equal))
+When PROJECT-ROOTS is nil, use all known local projects.
+
+Roots sharing a transcript directory are read together, so a store
+shared by every project is parsed once rather than once per project, and
+each record goes to the deepest root its header names, as a search
+match does."
+  (let ((roots-by-directory (make-hash-table :test #'equal))
+        (seen (make-hash-table :test #'equal))
+        directories
         records)
     (dolist
         (root
-         (or project-roots
-             (agent-shell-vertico-transcript--project-roots)))
-      (dolist
-          (record
-           (agent-shell-vertico-transcript--records-for-project root))
-        (let ((file
-               (agent-shell-vertico-transcript-record-file record)))
-          (unless (gethash file seen)
-            (puthash file t seen)
-            (push record records)))))
+         (mapcar
+          #'agent-shell-vertico-transcript--normalize-directory
+          (or project-roots
+              (agent-shell-vertico-transcript--project-roots))))
+      (let ((directory (agent-shell-vertico-transcript--directory root)))
+        (unless (gethash directory roots-by-directory)
+          (push directory directories))
+        (puthash directory
+                 (append (gethash directory roots-by-directory) (list root))
+                 roots-by-directory)))
+    (dolist (directory (nreverse directories))
+      (when (file-directory-p directory)
+        (let ((roots (gethash directory roots-by-directory))
+              (agent-shell-vertico-transcript--root-cache
+               (make-hash-table :test #'equal)))
+          (dolist (file (directory-files-recursively directory "\\.md\\'"))
+            (unless (gethash file seen)
+              (puthash file t seen)
+              (when-let* ((record
+                           (agent-shell-vertico-transcript--project-record
+                            file roots)))
+                (push record records)))))))
     (seq-sort
      (lambda (left right)
        (time-less-p
@@ -2193,14 +2347,13 @@ none."
         (count 0))
     (dolist (record records)
       (puthash (agent-shell-vertico-transcript-record-file record) t listed))
-    (dolist (root project-roots)
-      (let ((directory
-             (agent-shell-vertico-transcript--directory root)))
-        (when (file-directory-p directory)
-          (dolist (file (directory-files-recursively directory "\\.md\\'"))
-            (unless (gethash file listed)
-              (puthash file t listed)
-              (cl-incf count))))))
+    (dolist (directory
+             (agent-shell-vertico-transcript--search-directories
+              project-roots))
+      (dolist (file (directory-files-recursively directory "\\.md\\'"))
+        (unless (gethash file listed)
+          (puthash file t listed)
+          (cl-incf count))))
     count))
 
 (defun agent-shell-vertico-transcript--diagnostic-issues
@@ -2259,9 +2412,9 @@ that RECORDS omits."
     (when (and unlisted (> unlisted 0))
       (push
        (format
-        (concat "%d transcript%s stored under a known project but not "
-                "listed; %s Working Directory header is missing or "
-                "names another directory")
+        (concat "%d transcript%s in the store but not listed; %s "
+                "Working Directory header is missing or names no known "
+                "project")
         unlisted
         (if (= unlisted 1) " is" "s are")
         (if (= unlisted 1) "its" "their"))
