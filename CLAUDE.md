@@ -238,8 +238,15 @@ than an unconditional show, because Consult keeps a previewed buffer for
 the next candidate in the same file (a hidden match then a message match
 must flip it full and back). This is why the clean view is a toggle on a
 buffer and not a separate rendering: a preview of the 150 KB median
-transcript costs 1.5 ms over the read, and Consult already truncates
-files above 1 MB to a 10 KB chunk before the view is applied.
+transcript costs 1.5 ms over the read.  Consult truncates a file above
+`consult-preview-partial-size` to its first 10 KB; transcript previews
+raise that to `agent-shell-vertico-consult-preview-max-size` (4 MiB:
+3 MB opens in 130 ms, 13 MB took 27 s) in `--call-opener`, which also
+drops the large-file prompt and binds `so-long-predicate` to Emacs's
+line-length test, since Doom's also counts lines and Consult refuses
+any buffer so-long flags.  A transcript with a line past
+`so-long-threshold` (40 of the 103 between 1 and 4 MiB) is refused
+whole and opened again as Consult's partial preview.
 
 **Who wrote a match.** Search narrows by speaker, which means answering
 which section of a transcript a matched line falls in.

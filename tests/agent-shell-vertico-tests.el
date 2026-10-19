@@ -11384,6 +11384,70 @@ to turn on, so the Markdown mode alone left it plain."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest agent-shell-vertico-consult-preview-reads-whole-transcripts ()
+  "A transcript up to the preview limit is previewed whole.
+Consult reads only the start of a file above
+`consult-preview-partial-size', asks before opening one above
+`large-file-warning-threshold', and refuses a buffer `so-long' flags,
+which Doom's predicate does by line count alone."
+  (require 'so-long)
+  (let ((agent-shell-vertico-consult-preview-max-size (* 4 1024 1024))
+        (consult-preview-partial-size (* 1024 1024))
+        (large-file-warning-threshold (* 1024 1024))
+        (so-long-predicate #'ignore)
+        seen)
+    (agent-shell-vertico-consult--open-preview
+     "/tmp/large-transcript.md"
+     (lambda (_file)
+       (setq seen (list consult-preview-partial-size
+                        large-file-warning-threshold
+                        so-long-predicate))
+       nil))
+    (should (equal seen (list (* 4 1024 1024) nil
+                              #'so-long-statistics-excessive-p)))
+    (let ((agent-shell-vertico-consult-preview-max-size nil))
+      (agent-shell-vertico-consult--open-preview
+       "/tmp/large-transcript.md"
+       (lambda (_file)
+         (setq seen (list consult-preview-partial-size
+                          large-file-warning-threshold
+                          so-long-predicate))
+         nil))
+      (should (equal seen (list (* 1024 1024) (* 1024 1024) #'ignore))))))
+
+(ert-deftest agent-shell-vertico-consult-preview-falls-back-to-partial ()
+  "A transcript Consult refuses whole is previewed in part instead.
+Consult refuses a buffer with a line longer than `so-long-threshold',
+which its first chunk may not contain.  A file Consult would read whole
+anyway is not read twice."
+  (let ((agent-shell-vertico-consult-preview-max-size 1000)
+        (consult-preview-partial-size 10)
+        (large (make-temp-file "agent-shell-vertico-large" nil ".md"
+                               (make-string 100 ?x)))
+        (small (make-temp-file "agent-shell-vertico-small" nil ".md" "x"))
+        (calls nil)
+        (buffer nil))
+    (unwind-protect
+        (let ((opener
+               (lambda (_file)
+                 (push consult-preview-partial-size calls)
+                 ;; As `consult--find-file-temporarily' reports the
+                 ;; refusal of a whole file with a long line.
+                 (unless (> consult-preview-partial-size 10)
+                   (generate-new-buffer " Preview:large.md")))))
+          (setq buffer
+                (agent-shell-vertico-consult--open-preview large opener))
+          (should (buffer-live-p buffer))
+          (should (equal calls '(10 1000)))
+          (setq calls nil)
+          (should-not
+           (agent-shell-vertico-consult--open-preview small opener))
+          (should (equal calls '(1000))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-file large)
+      (delete-file small))))
+
 (ert-deftest agent-shell-vertico-consult-preview-defers-inline-ranges ()
   "A preview leaves its inline parsers to jit-lock, as the reader does."
   (skip-unless

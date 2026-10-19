@@ -6,6 +6,10 @@
   "Stubbed Consult option.
 Non-nil copies buffer text properties onto completion candidates.")
 
+(defvar consult-preview-partial-size (* 1024 1024)
+  "Stubbed Consult option.
+Files at least this large are previewed from their first chunk only.")
+
 ;; Consult defines this with the same default.  It is a plain `defvar',
 ;; not a `defcustom', so a value here cannot keep the real package from
 ;; installing its own.

@@ -49,8 +49,29 @@
 (defvar markdown-ts-view-mode-pre-init-hook)
 (defvar markdown-ts-fontify-code-blocks-natively)
 
+;; No value: so-long's own `defcustom' must install the real default.
+(defvar so-long-predicate)
+
 (defvar agent-shell-vertico-consult-history nil
   "Minibuffer history for transcript searches.")
+
+(defcustom agent-shell-vertico-consult-preview-max-size (* 4 1024 1024)
+  "Largest transcript, in bytes, that a preview reads whole.
+
+Consult previews only the first `consult-preview-partial-chunk' bytes
+of a file above `consult-preview-partial-size', 1 MiB by default, which
+leaves most of a long session's transcript out of its preview.  Up to
+this size a transcript preview reads the whole file instead, without
+the large file prompt, and `so-long' judges it by line length alone, so
+a predicate that also counts lines, as Doom's does, cannot make Consult
+refuse it.  Measured with a Doom configuration, a 3 MB transcript opens
+in about 130 ms and a 5.5 MB one in 1.4 s, while 13 MB took 27 s.
+
+Nil leaves Consult's own limits in place.  Other Consult previews are
+not affected."
+  :type '(choice (const :tag "Consult's limit" nil)
+                 (integer :tag "Bytes"))
+  :group 'agent-shell-vertico-transcript)
 
 (defcustom agent-shell-vertico-consult-preview-key '(:debounce 0.2 any)
   "Which keys preview a transcript, in `consult-preview-key''s format.
@@ -123,6 +144,25 @@ Markdown mode to use."
   (or (agent-shell-vertico-transcript--markdown-major-mode)
       'text-mode))
 
+(defun agent-shell-vertico-consult--call-opener (opener file)
+  "Call OPENER on FILE within `agent-shell-vertico-consult-preview-max-size'.
+Up to that size the file is read whole, without asking, and only a long
+line makes `so-long' flag it.  Consult refuses a buffer `so-long' flags,
+so a file it would otherwise have read in part is opened again within
+Consult's own limits, whose first chunk may hold no such line."
+  (if-let* ((max-size agent-shell-vertico-consult-preview-max-size))
+      (or (let ((consult-preview-partial-size max-size)
+                (large-file-warning-threshold nil))
+            (if (and (boundp 'so-long-predicate)
+                     (fboundp 'so-long-statistics-excessive-p))
+                (let ((so-long-predicate #'so-long-statistics-excessive-p))
+                  (funcall opener file))
+              (funcall opener file)))
+          (when-let* ((size (file-attribute-size (file-attributes file))))
+            (when (<= consult-preview-partial-size size (1- max-size))
+              (funcall opener file))))
+    (funcall opener file)))
+
 (defun agent-shell-vertico-consult--open-preview (file opener)
   "Open FILE for preview with OPENER, highlighted as Markdown.
 
@@ -138,11 +178,12 @@ Two cases show up as an unhighlighted preview:
   `markdown-view-mode' or the tree-sitter view mode, both of which set
   themselves up in the mode body.  Either way jit-lock stays in charge.
 
-- A file above `consult-preview-partial-size' is read into a buffer with
-  no file name, where `set-auto-mode' cannot detect Markdown and leaves
-  Fundamental mode.  Set the mode there directly.  Consult names that
-  buffer with a leading space, and Font Lock mode refuses to turn on in
-  such a buffer, so highlight it with `font-lock-ensure' instead.
+- A file above `agent-shell-vertico-consult-preview-max-size' is read
+  into a buffer with no file name, where `set-auto-mode' cannot detect
+  Markdown and leaves Fundamental mode.  Set the mode there directly.
+  Consult names that buffer with a leading space, and Font Lock mode
+  refuses to turn on in such a buffer, so highlight it with
+  `font-lock-ensure' instead.
 
 In the tree-sitter view mode, native code-block fontification is off for
 the mode call: it runs each visible block's own major mode and a
@@ -165,7 +206,7 @@ reader already had open is left as it is."
           (list (lambda () (setq-local markdown-ts-inline-images nil))))
          (markdown-ts-fontify-code-blocks-natively nil)
          (open (find-buffer-visiting file))
-         (buffer (funcall opener file)))
+         (buffer (agent-shell-vertico-consult--call-opener opener file)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (eq major-mode 'fundamental-mode)
