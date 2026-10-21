@@ -3778,8 +3778,11 @@ last one was read cleared nothing and announces itself as usual.
 The one wave that does announce itself on a mark is the result of
 background work: a turn that ended with work still running recorded so
 in the session's `background-at-turn-end' slot, and the first
-wave to settle once nothing runs is what that turn was waiting for.  It
-is announced once, and the mark takes the wave's time.
+wave with a message to settle once nothing runs is what that turn was
+waiting for.  A wave without one, such as the tool call update that
+ends a task while the model has yet to start its report, would announce
+the turn's own message instead.  The result is announced once, and the
+mark takes the wave's time.
 
 A wave that streamed a message with text is read as a turn's end is, by
 `agent-shell-vertico-sidebar--classify-last-message', and the turn ends
@@ -3802,7 +3805,8 @@ stands on until the reader answers it."
         (agent-shell-vertico-sidebar--classify-last-message buffer)
         (agent-shell-vertico-sidebar--stamp-terminal
          buffer (or (plist-get burst :time) (float-time))))
-      (let ((result (and (agent-shell-vertico-sidebar--get
+      (let ((result (and (plist-get burst :message)
+                         (agent-shell-vertico-sidebar--get
                           buffer 'background-at-turn-end)
                          (not (agent-shell-vertico-sidebar--background-work
                                buffer)))))

@@ -18287,6 +18287,37 @@ burst that clears an unread mark is otherwise silent."
         (agent-shell-vertico-tests--settle-root-burst alpha)
         (should (= (length notifications) 2))))))
 
+(ert-deftest agent-shell-vertico-sidebar-background-result-waits-for-its-message ()
+  "The background result announces the report, not the turn before it.
+A task's end streams a tool call update first, and the model can take
+longer than the settle period to start its report, so that update
+settles as a wave of its own with no message in it."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (dolist (event '(((:event . input-submitted)
+                            (:data . ((:prompt . "go"))))
+                           ((:event . agent-message-chunk)
+                            (:data . ((:text-chunk . "Started the work."))))
+                           ((:event . turn-complete)
+                            (:data . ((:stop-reason . "end_turn"))))))
+            (agent-shell-vertico-sidebar--handle-event alpha event)))
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-tests--end-subagent alpha)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . tool-call-update))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 30.0)))
+          (agent-shell-vertico-tests--settle-root-burst alpha))
+        (should (= (length notifications) 2))
+        (should (equal (plist-get (car notifications) :last-message)
+                       "Here is what they found."))))))
+
 (ert-deftest agent-shell-vertico-sidebar-background-result-needs-work ()
   "Without background work at the turn's end, nothing extra is announced."
   (agent-shell-vertico-tests--with-background nil
