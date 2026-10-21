@@ -13800,6 +13800,57 @@ after the test has already finished.  Tests call
                               :time)
                    20.0))))))
 
+(defun agent-shell-vertico-tests--declare-state (buffer state)
+  "Have BUFFER's agent declare run STATE, as agent-shell reports it."
+  (with-current-buffer buffer
+    (setf (map-elt agent-shell--state :agent-state) state))
+  (agent-shell-vertico-sidebar--handle-event
+   buffer `((:event . state-changed) (:data . ((:state . ,state))))))
+
+(ert-deftest agent-shell-vertico-sidebar-declared-running-holds-the-burst ()
+  "A quiet period proves nothing while the agent says it is running.
+Its idle ends the burst at once instead."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (agent-shell-vertico-tests--declare-state alpha "running"))
+        ;; Running with no turn in flight is work, before any output.
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'busy))
+        (agent-shell-vertico-sidebar--out-of-turn-quiet alpha)
+        (should (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-tests--declare-state alpha "idle"))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'unread) 10.0))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))))
+
+(ert-deftest agent-shell-vertico-sidebar-quiet-settles-without-a-declared-state ()
+  "An agent that declares no state still settles on the quiet period."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--out-of-turn-quiet alpha)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
+        (should (agent-shell-vertico-sidebar--get alpha 'unread))))))
+
+(ert-deftest agent-shell-vertico-sidebar-in-turn-running-is-not-a-burst ()
+  "The running state a prompt's own turn declares belongs to that turn."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'busy))))
+        (agent-shell-vertico-tests--declare-state alpha "running")
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))))))
+
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-marks-done ()
   "A quiet burst leaves output nobody has read, so it is marked unread."
   (agent-shell-vertico-tests--with-session-buffers
@@ -18314,6 +18365,42 @@ settles as a wave of its own with no message in it."
         (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
         (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 30.0)))
           (agent-shell-vertico-tests--settle-root-burst alpha))
+        (should (= (length notifications) 2))
+        (should (equal (plist-get (car notifications) :last-message)
+                       "Here is what they found."))))))
+
+(ert-deftest agent-shell-vertico-sidebar-background-result-with-declared-state ()
+  "A declared wake-up is one burst however long the agent stays quiet.
+This is Claude Code's sequence after a background task: running, a
+silence, tool calls, a silence, the report, idle.  The report is
+announced once, when the agent says it is idle."
+  (agent-shell-vertico-tests--with-background
+      `((:native-subagents . ,agent-shell-vertico-tests--running-subagent))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+          (dolist (event '(((:event . input-submitted)
+                            (:data . ((:prompt . "go"))))
+                           ((:event . agent-message-chunk)
+                            (:data . ((:text-chunk . "Started the work."))))
+                           ((:event . turn-complete)
+                            (:data . ((:stop-reason . "end_turn"))))))
+            (agent-shell-vertico-sidebar--handle-event alpha event)))
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-tests--end-subagent alpha)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+          (agent-shell-vertico-tests--declare-state alpha "running"))
+        (agent-shell-vertico-sidebar--out-of-turn-quiet alpha)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . tool-call-update)))
+        (agent-shell-vertico-sidebar--out-of-turn-quiet alpha)
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)
+                 (:data . ((:text-chunk . "Here is what they found.")))))
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-tests--declare-state alpha "idle")
         (should (= (length notifications) 2))
         (should (equal (plist-get (car notifications) :last-message)
                        "Here is what they found."))))))

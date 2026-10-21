@@ -3708,10 +3708,39 @@ arriving during that round trip belong to the turn it is joining.
 A subagent's output is not the session speaking: it is the background
 work `agent-shell-vertico-sidebar--background-work' already reports."
   (and (memq kind agent-shell-vertico-sidebar--out-of-turn-events)
-       (not (agent-shell-vertico-sidebar--subagent-event-p))
+       (agent-shell-vertico-sidebar--outside-turn-p buffer)))
+
+(defun agent-shell-vertico-sidebar--outside-turn-p (buffer)
+  "Return non-nil when the root of BUFFER acts with no request in flight.
+See `agent-shell-vertico-sidebar--out-of-turn-p'."
+  (and (not (agent-shell-vertico-sidebar--subagent-event-p))
        (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                   '(busy blocked)))
        (not (map-elt (agent-shell-vertico--state buffer) :active-requests))))
+
+(defun agent-shell-vertico-sidebar--declared-running-p (buffer)
+  "Return non-nil when BUFFER's agent has declared itself running.
+agent-shell records the run state the agent declares, which agents that
+report none leave nil."
+  (equal (map-elt (agent-shell-vertico--state buffer) :agent-state)
+         "running"))
+
+(defun agent-shell-vertico-sidebar--out-of-turn-quiet (buffer)
+  "Settle BUFFER's burst after its quiet period, unless the agent is running.
+
+A quiet period is a guess at the burst's end, and a model can be silent
+for longer than it while it thinks or before it writes its report.  An
+agent that declares its run state says when the burst ends, so while it
+says it is running the timer only waits again; its idle settles the
+burst."
+  (if (agent-shell-vertico-sidebar--declared-running-p buffer)
+      (when-let* ((burst (agent-shell-vertico-sidebar--get buffer 'out-of-turn)))
+        (plist-put burst :timer
+                   (run-at-time
+                    (agent-shell-vertico-sidebar--out-of-turn-settle-seconds)
+                    nil #'agent-shell-vertico-sidebar--out-of-turn-quiet
+                    buffer)))
+    (agent-shell-vertico-sidebar--out-of-turn-settled buffer)))
 
 (defun agent-shell-vertico-sidebar--cancel-out-of-turn (buffer)
   "Drop any pending out-of-turn settle timer for BUFFER."
@@ -3748,7 +3777,7 @@ set."
                       (run-at-time
                        (agent-shell-vertico-sidebar--out-of-turn-settle-seconds)
                        nil
-                       #'agent-shell-vertico-sidebar--out-of-turn-settled
+                       #'agent-shell-vertico-sidebar--out-of-turn-quiet
                        buffer)
                       :time time
                       :message message))
@@ -4234,6 +4263,18 @@ dispatched prompt the dead agent never sent is given back."
          (agent-shell-vertico-sidebar--set buffer 'busy-since now)))
       ('idle
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil))
+      ('state-changed
+       ;; The agent's own word on whether it works.  Running with no turn
+       ;; in flight starts a burst before any output arrives, and idle
+       ;; ends one, where the quiet period could only guess.
+       (pcase (map-nested-elt event '(:data :state))
+         ("running"
+          (when (agent-shell-vertico-sidebar--outside-turn-p buffer)
+            (agent-shell-vertico-sidebar--note-out-of-turn
+             buffer now kind)))
+         ("idle"
+          (when (agent-shell-vertico-sidebar--get buffer 'out-of-turn)
+            (agent-shell-vertico-sidebar--out-of-turn-settled buffer)))))
       ('clean-up
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--forget buffer))
