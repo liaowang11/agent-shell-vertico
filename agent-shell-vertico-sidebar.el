@@ -3721,8 +3721,10 @@ work `agent-shell-vertico-sidebar--background-work' already reports."
     (cancel-timer timer))
   (agent-shell-vertico-sidebar--set buffer 'out-of-turn nil))
 
-(defun agent-shell-vertico-sidebar--note-out-of-turn (buffer time)
+(defun agent-shell-vertico-sidebar--note-out-of-turn (buffer time kind)
   "Record out-of-turn output in BUFFER at TIME and rearm its settle timer.
+KIND is the event's kind; the burst remembers whether it streamed a
+message, which its settle classifies as a turn's end would be.
 
 The burst keeps the time of its first update as its working age, so a
 long burst rises through the working tier instead of restarting at every
@@ -3734,10 +3736,11 @@ now.  One streaming beside a pending decision leaves the mark, because
 the session is still waiting for the reader.  The burst remembers a mark
 it cleared, so its settle can tell one it took away from one nobody had
 set."
-  (let ((cleared (plist-get (agent-shell-vertico-sidebar--get
-                             buffer 'out-of-turn)
-                            :cleared))
-        burst)
+  (let* ((previous (agent-shell-vertico-sidebar--get buffer 'out-of-turn))
+         (cleared (plist-get previous :cleared))
+         (message (or (plist-get previous :message)
+                      (eq kind 'agent-message-chunk)))
+         burst)
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (unless (agent-shell-vertico-sidebar--get buffer 'busy-since)
       (agent-shell-vertico-sidebar--set buffer 'busy-since time))
@@ -3747,7 +3750,8 @@ set."
                        nil
                        #'agent-shell-vertico-sidebar--out-of-turn-settled
                        buffer)
-                      :time time))
+                      :time time
+                      :message message))
     (agent-shell-vertico-sidebar--set buffer 'out-of-turn burst)
     (when (and (agent-shell-vertico-sidebar--get buffer 'unread)
                (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy))
@@ -3775,7 +3779,14 @@ The one wave that does announce itself on a mark is the result of
 background work: a turn that ended with work still running recorded so
 in the session's `background-at-turn-end' slot, and the first
 wave to settle once nothing runs is what that turn was waiting for.  It
-is announced once, and the mark takes the wave's time."
+is announced once, and the mark takes the wave's time.
+
+A wave that streamed a message with text is read as a turn's end is, by
+`agent-shell-vertico-sidebar--classify-last-message', and the turn ends
+at the wave's time: it is the session's newest report, so the row's
+line, its expanded tail and its age describe it rather than the turn
+before.  Not while a request is pending, which is what the session
+stands on until the reader answers it."
   (let ((burst (agent-shell-vertico-sidebar--get buffer 'out-of-turn)))
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
@@ -3783,6 +3794,14 @@ is announced once, and the mark takes the wave's time."
                ;; A real turn started meanwhile and owns the session now.
                (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                           '(busy blocked))))
+      (when (and (plist-get burst :message)
+                 (agent-shell-vertico-sidebar--last-message buffer)
+                 (not (agent-shell-vertico-sidebar--permission-pending-p
+                       buffer))
+                 (not (agent-shell-vertico-sidebar--form-pending-p buffer)))
+        (agent-shell-vertico-sidebar--classify-last-message buffer)
+        (agent-shell-vertico-sidebar--stamp-terminal
+         buffer (or (plist-get burst :time) (float-time))))
       (let ((result (and (agent-shell-vertico-sidebar--get
                           buffer 'background-at-turn-end)
                          (not (agent-shell-vertico-sidebar--background-work
@@ -4004,6 +4023,22 @@ A wait for a permission request ends with the turn."
   (unless (agent-shell-vertico-sidebar--get buffer 'first-terminal-at)
     (agent-shell-vertico-sidebar--set buffer 'first-terminal-at time)))
 
+(defun agent-shell-vertico-sidebar--classify-last-message (buffer)
+  "Record how BUFFER stands from its newest message.
+See `agent-shell-vertico-sidebar--classify-message'.  The verdict
+replaces whatever an earlier message said, so its line is the one the
+row draws."
+  (pcase-let ((`(,state . ,line)
+               (agent-shell-vertico-sidebar--classify-message
+                (agent-shell-vertico-sidebar--last-message buffer))))
+    (agent-shell-vertico-sidebar--set buffer 'state state)
+    (agent-shell-vertico-sidebar--set buffer 'result
+                                      (and (eq state 'done) line))
+    (agent-shell-vertico-sidebar--set buffer 'needs
+                                      (and (eq state 'blocked) line))
+    (agent-shell-vertico-sidebar--set buffer 'error
+                                      (and (eq state 'failed) line))))
+
 (defun agent-shell-vertico-sidebar--end-turn (buffer reason time)
   "Record how BUFFER's turn ended at TIME, stopping for REASON.
 
@@ -4021,14 +4056,7 @@ the turn failed."
     ((or "end_turn" 'nil)
      (unless (and (null reason)
                   (eq (agent-shell-vertico-sidebar--get buffer 'state) 'failed))
-       (pcase-let ((`(,state . ,line)
-                    (agent-shell-vertico-sidebar--classify-message
-                     (agent-shell-vertico-sidebar--last-message buffer))))
-         (agent-shell-vertico-sidebar--set buffer 'state state)
-         (pcase state
-           ('done (agent-shell-vertico-sidebar--set buffer 'result line))
-           ('blocked (agent-shell-vertico-sidebar--set buffer 'needs line))
-           ('failed (agent-shell-vertico-sidebar--set buffer 'error line))))))
+       (agent-shell-vertico-sidebar--classify-last-message buffer)))
     (_
      (agent-shell-vertico-sidebar--set buffer 'state 'failed)
      (agent-shell-vertico-sidebar--set
@@ -4207,7 +4235,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--forget buffer))
       (_ nil))
     (when (agent-shell-vertico-sidebar--out-of-turn-p buffer kind)
-      (agent-shell-vertico-sidebar--note-out-of-turn buffer now))
+      (agent-shell-vertico-sidebar--note-out-of-turn buffer now kind))
     (agent-shell-vertico-sidebar--schedule-refresh)
     ;; agent-shell reduces a subscriber's error to a message; say whose.
     (with-demoted-errors "agent-shell-vertico: redrawing the peek: %S"

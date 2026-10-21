@@ -423,6 +423,13 @@ marker instead (m0303.js:149-218), and so reads that very summary as
 blocked; this is where the two deliberately differ. When the last line is no
 marker the turn is `done`, and that line is the result. There is no model
 step, as there is in Claude Code; the markers are the whole convention.
+A report the agent writes after its turn, such as the result of
+background work, is read the same way when its out-of-turn burst
+settles (`--out-of-turn-settled`), and the turn's end moves to the
+burst: the row's line is the classified `result`, but its expanded
+detail is the message's tail, so a result older than the message drew
+two different reports. A burst that streamed no text, or one beside a
+pending request, leaves the verdict alone.
 
 The marker itself is read as Claude Code reads it (m0303.js:149-152), on
 the last line only: `I'm blocked:` (or `I’m`) counts as `blocked:`; a `—`,

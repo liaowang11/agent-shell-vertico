@@ -13889,6 +13889,77 @@ is unread output on top of that."
         (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'blocked))
         (should (agent-shell-vertico-sidebar--needs-attention-p alpha))))))
 
+(defun agent-shell-vertico-tests--end-turn-then-burst (buffer turn burst)
+  "End a turn of BUFFER saying TURN at 10, then stream BURST after it at 20.
+The burst is settled, as the timer would settle it."
+  (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 10.0)))
+    (dolist (event `(((:event . input-submitted) (:data . ((:prompt . "go"))))
+                     ((:event . agent-message-chunk)
+                      (:data . ((:text-chunk . ,turn))))
+                     ((:event . turn-complete)
+                      (:data . ((:stop-reason . "end_turn"))))))
+      (agent-shell-vertico-sidebar--handle-event buffer event)))
+  (cl-letf (((symbol-function 'float-time) (lambda (&optional _) 20.0)))
+    (agent-shell-vertico-sidebar--handle-event
+     buffer `((:event . agent-message-chunk)
+              (:data . ((:text-chunk . ,burst))))))
+  (agent-shell-vertico-sidebar--out-of-turn-settled buffer))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-burst-is-the-new-result ()
+  "A report that follows a finished turn replaces that turn's result.
+Its last line is what the collapsed row and the expanded tail both end
+on, and the age counts from the report."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-tests--end-turn-then-burst
+         alpha "Round A is still running." "Summary.\nAll results are in out/.")
+        (should (eq (agent-shell-vertico-sidebar--get alpha 'state) 'done))
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                       "All results are in out/."))
+        (should (equal (agent-shell-vertico-sidebar--get
+                        alpha 'last-terminal-at)
+                       20.0))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-burst-marker-sets-state ()
+  "A report ending on a marker says how the session stands, as a turn does."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-tests--end-turn-then-burst
+         alpha "Needs input: which round?" "Failed: round B crashed")
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'error)
+                       "round B crashed"))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'needs))
+        (agent-shell-vertico-tests--end-turn-then-burst
+         alpha "Done." "Needs input: merge it?")
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                    'blocked))
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'needs)
+                       "merge it?"))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'result))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settled-tool-burst-keeps-result ()
+  "A burst that streamed no message leaves the turn's result standing."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-tests--end-turn-then-burst alpha "All done." "x")
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . tool-call-update)
+                 (:data . ((:tool-call-id . "t")
+                           (:tool-call . ((:title . "ls")))))))
+        (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+        (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
+                       "x"))))))
+
 (ert-deftest agent-shell-vertico-sidebar-new-turn-cancels-out-of-turn-settle ()
   "A prompt submitted during the quiet window owns the session from then on."
   (agent-shell-vertico-tests--with-session-buffers
