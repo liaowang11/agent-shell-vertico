@@ -885,7 +885,16 @@ than a Working burst, and never becomes the notification's `:last-message`.
 something runs, details shown or not, with the `subagents` and `tasks` slot
 icons, and `S` runs upstream's `agent-shell-subagents` in the session, as
 does activating that line (it is the `subagents` field), since a task has no
-buffer to open and the list reaches every subagent's. In
+buffer to open and the list reaches every subagent's. An expanded row
+(`TAB`) also names each piece of work under that line
+(`--background-entry-lines`), oldest first: a subagent as its name and
+upstream's `agent-shell--subagent-latest-activity-label` on one line,
+then its prompt; a task as its description, else its tool call's
+command, else its name. A prompt or description wraps as an expanded
+detail does, in at most `expanded-detail-lines` lines. The message a subagent writes is
+not shown: agent-shell keeps none of it, and the user chose the
+activity over a chunk store of our own. A folded row keeps the count
+alone, so a row's height does not grow with its subagents. In
 Claude Code's terms a session in the background is in flight, so `--band-for`
 files it as working, and its star is blue without spinning.
 

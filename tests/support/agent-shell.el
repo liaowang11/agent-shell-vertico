@@ -313,6 +313,25 @@ picker, it offers nothing when there is neither a session nor a shell."
   "The subagent whose notification is being dispatched, as upstream binds it.
 Non-nil only around a subagent's content; tests bind it to fake one.")
 
+(defun agent-shell--subagent-latest-activity-label (state session-id)
+  "Return SESSION-ID's latest activity label in STATE, as upstream does.
+Nil once the subagent has ended.  Only the kinds the tests use are
+labelled: a running tool call by its title, a thought and a message by
+a word."
+  (when-let* ((subagent (map-elt (map-elt state :native-subagents) session-id))
+              ((not (map-elt subagent :ended-at)))
+              (activity (map-elt subagent :activity)))
+    (pcase (map-elt activity :kind)
+      ('tool
+       (when-let* ((tool-call (map-nested-elt
+                               state (list :tool-calls (map-elt activity :id))))
+                   ((not (member (map-elt tool-call :status)
+                                 '("completed" "failed")))))
+         (propertize (map-elt tool-call :title)
+                     'font-lock-face 'font-lock-comment-face)))
+      ('thought (propertize "Thinking" 'font-lock-face 'shadow))
+      ('message (propertize "Writing" 'font-lock-face 'shadow)))))
+
 (defvar agent-shell-test-calls nil
   "Log of recorded calls, newest first, as (COMMAND BUFFER ARGS).
 Kept beside `agent-shell-test-last-command' for tests that need to see

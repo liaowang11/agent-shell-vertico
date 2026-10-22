@@ -73,6 +73,8 @@
 ;; Bound by agent-shell around the dispatch of a subagent's notification,
 ;; which is when its event subscribers run.  No value, see CLAUDE.md.
 (defvar agent-shell--subagent-group)
+(declare-function agent-shell--subagent-latest-activity-label "agent-shell"
+                  (state session-id))
 
 (defgroup agent-shell-vertico-sidebar nil
   "Compact sidebar for `agent-shell' sessions."
@@ -1947,6 +1949,100 @@ subagents list `S' opens."
               (string-join (nreverse parts) " · ") width))
             'agent-shell-vertico-sidebar-detail))))
 
+(defun agent-shell-vertico-sidebar--one-line (text)
+  "Return TEXT with its whitespace runs collapsed to spaces, or nil.
+Nil too when TEXT holds nothing but whitespace."
+  (when (stringp text)
+    (let ((line (string-trim
+                 (replace-regexp-in-string "[[:space:]\n]+" " " text))))
+      (unless (string-empty-p line) line))))
+
+(defun agent-shell-vertico-sidebar--wrap-capped (text width)
+  "Wrap TEXT to WIDTH in at most the expanded detail's line count.
+That count is `agent-shell-vertico-sidebar-expanded-detail-lines'.  What
+does not fit is cut from the end, as an expanded detail that is not the
+agent's message is."
+  (let ((lines (agent-shell-vertico-sidebar--wrap-text text width))
+        (limit (max 1 agent-shell-vertico-sidebar-expanded-detail-lines)))
+    (if (<= (length lines) limit)
+        lines
+      (let ((kept (seq-take lines limit)))
+        (append (butlast kept)
+                (list (concat (truncate-string-to-width
+                               (car (last kept)) (max 0 (1- width)))
+                              "…")))))))
+
+(defun agent-shell-vertico-sidebar--background-entry-lines (buffer width)
+  "Return the lines naming each piece of BUFFER's background work, at WIDTH.
+
+An expanded row draws them under the count `--background-line' draws.
+A running subagent is its name and its latest activity, as agent-shell's
+subagents list labels it, on one line, then its prompt.  A running async
+task is its description, else the command of the tool call that started
+it, else its name.  A prompt or a description wraps as an expanded
+detail does, in at most `agent-shell-vertico-sidebar-expanded-detail-lines'
+lines.  Both kinds come oldest first, the order they were spawned in,
+since agent-shell keeps its registries newest first.  Each line lists
+the subagents when activated, as the count line does."
+  (when (agent-shell-vertico-sidebar--background-work buffer)
+    (let* ((state (agent-shell-vertico--state buffer))
+           (terminal agent-shell-vertico-sidebar--async-task-terminal-states)
+           (icon-width
+            (string-width (agent-shell-vertico-sidebar--mark-field
+                           (agent-shell-vertico-sidebar--slot-icon 'tasks))))
+           lines)
+      (cl-flet ((with-icon (slot text)
+                  (concat (agent-shell-vertico-sidebar--mark-field
+                           (agent-shell-vertico-sidebar--slot-icon slot))
+                          text)))
+        (pcase-dolist (`(,id . ,subagent)
+                       (reverse (map-elt state :native-subagents)))
+          (unless (map-elt subagent :ended-at)
+            (let ((activity
+                   (when (fboundp 'agent-shell--subagent-latest-activity-label)
+                     (agent-shell-vertico-sidebar--one-line
+                      (agent-shell--subagent-latest-activity-label
+                       state id)))))
+              (push (agent-shell-vertico-sidebar--fit
+                     (with-icon 'subagents
+                                (string-join
+                                 (delq nil
+                                       (list (or (map-elt subagent :name)
+                                                 "Subagent")
+                                             (and activity
+                                                  (substring-no-properties
+                                                   activity))))
+                                 " · "))
+                     width)
+                    lines)
+              (when-let* ((task (agent-shell-vertico-sidebar--one-line
+                                 (map-elt subagent :task))))
+                (dolist (line (agent-shell-vertico-sidebar--wrap-capped
+                               task width))
+                  (push line lines))))))
+        (pcase-dolist (`(,_id . ,task) (reverse (map-elt state :async-tasks)))
+          (unless (member (plist-get task :state) terminal)
+            (let ((wrapped
+                   (agent-shell-vertico-sidebar--wrap-capped
+                    (or (seq-some
+                         #'agent-shell-vertico-sidebar--one-line
+                         (list (plist-get task :description)
+                               (when-let* ((call (plist-get task
+                                                            :tool-call-id)))
+                                 (map-nested-elt
+                                  state (list :tool-calls call :command)))
+                               (plist-get task :name)
+                               (plist-get task :task-type)))
+                        "Background task")
+                    (- width icon-width))))
+              (push (with-icon 'tasks (car wrapped)) lines)
+              (dolist (line (cdr wrapped))
+                (push line lines))))))
+      (mapcar (lambda (line)
+                (cons (agent-shell-vertico-sidebar--field-text 'subagents line)
+                      'agent-shell-vertico-sidebar-detail))
+              (nreverse lines)))))
+
 (defun agent-shell-vertico-sidebar--session-details-expanded-p (buffer)
   "Return non-nil when BUFFER's detail lines should be shown.
 
@@ -2535,6 +2631,9 @@ parent-child relationship."
             (when-let* ((line (agent-shell-vertico-sidebar--background-line
                                buffer content-width)))
               (list line))
+            (when details-visible
+              (agent-shell-vertico-sidebar--background-entry-lines
+               buffer content-width))
             detail-lines)))
 
 (defun agent-shell-vertico-sidebar--restore-field-properties (start end)

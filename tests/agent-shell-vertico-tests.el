@@ -18508,6 +18508,82 @@ announced once, when the agent says it is idle."
       (agent-shell-vertico-sidebar-activate)
       (should (eq agent-shell-test-displayed-buffer alpha)))))
 
+(ert-deftest agent-shell-vertico-sidebar-background-entries-when-expanded ()
+  "An expanded row lists each running subagent and task; a folded one counts."
+  (agent-shell-vertico-tests--with-background
+      '((:native-subagents
+         . (("child" . ((:name . "Explore")
+                        (:task . "Survey the code\nthen report back")
+                        (:activity . ((:kind . tool) (:id . "tc1")))))
+            ("quiet" . ((:name . "Plan") (:task . "Draft a plan")))
+            ("gone" . ((:name . "Done") (:task . "Finished work")
+                       (:ended-at . (0 0))))))
+        (:tool-calls . (("tc1" . ((:title . "Read sidebar.el")
+                                  (:status . "in_progress")))
+                        ("tc2" . ((:command . "npm run dev")))))
+        (:async-tasks
+         . (("t1" . (:name "Bash" :description "Start the dev server"
+                     :state "running"))
+            ("t2" . (:name "Bash" :tool-call-id "tc2" :state "running"))
+            ("t3" . (:name "old" :description "Old task"
+                     :state "completed")))))
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (let ((agent-shell-vertico-sidebar-show-details nil))
+        (agent-shell-vertico-sidebar--render)
+        (should (string-match-p "2 subagents · \\$ 2 tasks" (buffer-string)))
+        (dolist (text '("Survey the code" "Read sidebar.el"
+                        "Start the dev server"))
+          (should-not (string-match-p text (buffer-string)))))
+      (let ((agent-shell-vertico-sidebar-show-details t))
+        (agent-shell-vertico-sidebar--render)
+        (let ((text (buffer-string)))
+          (should (string-match-p "2 subagents · \\$ 2 tasks" text))
+          ;; A subagent is its name and activity, then its prompt, its
+          ;; lines joined; one with no activity is its name alone.
+          (should (string-match-p "◇ Explore · Read sidebar\\.el\n" text))
+          (should (string-match-p "\nSurvey the code then report back\n"
+                                  text))
+          (should (string-match-p "◇ Plan\n" text))
+          (should (string-match-p "\nDraft a plan\n" text))
+          ;; A task is one line: its description, else its command.
+          (should (string-match-p "\\$ Start the dev server\n" text))
+          (should (string-match-p "\\$ npm run dev\n" text))
+          ;; What has ended is left out.
+          (should-not (string-match-p "Finished work" text))
+          (should-not (string-match-p "Old task" text)))
+        ;; A description too long for the row wraps rather than cuts.
+        (with-current-buffer alpha
+          (plist-put (cdr (assoc "t1" (map-elt agent-shell--state
+                                               :async-tasks)))
+                     :description
+                     (concat "Start the dev server and keep it running "
+                             "so the reader can watch the build")))
+        (let ((agent-shell-vertico-sidebar-width 30))
+          (agent-shell-vertico-sidebar--render))
+        (let ((text (buffer-string)))
+          (should (string-match-p "\\$ Start the dev" text))
+          (should (string-match-p "build$" text))
+          (should-not (string-match-p "…" text)))
+        (let ((agent-shell-vertico-sidebar-expanded-detail-lines 1)
+              (agent-shell-vertico-sidebar-width 30))
+          (agent-shell-vertico-sidebar--render)
+          (should (string-match-p "\\$ Start the dev.*…\n" (buffer-string)))
+          (should-not (string-match-p "build$" (buffer-string))))
+        (agent-shell-vertico-sidebar--render)
+        ;; The activity takes the sidebar's face, not agent-shell's.
+        (goto-char (point-min))
+        (search-forward "Read sidebar.el")
+        (should-not (get-text-property (1- (point)) 'font-lock-face))
+        ;; Each line lists the subagents, as the count line does.
+        (dolist (text '("◇ Explore" "Draft a plan" "$ npm run dev"))
+          (goto-char (point-min))
+          (search-forward text)
+          (setq agent-shell-test-last-command nil)
+          (agent-shell-vertico-sidebar-activate)
+          (should (eq agent-shell-test-last-command
+                      'agent-shell-subagents)))))))
+
 (ert-deftest agent-shell-vertico-sidebar-rename-renames-the-session ()
   "`C' renames the session at point, in that session."
   (agent-shell-vertico-tests--with-background nil
