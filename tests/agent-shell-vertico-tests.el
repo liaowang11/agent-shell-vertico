@@ -13851,6 +13851,42 @@ Its idle ends the burst at once instead."
         (agent-shell-vertico-tests--declare-state alpha "running")
         (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))))))
 
+(ert-deftest agent-shell-vertico-sidebar-child-state-is-not-the-session ()
+  "A subagent or task changing state is background work, not the session.
+It redraws the sidebar, but neither starts nor ends a burst."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . state-changed)
+                 (:data . ((:id . "subagent/child") (:state . "running")))))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . agent-message-chunk)))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . state-changed)
+                 (:data . ((:id . "task/t1") (:state . "idle")
+                           (:stop-reason . "end_turn")))))
+        (should (agent-shell-vertico-sidebar--get alpha 'out-of-turn))))))
+
+(ert-deftest agent-shell-vertico-sidebar-state-change-keeps-the-message-open ()
+  "A child changing state mid-reply does not split the session's message."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Alpha"))))))
+    (let ((agent-shell-test-statuses (list (cons alpha 'busy))))
+      (dolist (event '(((:event . agent-message-chunk)
+                        (:data . ((:text-chunk . "A"))))
+                       ((:event . state-changed)
+                        (:data . ((:id . "task/t1") (:state . "idle"))))
+                       ((:event . agent-message-chunk)
+                        (:data . ((:text-chunk . "B"))))))
+        (agent-shell-vertico-sidebar--handle-event alpha event))
+      (should (equal (agent-shell-vertico-sidebar--last-message alpha)
+                     "AB")))))
+
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-marks-done ()
   "A quiet burst leaves output nobody has read, so it is marked unread."
   (agent-shell-vertico-tests--with-session-buffers

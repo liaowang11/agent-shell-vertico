@@ -3877,10 +3877,12 @@ agent-shell emits one event per streamed chunk and accumulates none of
 them, so the sidebar keeps the newest message for a notification to
 carry.  Any other event ends the message, which is agent-shell's own
 message boundary.  A subagent's events are neither, since what a
-subagent says is not the message the session has for the reader."
+subagent says is not the message the session has for the reader, and
+nor is a change of run state, which a child can report mid-reply."
   (let ((entry (agent-shell-vertico-sidebar--get buffer 'message)))
     (cond
      ((agent-shell-vertico-sidebar--subagent-event-p))
+     ((eq (map-elt event :event) 'state-changed))
      ((not (eq (map-elt event :event) 'agent-message-chunk))
       (agent-shell-vertico-sidebar--close-message buffer))
      (t
@@ -4263,10 +4265,12 @@ dispatched prompt the dead agent never sent is given back."
          (agent-shell-vertico-sidebar--set buffer 'busy-since now)))
       ('idle
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil))
-      ('state-changed
+      ((and 'state-changed (guard (not (map-nested-elt event '(:data :id)))))
        ;; The agent's own word on whether it works.  Running with no turn
        ;; in flight starts a burst before any output arrives, and idle
-       ;; ends one, where the quiet period could only guess.
+       ;; ends one, where the quiet period could only guess.  A child's
+       ;; state, under its `:id', is background work: the redraw below
+       ;; shows it.
        (pcase (map-nested-elt event '(:data :state))
          ("running"
           (when (agent-shell-vertico-sidebar--outside-turn-p buffer)
