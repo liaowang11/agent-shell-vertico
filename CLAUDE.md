@@ -886,7 +886,7 @@ something runs, details shown or not, with the `subagents` and `tasks` slot
 icons, and `S` runs upstream's `agent-shell-subagents` in the session, as
 does activating that line (it is the `subagents` field), since a task has no
 buffer to open and the list reaches every subagent's. An expanded row
-(`TAB`) also names each piece of work under that line
+(`TAB`) names each piece of work in that line's place
 (`--background-entry-lines`), oldest first: a subagent as its name and
 upstream's `agent-shell--subagent-latest-activity-label` on one line,
 then its prompt; a task as its description, else its tool call's

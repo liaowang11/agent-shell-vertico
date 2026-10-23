@@ -18509,7 +18509,7 @@ announced once, when the agent says it is idle."
       (should (eq agent-shell-test-displayed-buffer alpha)))))
 
 (ert-deftest agent-shell-vertico-sidebar-background-entries-when-expanded ()
-  "An expanded row lists each running subagent and task; a folded one counts."
+  "An expanded row lists each running subagent and task in place of the count."
   (agent-shell-vertico-tests--with-background
       '((:native-subagents
          . (("child" . ((:name . "Explore")
@@ -18538,7 +18538,8 @@ announced once, when the agent says it is idle."
       (let ((agent-shell-vertico-sidebar-show-details t))
         (agent-shell-vertico-sidebar--render)
         (let ((text (buffer-string)))
-          (should (string-match-p "2 subagents · \\$ 2 tasks" text))
+          ;; The entries take the count's place.
+          (should-not (string-match-p "subagents ·\\|2 tasks" text))
           ;; A subagent is its name and activity, then its prompt, its
           ;; lines joined; one with no activity is its name alone.
           (should (string-match-p "◇ Explore · Read sidebar\\.el\n" text))

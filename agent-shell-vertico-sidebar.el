@@ -1975,7 +1975,8 @@ agent's message is."
 (defun agent-shell-vertico-sidebar--background-entry-lines (buffer width)
   "Return the lines naming each piece of BUFFER's background work, at WIDTH.
 
-An expanded row draws them under the count `--background-line' draws.
+An expanded row draws them in place of the count `--background-line'
+draws.
 A running subagent is its name and its latest activity, as agent-shell's
 subagents list labels it, on one line, then its prompt.  A running async
 task is its description, else the command of the tool call that started
@@ -2628,12 +2629,13 @@ parent-child relationship."
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
             detail-rows
             (when project-line (list project-line))
-            (when-let* ((line (agent-shell-vertico-sidebar--background-line
-                               buffer content-width)))
-              (list line))
-            (when details-visible
-              (agent-shell-vertico-sidebar--background-entry-lines
-               buffer content-width))
+            ;; Expanded, the entries take the count's place.
+            (or (and details-visible
+                     (agent-shell-vertico-sidebar--background-entry-lines
+                      buffer content-width))
+                (when-let* ((line (agent-shell-vertico-sidebar--background-line
+                                   buffer content-width)))
+                  (list line)))
             detail-lines)))
 
 (defun agent-shell-vertico-sidebar--restore-field-properties (start end)
