@@ -18636,116 +18636,25 @@ The line still lists it, so the reader sees a dev server running."
     (should (equal (agent-shell-vertico-sidebar--in-flight-work alpha)
                    '(1 . 0)))))
 
-(ert-deftest agent-shell-vertico-sidebar-waiting-marker-parsing ()
-  "A last `waiting:' line names the tasks a turn will act on."
-  (pcase-dolist (`(,text . ,ids)
-                 '(("Started the build.\nwaiting: bpux8xmfg" "bpux8xmfg")
-                   ("Two runs.\nWaiting: `bpux8xmfg`, b7k2abcd\n\n"
-                    "bpux8xmfg" "b7k2abcd")
-                   ("waiting — bpux8xmfg b7k2abcd" "bpux8xmfg" "b7k2abcd")
-                   ;; Only the last line outside fences counts.
-                   ("waiting: bpux8xmfg\nAll done.")
-                   ("Done.\n```\nwaiting: bpux8xmfg\n```\n")
-                   ("- waiting: bpux8xmfg")
-                   ("waiting:")))
-    (should (equal (agent-shell-vertico-sidebar--message-waiting text) ids)))
-  ;; The line before it is what the turn is classified by.
-  (should (equal (agent-shell-vertico-sidebar--classify-message
-                  "Started the build.\nwaiting: bpux8xmfg")
-                 '(done . "Started the build.")))
-  (should (equal (agent-shell-vertico-sidebar--classify-message
-                  "waiting: bpux8xmfg")
-                 '(done)))
-  (should (equal (agent-shell-vertico-sidebar--classify-message
-                  "Building.\nneeds input: which target?\nwaiting: bpux8xmfg")
-                 '(blocked . "which target?"))))
-
-(ert-deftest agent-shell-vertico-sidebar-waiting-holds-a-shell-task ()
-  "A shell task the turn ends waiting on holds the session until it ends."
+(ert-deftest agent-shell-vertico-sidebar-dev-server-does-not-hold-the-report ()
+  "A shell task left running does not make the turn wait for a result.
+It is not work in flight, so the turn's end arms no announcement and
+the next report is not one."
   (agent-shell-vertico-tests--with-background
       '((:async-tasks
-         . (("bpux8xmfg" . (:name "npm run build" :task-type "shell"
-                            :state "running"))
-            ("bdev0001" . (:name "npm run dev" :task-type "shell"
-                           :state "running")))))
-    (agent-shell-vertico-tests--run-turn
-     alpha "Started the build.\nwaiting: bpux8xmfg, nosuchtask")
-    (should (equal (agent-shell-vertico-sidebar--get alpha 'awaited)
-                   '("bpux8xmfg" "nosuchtask")))
-    ;; The unknown id and the unmarked dev server count for nothing.
-    (should (equal (agent-shell-vertico-sidebar--in-flight-work alpha)
-                   '(0 . 1)))
-    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'background))
-    (should (equal (agent-shell-vertico-sidebar--get alpha 'result)
-                   "Started the build."))
-    (agent-shell-vertico-tests--with-sidebar
-      (agent-shell-vertico-sidebar--render)
-      (agent-shell-vertico-tests--end-task alpha "bpux8xmfg")
-      ;; The poll notices, since what runs has changed.
-      (agent-shell-vertico-sidebar--background-poll)
-      (should agent-shell-vertico-sidebar--dirty))
-    (should-not (agent-shell-vertico-sidebar--in-flight-work alpha))
-    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
-
-(ert-deftest agent-shell-vertico-sidebar-waiting-only-names-unknown-ids ()
-  "A `waiting:' line naming no running task holds nothing."
-  (agent-shell-vertico-tests--with-background
-      '((:async-tasks
-         . (("bdone001" . (:name "old" :task-type "shell"
-                           :state "completed")))))
-    (agent-shell-vertico-tests--run-turn
-     alpha "Kicked it off.\nwaiting: bdone001, nosuchtask")
-    (should-not (agent-shell-vertico-sidebar--in-flight-work alpha))
-    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
-
-(ert-deftest agent-shell-vertico-sidebar-waiting-lasts-until-a-prompt ()
-  "A report without the marker keeps the marks; a prompt clears them."
-  (agent-shell-vertico-tests--with-background
-      '((:async-tasks
-         . (("bpux8xmfg" . (:name "npm run build" :task-type "shell"
+         . (("bpux8xmfg" . (:name "npm run dev" :task-type "shell"
                             :state "running")))))
     (agent-shell-vertico-tests--with-settled-timers
-      (agent-shell-vertico-tests--run-turn
-       alpha "Started the build.\nwaiting: bpux8xmfg")
-      (agent-shell-vertico-tests--settle-root-burst alpha)
-      (should (equal (agent-shell-vertico-sidebar--get alpha 'awaited)
-                     '("bpux8xmfg")))
-      (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
-                  'background))
-      ;; An out-of-turn report reads the marker too.
-      (agent-shell-vertico-sidebar--handle-event
-       alpha '((:event . agent-message-chunk)
-               (:data . ((:text-chunk . "Half way.\nwaiting: bnew0001")))))
-      (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
-      (should (equal (agent-shell-vertico-sidebar--get alpha 'awaited)
-                     '("bnew0001")))
-      (agent-shell-vertico-sidebar--handle-event
-       alpha '((:event . input-submitted) (:data . ((:prompt . "next")))))
-      (should-not (agent-shell-vertico-sidebar--get alpha 'awaited)))))
-
-(ert-deftest agent-shell-vertico-sidebar-waiting-result-is-announced ()
-  "The report after an awaited task announces itself; a dev server's not.
-A shell task left running is not work the turn waits on, so the turn's
-end does not wait for a result behind it."
-  (dolist (case '(("Started the build.\nwaiting: bpux8xmfg" . 2)
-                  ("Started the build." . 1)))
-    (agent-shell-vertico-tests--with-background
-        '((:async-tasks
-           . (("bpux8xmfg" . (:name "npm run build" :task-type "shell"
-                              :state "running")))))
-      (agent-shell-vertico-tests--with-settled-timers
-        (let* (notifications
-               (agent-shell-vertico-sidebar-notify-function
-                (lambda (&rest arguments) (push arguments notifications))))
-          (agent-shell-vertico-tests--run-turn alpha (car case))
-          (should (eq (and (agent-shell-vertico-sidebar--get
-                            alpha 'background-at-turn-end)
-                           t)
-                      (= (cdr case) 2)))
-          (should (= (length notifications) 1))
-          (agent-shell-vertico-tests--end-task alpha "bpux8xmfg")
-          (agent-shell-vertico-tests--settle-root-burst alpha)
-          (should (= (length notifications) (cdr case))))))))
+      (let* (notifications
+             (agent-shell-vertico-sidebar-notify-function
+              (lambda (&rest arguments) (push arguments notifications))))
+        (agent-shell-vertico-tests--run-turn alpha "Started the server.")
+        (should-not (agent-shell-vertico-sidebar--get
+                     alpha 'background-at-turn-end))
+        (should (= (length notifications) 1))
+        (agent-shell-vertico-tests--end-task alpha "bpux8xmfg")
+        (agent-shell-vertico-tests--settle-root-burst alpha)
+        (should (= (length notifications) 1))))))
 
 (ert-deftest agent-shell-vertico-sidebar-rename-renames-the-session ()
   "`C' renames the session at point, in that session."
