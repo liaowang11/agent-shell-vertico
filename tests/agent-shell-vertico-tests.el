@@ -18636,6 +18636,19 @@ The line still lists it, so the reader sees a dev server running."
     (should (equal (agent-shell-vertico-sidebar--in-flight-work alpha)
                    '(1 . 0)))))
 
+(ert-deftest agent-shell-vertico-sidebar-background-eval-is-not-in-flight ()
+  "An eval job omp moved to the background is treated as a shell job.
+omp reports a backgrounded bash job as `shell' and an eval job as
+`eval' (its job types are bash, task and eval)."
+  (agent-shell-vertico-tests--with-background
+      '((:async-tasks
+         . (("bg_1" . (:name "python" :task-type "eval"
+                       :state "running")))))
+    (should (equal (agent-shell-vertico-sidebar--background-work alpha)
+                   '(0 . 1)))
+    (should-not (agent-shell-vertico-sidebar--in-flight-work alpha))
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))))
+
 (ert-deftest agent-shell-vertico-sidebar-dev-server-does-not-hold-the-report ()
   "A shell task left running does not make the turn wait for a result.
 It is not work in flight, so the turn's end arms no announcement and

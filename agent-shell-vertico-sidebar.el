@@ -1081,12 +1081,13 @@ pass over every buffer."
 The same list as `agent-shell-subagents--async-task-terminal-states'.")
 
 (defconst agent-shell-vertico-sidebar--idle-task-types
-  '("shell" "monitor" "local_bash" "local_monitor" "mcp")
+  '("shell" "monitor" "eval" "local_bash" "local_monitor" "mcp")
   "Async task types that are not work in flight.
 
 claude-agent-acp names a background Bash command `shell' and a monitor
-`monitor' (async-tasks.ts, `friendlyTaskType'); the raw Claude Code
-names are listed too, for an adapter that passes them through.  These
+`monitor' (async-tasks.ts, `friendlyTaskType'); omp names a backgrounded
+bash job `shell' and an eval job `eval'; the raw Claude Code names are
+listed too, for an adapter that passes them through.  These
 are what an agent leaves running, a dev server or a watcher, and T3
 Code never holds a thread in Working for them.  See
 `agent-shell-vertico-sidebar--in-flight-work'.")

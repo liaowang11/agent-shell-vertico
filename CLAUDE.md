@@ -1027,8 +1027,9 @@ and answers `(SUBAGENTS . TASKS)` or nil. That is everything that runs, which
 the row lists, but not all of it is work in flight: `--in-flight-work` keeps
 what holds the session in `background`, by kind, as T3 Code does
 (orchestrationV2PendingBackgroundWork.ts:89-108). Subagents and every async
-task hold except a shell command or a monitor (`--idle-task-types`:
-claude-agent-acp's `shell` and `monitor`, and the raw Claude Code names),
+task hold except a shell command, a monitor or an eval job
+(`--idle-task-types`: claude-agent-acp's `shell` and `monitor`, omp's
+`shell` and `eval`, and the raw Claude Code names),
 which is what an agent leaves running, a dev server or a watcher; the row
 still lists it, so the reader sees the server, but the session reads `done`
 behind it rather than Working forever. A task with no type, or a type not
