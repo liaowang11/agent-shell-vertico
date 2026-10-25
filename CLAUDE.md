@@ -409,14 +409,33 @@ request in flight and no burst starts, no mark, no notification. That held
 before persistence and needed no change.
 
 A reader killing a session (`--forget`: the kill-buffer hook, `clean-up`, the
-dead-buffer sweep) drops its entry, by the key kept on the record since the
-buffer's state may be gone. Emacs exiting does not: `--save-on-exit` sets
-`--exiting` before it saves, and runs early in `kill-emacs-hook`, so a
-package killing session buffers on exit is not taken for the reader. Emacs
-itself runs no kill-buffer hook on exit. `agent-shell-restart` kills the
-buffer before resuming the same id, so it counts as a reader kill and the
-record is dropped. Two Emacs processes sharing the file overwrite each
-other's entries; the last to save wins.
+dead-buffer sweep) marks its entry killed rather than dropping it, by the key
+kept on the record since the buffer's state may be gone: the entry is brought
+up to date from the record, taken before `--forget` cancels the timers since
+it saves them as times, and stamped `:killed-at`. That is for
+`agent-shell-restart :session-id`, which kills the buffer and then resumes
+the same id, and for a reader who kills a session and resumes it from the
+picker: the new buffer reaches `--restore` by any of its paths, and
+`--saved-entry` gives it the entry and clears the mark. The revived buffer
+re-arms the timers by the same rules as a restart, past-time ones included
+(a limit that reset meanwhile wakes and notifies, a continuation whose time
+passed is skipped with a message), because the old buffer's timers died with
+it. The mark lasts `--killed-grace`, 600 s: a restart resumes within seconds
+and a picker resume within a minute or two, and ten minutes bounds how long
+a session killed on purpose can bring back its pin or snooze.
+`--killed-expired-p` answers both for `--restore`, which drops an expired
+entry and starts the session clean, so the grace holds whenever the next
+save happens to run, and for `--save-store`, which drops it from the file. A
+key only ever matches its own session id, so a restart without `:session-id`
+(a new id) never picks the entry up; it goes with the grace. Emacs exiting
+marks nothing: `--save-on-exit` sets `--exiting` before it saves, and runs
+early in `kill-emacs-hook`, so a package killing session buffers on exit is
+not taken for the reader. Emacs itself runs no kill-buffer hook on exit.
+The exit save drops every killed entry whatever its age, marking the store
+dirty when one is there, so a killed session never comes back after a
+restart; and `--read-store` skips a killed entry in the file, which only an
+Emacs that died before its exit save leaves there. Two Emacs processes
+sharing the file overwrite each other's entries; the last to save wins.
 
 **Status and unread are two axes.** What a session *is* and what it owes the
 *reader* are separate questions, and conflating them was a bug: a finished

@@ -407,8 +407,10 @@ settled or unread as you left it, with how its last turn ended.  A limit
 snooze or a continuation still ahead is scheduled again; a limit that reset
 while Emacs was closed wakes its session, and a continuation whose time
 passed is skipped with a message rather than sent late.  Restoring a session
-neither marks it unread nor notifies.  Killing a session forgets its record;
-records of sessions not resumed for
+neither marks it unread nor notifies.  Killing a session forgets its record,
+unless the same session is started again within ten minutes, as
+`agent-shell-restart` does, when it gets the record back; records of
+sessions not resumed for
 `agent-shell-vertico-sidebar-state-max-age` days (30) are dropped.
 
 A session whose turn has ended but which still has a subagent or an async task

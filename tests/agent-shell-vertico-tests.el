@@ -13903,11 +13903,13 @@ Emacs starts with no records and an unread store."
   (clrhash agent-shell-vertico-sidebar--sessions))
 
 (defun agent-shell-vertico-tests--saved-keys ()
-  "Return the keys the state file holds, read afresh."
-  (let (keys)
-    (maphash (lambda (key _entry) (push key keys))
-             (agent-shell-vertico-sidebar--read-store))
-    keys))
+  "Return the keys the state file holds, read afresh.
+Read as it is written, so a record marked killed is listed too."
+  (when (file-exists-p agent-shell-vertico-sidebar-state-file)
+    (mapcar #'car (with-temp-buffer
+                    (insert-file-contents
+                     agent-shell-vertico-sidebar-state-file)
+                    (read (current-buffer))))))
 
 (defconst agent-shell-vertico-tests--saved-slots
   '((pinned . 1.0) (snoozed . 2.0) (settled . 3.0) (unsettled . t)
@@ -14196,32 +14198,222 @@ A message says so, naming the session."
           (should-not (agent-shell-vertico-sidebar--get beta 'continuation))
           (should-not agent-shell-test-calls)
           (should (seq-some (lambda (text)
-                              (string-match-p "Alpha.*Emacs was closed" text))
+                              (string-match-p "Alpha.*closed" text))
                             messages)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-reader-kill-forgets-the-record ()
-  "Killing a session drops its saved record; Emacs exiting keeps it."
+(ert-deftest agent-shell-vertico-sidebar-reader-kill-marks-the-record ()
+  "Killing a session marks its saved record killed; Emacs exiting does not.
+The marked record stays in the store through the grace, so the same
+session started again finds it, and a save past the grace drops it."
   (agent-shell-vertico-tests--with-session-buffers
       ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
               (agent-shell-vertico-tests--persisted-state "s1"))
        (beta "Claude Code Agent @ beta" "/work/alpha/"
              (agent-shell-vertico-tests--persisted-state "s2")))
     (agent-shell-vertico-tests--with-state-file
+      (let ((now (float-time)))
+        (agent-shell-vertico-sidebar--watch-buffer alpha)
+        (agent-shell-vertico-sidebar--watch-buffer beta)
+        (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
+        (agent-shell-vertico-sidebar--set beta 'pinned 2.0)
+        (agent-shell-vertico-sidebar--save-store)
+        (should (= (length (agent-shell-vertico-tests--saved-keys)) 2))
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now)))
+          (kill-buffer alpha))
+        (let ((entry (gethash '(claude-code . "s1")
+                              (agent-shell-vertico-sidebar--store))))
+          (should (equal (plist-get entry :pinned) 1.0))
+          (should (equal (plist-get entry :killed-at) now)))
+        ;; Within the grace a save keeps it.
+        (cl-letf (((symbol-function 'float-time)
+                   (lambda (&optional _)
+                     (+ now agent-shell-vertico-sidebar--killed-grace -1))))
+          (agent-shell-vertico-sidebar--set beta 'pinned 3.0)
+          (agent-shell-vertico-sidebar--save-store))
+        (should (= (length (agent-shell-vertico-tests--saved-keys)) 2))
+        ;; Past it the next save drops it.
+        (cl-letf (((symbol-function 'float-time)
+                   (lambda (&optional _)
+                     (+ now agent-shell-vertico-sidebar--killed-grace 1))))
+          (agent-shell-vertico-sidebar--set beta 'pinned 4.0)
+          (agent-shell-vertico-sidebar--save-store))
+        (should (equal (agent-shell-vertico-tests--saved-keys)
+                       '((claude-code . "s2"))))
+        ;; Emacs exiting kills nothing: beta keeps its record, unmarked.
+        (agent-shell-vertico-sidebar--save-on-exit)
+        (kill-buffer beta)
+        (agent-shell-vertico-sidebar--save-store)
+        (should (equal (agent-shell-vertico-tests--saved-keys)
+                       '((claude-code . "s2"))))
+        (should-not (plist-member
+                     (gethash '(claude-code . "s2")
+                              (agent-shell-vertico-sidebar--read-store))
+                     :killed-at))))))
+
+(ert-deftest agent-shell-vertico-sidebar-exit-drops-killed-records ()
+  "Emacs exiting drops a killed session's record, however recent the kill.
+So a session the reader killed never comes back after a restart, even
+when a save already wrote the record with its mark."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1")))
+    (agent-shell-vertico-tests--with-state-file
       (agent-shell-vertico-sidebar--watch-buffer alpha)
-      (agent-shell-vertico-sidebar--watch-buffer beta)
       (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
-      (agent-shell-vertico-sidebar--set beta 'pinned 2.0)
-      (agent-shell-vertico-sidebar--save-store)
-      (should (= (length (agent-shell-vertico-tests--saved-keys)) 2))
       (kill-buffer alpha)
       (agent-shell-vertico-sidebar--save-store)
       (should (equal (agent-shell-vertico-tests--saved-keys)
-                     '((claude-code . "s2"))))
+                     '((claude-code . "s1"))))
       (agent-shell-vertico-sidebar--save-on-exit)
-      (kill-buffer beta)
-      (agent-shell-vertico-sidebar--save-store)
-      (should (equal (agent-shell-vertico-tests--saved-keys)
-                     '((claude-code . "s2")))))))
+      (should-not (agent-shell-vertico-tests--saved-keys)))))
+
+(ert-deftest agent-shell-vertico-sidebar-killed-record-in-file-is-ignored ()
+  "A record marked killed in the file is not restored by a later Emacs.
+That is an Emacs that died before its exit save could drop it."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1")))
+    (agent-shell-vertico-tests--with-state-file
+      (let ((now (float-time)))
+        (with-temp-file file
+          (prin1 `(((claude-code . "s1") :saved-at ,now :killed-at ,now
+                    :pinned 1.0))
+                 (current-buffer)))
+        (agent-shell-vertico-sidebar--watch-buffer alpha)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'pinned))))))
+
+(defun agent-shell-vertico-tests--limited-then-killed (alpha beta resets-at)
+  "Stop ALPHA at a usage limit resetting at RESETS-AT, then kill it.
+The limit snoozes ALPHA and a continuation is scheduled; its result is
+\"Shipped\".  BETA is then watched and given ALPHA's session id, as
+`agent-shell-restart' does, and nothing restored yet."
+  (agent-shell-vertico-sidebar--watch-buffer alpha)
+  (agent-shell-vertico-sidebar--set alpha 'result "Shipped")
+  (agent-shell-vertico-sidebar--set-limited
+   alpha (list :type "five_hour" :resets-at resets-at))
+  (agent-shell-vertico-sidebar--snooze-until-reset alpha)
+  (agent-shell-vertico-sidebar--schedule-continuation alpha)
+  (kill-buffer alpha)
+  (agent-shell-vertico-sidebar--watch-buffer beta)
+  (agent-shell-vertico-tests--load-session beta "s1"))
+
+(ert-deftest agent-shell-vertico-sidebar-killed-session-revives-its-record ()
+  "A killed session started again within the grace gets its record back.
+The old buffer's timers died with it, so the limit's wake and the
+continuation are scheduled again, and the mark is cleared."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1"))
+       (beta "Claude Code Agent @ beta" "/work/alpha/"
+             (agent-shell-vertico-tests--persisted-state)))
+    (agent-shell-vertico-tests--with-state-file
+      (agent-shell-vertico-tests--capturing-timers
+        (agent-shell-vertico-tests--with-notifications
+          (let ((agent-shell-test-statuses (list (cons beta 'ready)))
+                (resets-at (+ (float-time) 3600)))
+            (agent-shell-vertico-tests--limited-then-killed
+             alpha beta resets-at)
+            (setq timers nil)
+            (agent-shell-vertico-sidebar--handle-event
+             beta '((:event . prompt-ready)))
+            (should (equal (agent-shell-vertico-sidebar--get beta 'result)
+                           "Shipped"))
+            (should (agent-shell-vertico-sidebar--limit-snoozed-p beta))
+            (should (agent-shell-vertico-sidebar--get beta 'continuation))
+            (should (equal (sort (mapcar #'cadr timers)
+                                 (lambda (a b)
+                                   (string< (symbol-name a) (symbol-name b))))
+                           (list #'agent-shell-vertico-sidebar--continue
+                                 #'agent-shell-vertico-sidebar--limit-wake)))
+            (should-not notifications)
+            (should-not (plist-member
+                         (gethash '(claude-code . "s1")
+                                  (agent-shell-vertico-sidebar--store))
+                         :killed-at))
+            ;; Revived, it is the reader's again: exit keeps it.
+            (agent-shell-vertico-sidebar--save-on-exit)
+            (should (equal (agent-shell-vertico-tests--saved-keys)
+                           '((claude-code . "s1"))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-revived-record-past-reset ()
+  "A killed session revived after its limit reset wakes, and does not send.
+The past-time rules of a restart apply to a revive."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1"))
+       (beta "Claude Code Agent @ beta" "/work/alpha/"
+             (agent-shell-vertico-tests--persisted-state)))
+    (agent-shell-vertico-tests--with-state-file
+      (agent-shell-vertico-tests--capturing-timers
+        (agent-shell-vertico-tests--with-notifications
+          (let* ((agent-shell-test-statuses (list (cons beta 'ready)))
+                 (now (float-time))
+                 messages)
+            (agent-shell-vertico-tests--limited-then-killed
+             alpha beta (+ now 60))
+            (setq timers nil)
+            (cl-letf (((symbol-function 'float-time)
+                       (lambda (&optional _) (+ now 300)))
+                      ((symbol-function 'message)
+                       (lambda (format &rest args)
+                         (push (apply #'format-message format args)
+                               messages))))
+              (agent-shell-vertico-sidebar--handle-event
+               beta '((:event . prompt-ready))))
+            (should-not timers)
+            (should-not (agent-shell-vertico-sidebar--snoozed-p beta))
+            (should-not (agent-shell-vertico-sidebar--get beta 'continuation))
+            (should (= (length notifications) 1))
+            (should (seq-some (lambda (text)
+                                (string-match-p "Alpha.*closed" text))
+                              messages))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-killed-record-expires-unrevived ()
+  "A killed session started again past the grace starts clean."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1"))
+       (beta "Claude Code Agent @ beta" "/work/alpha/"
+             (agent-shell-vertico-tests--persisted-state)))
+    (agent-shell-vertico-tests--with-state-file
+      (let ((agent-shell-test-statuses (list (cons beta 'ready)))
+            (now (float-time)))
+        (agent-shell-vertico-sidebar--watch-buffer alpha)
+        (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now)))
+          (kill-buffer alpha))
+        (agent-shell-vertico-sidebar--watch-buffer beta)
+        (agent-shell-vertico-tests--load-session beta "s1")
+        (cl-letf (((symbol-function 'float-time)
+                   (lambda (&optional _)
+                     (+ now agent-shell-vertico-sidebar--killed-grace 1))))
+          (agent-shell-vertico-sidebar--handle-event
+           beta '((:event . prompt-ready))))
+        (should-not (agent-shell-vertico-sidebar--get beta 'pinned))))))
+
+(ert-deftest agent-shell-vertico-sidebar-killed-record-not-for-a-new-id ()
+  "A killed session's record never goes to a session with another id.
+That is `agent-shell-restart' with no session id; the old record goes
+at exit."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+              (agent-shell-vertico-tests--persisted-state "s1"))
+       (beta "Claude Code Agent @ beta" "/work/alpha/"
+             (agent-shell-vertico-tests--persisted-state)))
+    (agent-shell-vertico-tests--with-state-file
+      (let ((agent-shell-test-statuses (list (cons beta 'ready))))
+        (agent-shell-vertico-sidebar--watch-buffer alpha)
+        (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
+        (kill-buffer alpha)
+        (agent-shell-vertico-sidebar--watch-buffer beta)
+        (agent-shell-vertico-tests--load-session beta "s2")
+        (agent-shell-vertico-sidebar--handle-event
+         beta '((:event . prompt-ready)))
+        (pcase-dolist (`(,slot . ,_) agent-shell-vertico-tests--saved-slots)
+          (should-not (agent-shell-vertico-sidebar--get beta slot)))
+        (agent-shell-vertico-sidebar--save-on-exit)
+        (should-not (member '(claude-code . "s1")
+                            (agent-shell-vertico-tests--saved-keys)))))))
 
 (ert-deftest agent-shell-vertico-sidebar-saving-prunes-old-records ()
   "A record not saved for longer than the maximum age is dropped.
