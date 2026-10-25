@@ -19376,6 +19376,270 @@ entry is dropped so the next undo reaches the one before it."
   (should (string-match-p "^  U +"
                           (agent-shell-vertico-sidebar--help-text))))
 
+;;; A turn stopped by a usage limit
+
+(defun agent-shell-vertico-tests--limited-state (resets-at &optional status)
+  "Return a session state whose recorded rate limit is STATUS.
+STATUS defaults to \"rejected\"; the limit is the five-hour one and
+resets at RESETS-AT, in epoch seconds."
+  `((:session . ((:id . "a") (:title . "Review alpha")))
+    (:usage . ((:rate-limits . (((:type . "five_hour")
+                                 (:status . ,(or status "rejected"))
+                                 (:utilization . 1.0)
+                                 (:resets-at . ,resets-at))))))))
+
+(defmacro agent-shell-vertico-tests--with-limited (resets-at &rest body)
+  "Evaluate BODY with ALPHA, an idle session limited until RESETS-AT."
+  (declare (indent 1) (debug t))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+               (agent-shell-vertico-tests--limited-state ,resets-at)))
+     (let ((agent-shell-test-statuses (list (cons alpha 'ready)))
+           (agent-shell-test-buffers (list alpha)))
+       (unwind-protect
+           (progn ,@body)
+         (agent-shell-vertico-sidebar--cancel-continuation alpha)))))
+
+(defconst agent-shell-vertico-tests--limit-error
+  '((:event . error)
+    (:data . ((:code . -32603)
+              (:message
+               . "Internal error: You've hit your limit · resets 8pm"))))
+  "The `error' event a turn stopped by a usage limit ends with.
+claude-agent-acp fails the prompt with the CLI's result text, and
+agent-shell passes on only the code and the message.")
+
+(defconst agent-shell-vertico-tests--bare-error
+  '((:event . error) (:data . ((:message . "Internal error"))))
+  "An `error' event whose message says nothing of a limit.")
+
+(ert-deftest agent-shell-vertico-sidebar-limit-error-is-limited ()
+  "An error while agent-shell records a rejected limit is `limited'.
+It is its own status word, filed with the finished sessions rather than
+the ones asking the reader, and its job STATE says so."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Limited"))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(limited idle nil)))
+    (should (eq (agent-shell-vertico-sidebar--band alpha) 'idle))
+    (should (agent-shell-vertico-sidebar--unread-p alpha))
+    (should-not (agent-shell-vertico-sidebar--waits-p alpha))
+    (should (member "Limited"
+                    (agent-shell-vertico-sidebar--filter-state-labels
+                     (agent-shell-vertico-sidebar--session-snapshot
+                      alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-ordinary-error-stays-failed ()
+  "An error with no rejected limit, or one already reset, is a failure."
+  (dolist (state (list '((:session . ((:id . "a"))))
+                       (agent-shell-vertico-tests--limited-state
+                        (- (float-time) 60))
+                       (agent-shell-vertico-tests--limited-state
+                        (+ (float-time) 3600) "allowed")))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((alpha "Claude Code Agent @ alpha" "/work/alpha/" state))
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . error)
+                 (:data . ((:message
+                            . "Internal error: Request timed out")))))
+        (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                    'failed))))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-banner-is-limited ()
+  "The CLI's usage-limit banner marks a limit agent-shell never recorded.
+claude-agent-acp drops the rate-limit report of a turn rejected before
+any reply, so the error's text is all there is; the row says it."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--limit-error)
+    (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+    (should (equal (agent-shell-vertico-sidebar--detail-for
+                    (agent-shell-vertico-sidebar--session-snapshot alpha))
+                   "Limited: You've hit your limit · resets 8pm"))))
+
+(ert-deftest agent-shell-vertico-sidebar-late-limit-report-limits-a-failure ()
+  "A rejected-limit report arriving after the failure makes it limited."
+  (agent-shell-vertico-tests--with-alpha
+    (let ((resets-at (+ (float-time) 3600)))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'failed))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha `((:event . rate-limit-rejected)
+               (:data . ((:type . "seven_day") (:status . "rejected")
+                         (:resets-at . ,resets-at)))))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+      (should (equal (plist-get (agent-shell-vertico-sidebar--get alpha 'limit)
+                                :resets-at)
+                     resets-at)))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-text-says-what-and-when ()
+  "The detail names the limit and when it resets, in local time."
+  (let* ((now (encode-time (list 0 0 9 25 10 2026 nil -1 nil)))
+         (today (float-time
+                 (encode-time (list 0 30 14 25 10 2026 nil -1 nil))))
+         (later (float-time
+                 (encode-time (list 0 30 14 27 10 2026 nil -1 nil)))))
+    (should (equal (agent-shell-vertico-sidebar--limit-text
+                    (list :type "five_hour" :resets-at today) now)
+                   "five-hour limit, resets 14:30"))
+    (should (equal (agent-shell-vertico-sidebar--limit-text
+                    (list :type "seven_day_opus" :resets-at later) now)
+                   (concat "weekly Opus limit, resets "
+                           (format-time-string "%a" later) " 14:30")))
+    (should (equal (agent-shell-vertico-sidebar--limit-text nil now)
+                   "usage limit"))))
+
+(ert-deftest agent-shell-vertico-sidebar-limited-detail-and-face ()
+  "A limited row says what limited it, and its mark is not a failure's."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (let ((snapshot (agent-shell-vertico-sidebar--session-snapshot alpha)))
+      (should (string-prefix-p "Limited: five-hour limit, resets "
+                               (agent-shell-vertico-sidebar--detail-for
+                                snapshot)))
+      (should (eq (agent-shell-vertico-sidebar--mark-face snapshot)
+                  'agent-shell-vertico-sidebar-limited)))))
+
+(ert-deftest agent-shell-vertico-sidebar-notifies-a-limited-session ()
+  "A turn stopped by a limit is reported as Limited, not as Failed."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-tests--with-notifications
+      (let ((agent-shell-test-statuses (list (cons alpha 'busy))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha agent-shell-vertico-tests--limit-error))
+      (should (equal (plist-get (car notifications) :status) "Limited"))
+      (should (eq (plist-get (car notifications) :state) 'limited)))))
+
+(ert-deftest agent-shell-vertico-sidebar-dead-agent-keeps-limited ()
+  "An agent exiting after its turn hit a limit leaves it limited, unannounced."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--limit-error)
+      (setq notifications nil)
+      (agent-shell-vertico-tests--kill-agent alpha)
+      (agent-shell-vertico-sidebar--note-exits (list alpha))
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+      (should-not notifications))))
+
+(ert-deftest agent-shell-vertico-sidebar-continue-at-reset-sends-once ()
+  "Scheduling a continuation sends the prompt at the reset, from the timer.
+The row and the peek say a continuation is scheduled; running the
+command again cancels it."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-continue-at-reset))
+    (let ((timer (agent-shell-vertico-sidebar--get alpha 'continuation)))
+      (should (timerp timer))
+      (should (memq timer timer-list))
+      (should (string-suffix-p " · continues then"
+                               (agent-shell-vertico-sidebar--detail-for
+                                (agent-shell-vertico-sidebar--session-snapshot
+                                 alpha))))
+      (should (string-match-p
+               "continues then"
+               (agent-shell-vertico-sidebar--peek-text alpha)))
+      (apply (timer--function timer) (timer--args timer))
+      (should (equal (car agent-shell-test-calls)
+                     (list 'agent-shell--prompt-send alpha
+                           (list :prompt "Continue." :disposition nil
+                                 :on-delivered nil))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'continuation)))
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-continue-at-reset))
+    (let ((timer (agent-shell-vertico-sidebar--get alpha 'continuation)))
+      (should (timerp timer))
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar-continue-at-reset))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))
+      (should-not (memq timer timer-list)))))
+
+(ert-deftest agent-shell-vertico-sidebar-continue-at-reset-refuses ()
+  "Only a limited session with a known reset can be continued at it."
+  (agent-shell-vertico-tests--with-alpha
+    (with-current-buffer alpha
+      (should-error (agent-shell-vertico-sidebar-continue-at-reset)
+                    :type 'user-error))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--limit-error)
+    (with-current-buffer alpha
+      (should-error (agent-shell-vertico-sidebar-continue-at-reset)
+                    :type 'user-error))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))))
+
+(ert-deftest agent-shell-vertico-sidebar-continuation-fires-only-if-limited ()
+  "A continuation finding the session no longer limited sends nothing."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (with-current-buffer alpha
+      (agent-shell-vertico-sidebar-continue-at-reset))
+    (let ((timer (agent-shell-vertico-sidebar--get alpha 'continuation)))
+      (agent-shell-vertico-sidebar--set alpha 'state 'done)
+      (setq agent-shell-test-calls nil)
+      (apply (timer--function timer) (timer--args timer))
+      (should-not agent-shell-test-calls))))
+
+(ert-deftest agent-shell-vertico-sidebar-continuation-cancel-points ()
+  "A prompt, an interrupt and forgetting the session cancel a continuation."
+  (dolist (cancel
+           (list (lambda (buffer)
+                   (agent-shell-vertico-sidebar--handle-event
+                    buffer '((:event . input-submitted)
+                             (:data . ((:prompt . "go"))))))
+                 #'agent-shell-vertico-interrupt-session
+                 (lambda (buffer)
+                   (agent-shell-vertico-sidebar--handle-event
+                    buffer '((:event . clean-up))))
+                 #'agent-shell-vertico-sidebar--forget))
+    (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (with-current-buffer alpha
+        (agent-shell-vertico-sidebar-continue-at-reset))
+      (let ((timer (agent-shell-vertico-sidebar--get alpha 'continuation)))
+        (should (memq timer timer-list))
+        (funcall cancel alpha)
+        (should-not (memq timer timer-list))
+        (should-not (agent-shell-vertico-sidebar--get alpha
+                                                      'continuation))))))
+
+(ert-deftest agent-shell-vertico-sidebar-continue-at-reset-automatically ()
+  "With the option on, every limit stop with a known reset is scheduled."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (let ((agent-shell-vertico-sidebar-auto-continue t))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (should (timerp (agent-shell-vertico-sidebar--get alpha
+                                                        'continuation)))))
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))))
+
+(ert-deftest agent-shell-vertico-sidebar-continue-at-reset-is-bound ()
+  "`w' continues at the reset in both maps and under Evil.
+The help names it too."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "w"))
+                #'agent-shell-vertico-sidebar-continue-at-reset)))
+  (should (eq (cdr (assoc "w" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-continue-at-reset))
+  (should (string-match-p "^  w "
+                          (agent-shell-vertico-sidebar--help-text))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

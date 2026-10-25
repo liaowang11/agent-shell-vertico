@@ -1338,14 +1338,23 @@ only a process that ran and stopped says the agent is gone."
          (process (and client (map-elt client :process))))
     (or (null process) (process-live-p process))))
 
+(defvar agent-shell-vertico-interrupt-functions nil
+  "Functions called with a session buffer the reader asks to interrupt.
+`agent-shell-vertico-interrupt-session' runs them first, before it
+checks the agent, so asking to stop a session is heard even when there
+is nothing running to stop.  The sidebar cancels a scheduled
+continuation here.")
+
 (defun agent-shell-vertico-interrupt-session (buffer)
   "Interrupt BUFFER.
 A session whose agent process has exited is refused: the cancel goes
 through acp, which starts a client to send it, so the interrupt would
-start a new agent instead of stopping one."
+start a new agent instead of stopping one.  Either way
+`agent-shell-vertico-interrupt-functions' runs first."
   (interactive (list (agent-shell-vertico--read-session "Agent shell: " 'all)))
   (let ((shell (agent-shell-vertico--ensure-shell-buffer
                 (agent-shell-vertico--session-buffer buffer))))
+    (run-hook-with-args 'agent-shell-vertico-interrupt-functions shell)
     (unless (agent-shell-vertico--agent-live-p shell)
       (user-error "The session's agent is not running"))
     (with-current-buffer shell

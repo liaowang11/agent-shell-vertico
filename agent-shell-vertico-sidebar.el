@@ -292,10 +292,11 @@ before the switch is reopened right after it."
 
 It is called with the keyword arguments `:buffer', the session buffer;
 `:agent', the agent's display name; `:status', the wording the sidebar
-shows for the session, one of \"Waiting\", \"Failed\", \"Working\",
-\"Background\", \"Done\", \"Stopped\", \"New\" or \"Starting\";
-`:state', how the work stands in Claude Code's terms, one of `working',
-`blocked', `done', `failed' or `stopped'; `:needs', what the session asks of the
+shows for the session, one of \"Waiting\", \"Failed\", \"Limited\",
+\"Working\", \"Background\", \"Done\", \"Stopped\", \"New\" or
+\"Starting\"; `:state', how the work stands in Claude Code's terms, one
+of `working', `blocked', `done', `failed' or `stopped', or `limited'
+for a turn a usage limit stopped; `:needs', what the session asks of the
 reader, such as \"Allow: Run make check\", or nil; `:unread', non-nil
 when the session holds output nobody has read; and `:last-message', the
 agent's newest message as it arrived, or nil.
@@ -310,6 +311,23 @@ for one they have snoozed until it asks something new, and the message
 text is passed unshortened, since how to fit it belongs to
 whichever channel shows it."
   :type '(choice (const :tag "Do not notify" nil) function)
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-continue-prompt "Continue."
+  "The prompt a continuation sends once a usage limit resets.
+See `agent-shell-vertico-sidebar-continue-at-reset'."
+  :type 'string
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-auto-continue nil
+  "Whether every turn a usage limit stops continues when the limit resets.
+
+When non-nil, a session whose turn a usage limit stopped is sent
+`agent-shell-vertico-sidebar-continue-prompt' once the limit resets,
+as if the reader had run `agent-shell-vertico-sidebar-continue-at-reset'
+on it.  Only a limit whose reset time agent-shell recorded is scheduled.
+A prompt, an interrupt or killing the session cancels it."
+  :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-jump-keys
@@ -380,12 +398,22 @@ it.")
 How the session's last turn ended, in Claude Code's words.
 
 `working' from a prompt until its turn ends, then `done', `failed',
-`stopped' (the reader cancelled it) or `blocked' (it ended asking a
-question).  Nil when the sidebar has seen no turn, which reads as
-`done' because nothing says the session was never prompted.  This is
-what the turn left behind; what the session does now comes from
-agent-shell, and `agent-shell-vertico-sidebar--raw-status' puts the
-two together.")
+`limited' (a usage limit stopped it), `stopped' (the reader cancelled
+it) or `blocked' (it ended asking a question).  Nil when the sidebar
+has seen no turn, which reads as `done' because nothing says the
+session was never prompted.  This is what the turn left behind; what
+the session does now comes from agent-shell, and
+`agent-shell-vertico-sidebar--raw-status' puts the two together.")
+  (limit nil :documentation "\
+The usage limit that stopped the last turn, while `state' is `limited'.
+
+A plist: `:type', the limit's window as Claude Code names it, such as
+\"five_hour\"; `:resets-at', when it resets, in epoch seconds; and
+`:text', the CLI's own words when the error carried them.  Any of them
+may be nil.")
+  (continuation nil :documentation "\
+The timer that continues a limited session once its limit resets, or nil.
+See `agent-shell-vertico-sidebar-continue-at-reset'.")
   (needs nil :documentation "\
 The question a turn ended on, from its `needs input:' line.")
   (waiting-since nil :documentation "\
@@ -495,7 +523,9 @@ that tidy up after a killed buffer leave nothing behind."
   value)
 
 (defun agent-shell-vertico-sidebar--forget (buffer)
-  "Drop everything the sidebar recorded about BUFFER."
+  "Drop everything the sidebar recorded about BUFFER.
+A continuation it had scheduled is cancelled with it."
+  (agent-shell-vertico-sidebar--cancel-continuation buffer)
   (remhash buffer agent-shell-vertico-sidebar--sessions))
 
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
@@ -676,6 +706,17 @@ take each glyph's own colour and change hue along the header."
 (defface agent-shell-vertico-sidebar-failed
   '((t :inherit error))
   "Face for the mark of a session whose last turn failed."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-limited
+  '((t :inherit ansi-color-cyan :background "unspecified-bg"))
+  "Face for the mark of a session whose last turn a usage limit stopped.
+
+Such a session waits on the clock, which no other colour here says:
+red is a failure, yellow waits for the reader, grey was stopped on
+purpose.  Cyan is the one terminal hue no state took, and inheriting
+the ansi face keeps it in the theme's palette, as
+`agent-shell-vertico-sidebar-working' does with blue."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-blocked
@@ -1026,14 +1067,14 @@ See the `background-since' slot of `agent-shell-vertico-sidebar--session'."
 (defun agent-shell-vertico-sidebar--exited-status (buffer)
   "Return the status of BUFFER once its agent process is gone.
 
-A turn that had ended keeps how it ended, `done', `stopped' or `failed',
-and one that ended on a question is still `blocked': the question
-stands, and the row says what it was until the reader reloads.  This is
-Claude Code's rule for a job whose worker died.  Anything else, a turn
-in flight, a session starting or one nobody has prompted, `failed',
-since nothing will finish it."
+A turn that had ended keeps how it ended, `done', `stopped', `failed' or
+`limited', and one that ended on a question is still `blocked': the
+question stands, and the row says what it was until the reader reloads.
+This is Claude Code's rule for a job whose worker died.  Anything else,
+a turn in flight, a session starting or one nobody has prompted,
+`failed', since nothing will finish it."
   (let ((state (agent-shell-vertico-sidebar--get buffer 'state)))
-    (if (memq state '(done stopped failed blocked))
+    (if (memq state '(done stopped failed limited blocked))
         state
       'failed)))
 
@@ -1049,7 +1090,8 @@ the error ends still reads as in flight; this is what it will read as."
   "Return the status symbol the sidebar shows for BUFFER.
 
 The answer is `starting', `new', `busy', `background', `blocked',
-`done', `failed' or `stopped', or whatever else agent-shell reports.
+`done', `failed', `limited' or `stopped', or whatever else agent-shell
+reports.
 
 A session whose agent process is gone is answered first, by
 `agent-shell-vertico-sidebar--exited-status': a dead agent cannot be
@@ -1067,7 +1109,8 @@ not, first match first:
   comes first, because a burst beside it is work the session does
   while it waits;
 - `busy' during an out-of-turn burst, which no turn asked for;
-- `failed' when its last turn failed, until a new turn starts;
+- `failed' when its last turn failed, and `limited' when a usage limit
+  stopped it, until a new turn starts;
 - `starting' while it has no ACP session yet;
 - `stopped' when the reader cancelled its last turn, and `blocked'
   when that turn ended on a question;
@@ -1101,6 +1144,7 @@ the `error' event can report a turn as over before agent-shell says so."
            'blocked)
           ((agent-shell-vertico-sidebar--get buffer 'out-of-turn) 'busy)
           ((eq state 'failed) 'failed)
+          ((eq state 'limited) 'limited)
           ((not (agent-shell-vertico--session-field buffer :id)) 'starting)
           ((eq state 'stopped) 'stopped)
           ((eq state 'blocked) 'blocked)
@@ -1175,7 +1219,11 @@ single question arrives."
   "Return (STATE TEMPO NEEDS) for BUFFER, in Claude Code's terms.
 
 STATE is how the work stands: `working', `blocked', `done', `failed' or
-`stopped'.  TEMPO is what the session does about it now: `active' while
+`stopped', Claude Code's five, or `limited', T3 Code's word for a turn
+a usage limit stopped.  Like a failure it is idle and asks the reader
+nothing: nothing can be answered before the limit resets, and
+`agent-shell-vertico-sidebar-continue-at-reset' needs no reply either.
+TEMPO is what the session does about it now: `active' while
 it works, `blocked' while it waits for the reader, `idle' otherwise.
 NEEDS is what the reader is asked for, or nil.  Claude Code keeps these
 three fields for every job; here they are read off the status, so the
@@ -1201,7 +1249,7 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
                           (agent-shell-vertico-sidebar--elicitation-needs
                            buffer)))
                  (agent-shell-vertico-sidebar--get buffer 'needs))))
-      ((or 'done 'failed 'stopped) (list status 'idle nil))
+      ((or 'done 'failed 'limited 'stopped) (list status 'idle nil))
       (_ (list 'working 'idle nil)))))
 
 (defconst agent-shell-vertico-sidebar--sections
@@ -1480,7 +1528,7 @@ their places.  See
   "Return the raw status rank for STATUS."
   (pcase status
     ('blocked 0)
-    ('failed 1)
+    ((or 'failed 'limited) 1)
     ('busy 2)
     ('background 3)
     ((or 'done 'stopped) 4)
@@ -1492,6 +1540,7 @@ their places.  See
   (pcase status
     ('blocked "Waiting")
     ('failed "Failed")
+    ('limited "Limited")
     ('busy "Working")
     ('background "Background")
     ('done "Done")
@@ -1579,8 +1628,45 @@ repeating those queries during one redisplay."
            :last-terminal-at
            (agent-shell-vertico-sidebar--get buffer 'last-terminal-at)
            :waiting-since
-           (agent-shell-vertico-sidebar--get buffer 'waiting-since))
+           (agent-shell-vertico-sidebar--get buffer 'waiting-since)
+           :limit (agent-shell-vertico-sidebar--get buffer 'limit)
+           :continuation
+           (and (agent-shell-vertico-sidebar--get buffer 'continuation) t))
      (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
+
+(defun agent-shell-vertico-sidebar--limit-name (type)
+  "Return what to call the usage limit of TYPE, as Claude Code names it."
+  (pcase type
+    ('nil "usage limit")
+    ("five_hour" "five-hour limit")
+    ((or "seven_day" "seven_day_overage_included") "weekly limit")
+    ("seven_day_opus" "weekly Opus limit")
+    ("seven_day_sonnet" "weekly Sonnet limit")
+    ("overage" "overage limit")
+    (_ (concat (string-replace "_" " " type) " limit"))))
+
+(defun agent-shell-vertico-sidebar--reset-text (resets-at &optional now)
+  "Return RESETS-AT, in epoch seconds, as a local time.
+The clock time alone on the day of NOW, which defaults to the current
+time, and the weekday before it on any other day."
+  (format-time-string (if (equal (format-time-string "%F" resets-at)
+                                 (format-time-string "%F" now))
+                          "%H:%M"
+                        "%a %H:%M")
+                      resets-at))
+
+(defun agent-shell-vertico-sidebar--limit-text (limit &optional now)
+  "Return what stopped a turn at usage LIMIT, and when it resets.
+LIMIT is a `limit' slot's plist.  With a reset time, the limit's name
+and that time, read against NOW; else the CLI's own words when the
+error carried them; else the limit's name."
+  (pcase-let (((map :type :resets-at :text) limit))
+    (cond (resets-at
+           (format "%s, resets %s"
+                   (agent-shell-vertico-sidebar--limit-name type)
+                   (agent-shell-vertico-sidebar--reset-text resets-at now)))
+          (text)
+          (t (agent-shell-vertico-sidebar--limit-name type)))))
 
 (defun agent-shell-vertico-sidebar--detail-for (snapshot)
   "Return the one-line detail for SNAPSHOT, as Claude Code picks it.
@@ -1589,14 +1675,20 @@ A waiting session says what it waits for, which for a session nobody
 has prompted is a prompt, and a working one its newest entry, which
 for a session dispatched and not yet sent its prompt is that prompt,
 queued.  A failure says why, and a stopped turn only that it stopped.
+A turn a usage limit stopped says which and when it resets, and that it
+continues then when a continuation is scheduled.
 Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
-  (pcase-let (((map :state :tempo :needs :detail :result :error :dispatched)
+  (pcase-let (((map :state :tempo :needs :detail :result :error :dispatched
+                    :limit :continuation)
                snapshot))
     (cond ((eq tempo 'blocked) needs)
           ((and (eq tempo 'active) dispatched)
            (concat "Queued: "
                    (agent-shell-vertico-sidebar--clean-line dispatched)))
           ((eq tempo 'active) detail)
+          ((eq state 'limited)
+           (concat "Limited: " (agent-shell-vertico-sidebar--limit-text limit)
+                   (and continuation " · continues then")))
           ((eq state 'failed)
            (if (stringp error) (concat "Failed: " error) "Failed"))
           ((eq state 'stopped) "Stopped")
@@ -2160,9 +2252,10 @@ session whose agent process is gone is a dot."
   "Return the face of the mark of SNAPSHOT.
 
 Purple is what the reader has put off, yellow what waits for the
-reader, blue what works, red a failure and green a finished turn.  A
-session nobody has prompted waits for its first prompt, so it is yellow
-too.  A stopped session is grey.  Unread output
+reader, blue what works, red a failure, cyan a turn a usage limit
+stopped and green a finished turn.  A session nobody has prompted waits
+for its first prompt, so it is yellow too.  A stopped session is grey.
+Unread output
 does not colour the mark: it makes the title bold.
 
 Yellow, red, green and grey follow Claude Code's table
@@ -2177,6 +2270,7 @@ setting; see `agent-shell-vertico-sidebar-working'."
           ((or (eq tempo 'active) in-flight)
            'agent-shell-vertico-sidebar-working)
           ((eq state 'failed) 'agent-shell-vertico-sidebar-failed)
+          ((eq state 'limited) 'agent-shell-vertico-sidebar-limited)
           ((eq state 'done) 'agent-shell-vertico-sidebar-ready)
           (t 'agent-shell-vertico-sidebar-detail))))
 
@@ -4184,14 +4278,15 @@ that ran to its end is classified by
 refusal or a limit, cut the turn short, so it `failed', in agent-shell's
 own words for the reason.  A turn-complete with no reason is read as
 one that ran to its end, unless the error event before it already said
-the turn failed."
+the turn failed or hit a usage limit."
   (agent-shell-vertico-sidebar--set buffer 'stop-reason reason)
   (agent-shell-vertico-sidebar--stamp-terminal buffer time)
   (pcase reason
     ("cancelled" (agent-shell-vertico-sidebar--set buffer 'state 'stopped))
     ((or "end_turn" 'nil)
      (unless (and (null reason)
-                  (eq (agent-shell-vertico-sidebar--get buffer 'state) 'failed))
+                  (memq (agent-shell-vertico-sidebar--get buffer 'state)
+                        '(failed limited)))
        (agent-shell-vertico-sidebar--classify-last-message buffer)))
     (_
      (agent-shell-vertico-sidebar--set buffer 'state 'failed)
@@ -4199,6 +4294,111 @@ the turn failed."
       buffer 'error (if (fboundp 'agent-shell--stop-reason-description)
                         (agent-shell--stop-reason-description reason)
                       reason)))))
+
+(defconst agent-shell-vertico-sidebar--usage-limit-prefixes
+  '("You've hit your" "You've reached your" "You're out of usage credits"
+    "Your org is out of usage · add funds to continue"
+    "Your org is out of usage · contact your admin"
+    "Your seat type doesn't include usage credits"
+    "Your seat type doesn't include usage"
+    "Your usage allocation has been disabled by your admin"
+    "Your group's usage limit is set to $0"
+    "Fable 5 requires usage credits" "You're out of extra usage"
+    "Your seat type doesn't include extra usage")
+  "How the Claude CLI's message for a turn a usage limit stopped begins.
+The Claude Agent SDK exports these as `USAGE_LIMIT_ERROR_PREFIXES', a
+stable contract claude-agent-acp itself reads the message by; this is
+that list as the SDK's sdk.d.ts has it.")
+
+(defun agent-shell-vertico-sidebar--usage-limit-text (message)
+  "Return the CLI's usage-limit words in error MESSAGE, or nil.
+claude-agent-acp fails the prompt with \"Internal error: \" before the
+CLI's result text, which agent-shell passes on as the message."
+  (when (stringp message)
+    (let ((text (string-remove-prefix "Internal error: " message)))
+      (and (seq-some (lambda (prefix) (string-prefix-p prefix text))
+                     agent-shell-vertico-sidebar--usage-limit-prefixes)
+           text))))
+
+(defun agent-shell-vertico-sidebar--rejected-limit (buffer)
+  "Return the rate limit agent-shell records BUFFER as rejected by, or nil.
+A limit whose reset time has passed no longer rejects anything, though
+agent-shell keeps it until the next report says so."
+  (seq-find (lambda (limit)
+              (and (equal (map-elt limit :status) "rejected")
+                   (let ((resets-at (map-elt limit :resets-at)))
+                     (or (null resets-at) (> resets-at (float-time))))))
+            (map-nested-elt (agent-shell-vertico--state buffer)
+                            '(:usage :rate-limits))))
+
+(defun agent-shell-vertico-sidebar--limit-for (buffer message)
+  "Return the usage limit that ended BUFFER's turn with error MESSAGE.
+The answer is a `limit' slot's plist, or nil when no limit did.
+
+claude-agent-acp ends such a turn by failing the prompt, so it reaches
+agent-shell as an `error' event, like any other failure.  What tells
+the two apart is agent-shell's record of the rate limits Claude Code
+reported, which it updates before the turn fails, or else the CLI's own
+words for a usage limit at the head of the message: the report is lost
+for a turn rejected before any reply."
+  (let ((rejected (agent-shell-vertico-sidebar--rejected-limit buffer))
+        (text (agent-shell-vertico-sidebar--usage-limit-text message)))
+    (when (or rejected text)
+      (list :type (map-elt rejected :type)
+            :resets-at (map-elt rejected :resets-at)
+            :text text))))
+
+(defun agent-shell-vertico-sidebar--set-limited (buffer limit)
+  "Record that usage LIMIT stopped BUFFER's last turn.
+With `agent-shell-vertico-sidebar-auto-continue' on, schedule the
+session to continue once the limit resets."
+  (agent-shell-vertico-sidebar--set buffer 'state 'limited)
+  (agent-shell-vertico-sidebar--set buffer 'limit limit)
+  (let ((resets-at (plist-get limit :resets-at)))
+    (when (and agent-shell-vertico-sidebar-auto-continue
+               resets-at (> resets-at (float-time)))
+      (agent-shell-vertico-sidebar--schedule-continuation buffer))))
+
+(defconst agent-shell-vertico-sidebar--continue-grace 30
+  "Seconds a continuation waits past a limit's reset time.
+A prompt sent the second the limit resets can still be rejected, and
+fail the turn it was meant to start.")
+
+(defun agent-shell-vertico-sidebar--cancel-continuation (buffer)
+  "Cancel the continuation scheduled for BUFFER.
+Return non-nil when there was one."
+  (when-let* ((timer (agent-shell-vertico-sidebar--get buffer 'continuation)))
+    (cancel-timer timer)
+    (agent-shell-vertico-sidebar--set buffer 'continuation nil)
+    (agent-shell-vertico-sidebar--schedule-refresh)
+    t))
+
+(defun agent-shell-vertico-sidebar--schedule-continuation (buffer)
+  "Continue BUFFER once the limit that stopped it resets.
+Its `limit' slot must hold a reset time; one already past continues
+after the grace alone."
+  (agent-shell-vertico-sidebar--cancel-continuation buffer)
+  (let ((resets-at (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
+                              :resets-at)))
+    (agent-shell-vertico-sidebar--set
+     buffer 'continuation
+     (run-at-time (max 0 (- (+ resets-at
+                               agent-shell-vertico-sidebar--continue-grace)
+                            (float-time)))
+                  nil #'agent-shell-vertico-sidebar--continue buffer))
+    (agent-shell-vertico-sidebar--schedule-refresh)))
+
+(defun agent-shell-vertico-sidebar--continue (buffer)
+  "Send BUFFER the continuation prompt, if it is still limited.
+A session the reader has prompted, or that ended some other way since,
+is left alone: the continuation was for the turn the limit stopped."
+  (agent-shell-vertico-sidebar--set buffer 'continuation nil)
+  (when (and (buffer-live-p buffer)
+             (eq (agent-shell-vertico-sidebar--raw-status buffer) 'limited))
+    (agent-shell-vertico-sidebar--send-prompt
+     buffer agent-shell-vertico-sidebar-continue-prompt)
+    (message "Continuing %s after its usage limit" (buffer-name buffer)))
+  (agent-shell-vertico-sidebar--schedule-refresh))
 
 (defun agent-shell-vertico-sidebar--notify (buffer &optional status)
   "Report that BUFFER now needs attention.
@@ -4264,7 +4464,7 @@ dispatched prompt the dead agent never sent is given back."
                                buffer 'dispatched)))
             (agent-shell-vertico-sidebar--dispatch-failed buffer prompt))
           (unless (memq (agent-shell-vertico-sidebar--get buffer 'state)
-                        '(done stopped failed blocked))
+                        '(done stopped failed limited blocked))
             (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
             (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
               (agent-shell-vertico-sidebar--mark-unread-at buffer now)
@@ -4296,9 +4496,14 @@ dispatched prompt the dead agent never sent is given back."
       ('error
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
-       (agent-shell-vertico-sidebar--set buffer 'state 'failed)
-       (agent-shell-vertico-sidebar--set
-        buffer 'error (or (map-nested-elt event '(:data :message)) t))
+       (agent-shell-vertico-sidebar--cancel-continuation buffer)
+       (let ((message (map-nested-elt event '(:data :message))))
+         (agent-shell-vertico-sidebar--set buffer 'error (or message t))
+         (if-let* ((limit (agent-shell-vertico-sidebar--limit-for
+                           buffer message)))
+             (agent-shell-vertico-sidebar--set-limited buffer limit)
+           (agent-shell-vertico-sidebar--set buffer 'state 'failed)
+           (agent-shell-vertico-sidebar--set buffer 'limit nil)))
        (agent-shell-vertico-sidebar--stamp-terminal buffer now)
        ;; A failure is a new ask, which no snooze put off, even when the
        ;; reader is looking; it is unread and announced only when not.
@@ -4338,6 +4543,9 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'dispatched nil)
        (agent-shell-vertico-sidebar--set buffer 'needs nil)
        (agent-shell-vertico-sidebar--set buffer 'error nil)
+       (agent-shell-vertico-sidebar--set buffer 'limit nil)
+       ;; The prompt is what a continuation would have sent.
+       (agent-shell-vertico-sidebar--cancel-continuation buffer)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
        ;; What the last turn said is no answer to this prompt.
        (agent-shell-vertico-sidebar--set buffer 'message nil)
@@ -4355,6 +4563,16 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'exited-at nil))
       ('tool-call-update
        (agent-shell-vertico-sidebar--record-tool-call buffer event))
+      ('rate-limit-rejected
+       ;; The report can arrive after the turn it stopped has failed,
+       ;; since the CLI orders the two as it likes.
+       (when (eq (agent-shell-vertico-sidebar--get buffer 'state) 'failed)
+         (agent-shell-vertico-sidebar--set-limited
+          buffer
+          (list :type (map-nested-elt event '(:data :type))
+                :resets-at (map-nested-elt event '(:data :resets-at))
+                :text (agent-shell-vertico-sidebar--usage-limit-text
+                       (agent-shell-vertico-sidebar--get buffer 'error))))))
       ('session-restored
        ;; A restored session has a history, so it has been prompted.
        (agent-shell-vertico-sidebar--set buffer 'fresh nil))
@@ -5602,6 +5820,8 @@ count leaves them out.  Nothing is shown when none waits."
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
+   "  w           Continue a limited session once its limit resets,\n"
+   "              or cancel that\n"
    "  P           Pin the session to the top, or unpin it\n"
    "  U           Undo the last pin, snooze or read mark\n"
    "  p           Peek: read the session's question and message, reply\n"
@@ -5647,6 +5867,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
     (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
@@ -5693,6 +5914,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
+    (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
     (define-key map [remap undo] #'agent-shell-vertico-sidebar-undo)
@@ -5750,6 +5972,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
+    ("w" . agent-shell-vertico-sidebar-continue-at-reset)
     ("P" . agent-shell-vertico-sidebar-pin)
     ("U" . agent-shell-vertico-sidebar-undo)
     ("p" . agent-shell-vertico-sidebar-peek)
@@ -5792,7 +6015,7 @@ while normal and motion states get the same direct mnemonic commands."
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "U" "p"
-                     "S" "?" "q"))
+                     "S" "w" "?" "q"))
         (when-let* ((command (lookup-key
                               agent-shell-vertico-sidebar-action-map
                               (kbd key))))
@@ -6123,6 +6346,42 @@ put off."
       (message "Session %s snoozed" (buffer-name buffer))))))
 
 ;;;###autoload
+(defun agent-shell-vertico-sidebar-continue-at-reset ()
+  "Continue the session at point once its usage limit resets, or cancel.
+
+Called outside the sidebar, the current session is continued.  When the
+turn a usage limit stopped has a reset time, a timer sends
+`agent-shell-vertico-sidebar-continue-prompt' to the session shortly
+after it, and the row says it continues then.  Running this again
+cancels it, and so do a prompt, an interrupt and killing the session.
+A session that is no longer limited when the timer fires is sent
+nothing.  `agent-shell-vertico-sidebar-auto-continue' schedules every
+limit stop this way.
+
+A session that is not limited is refused, and so is one whose reset
+time agent-shell never recorded."
+  (interactive)
+  (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
+         (resets-at (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
+                               :resets-at)))
+    (cond
+     ((agent-shell-vertico-sidebar--cancel-continuation buffer)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s will not continue at the reset"
+               (buffer-name buffer)))
+     ((not (eq (agent-shell-vertico-sidebar--raw-status buffer) 'limited))
+      (user-error "Session %s is not stopped by a usage limit"
+                  (buffer-name buffer)))
+     ((not resets-at)
+      (user-error "When the limit of %s resets is unknown"
+                  (buffer-name buffer)))
+     (t
+      (agent-shell-vertico-sidebar--schedule-continuation buffer)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s continues after %s" (buffer-name buffer)
+               (agent-shell-vertico-sidebar--reset-text resets-at))))))
+
+;;;###autoload
 (defun agent-shell-vertico-sidebar-pin ()
   "Pin the session at point, or the current session, or unpin it.
 
@@ -6417,7 +6676,12 @@ ASK is the pending request it draws, from
      (cond (ask (agent-shell-vertico-sidebar--peek-ask-text ask))
            (needs (concat (propertize
                            needs 'face 'agent-shell-vertico-sidebar-blocked)
-                          "\n")))
+                          "\n"))
+           ((eq (plist-get snapshot :state) 'limited)
+            (concat (propertize
+                     (agent-shell-vertico-sidebar--detail-for snapshot)
+                     'face 'agent-shell-vertico-sidebar-limited)
+                    "\n")))
      (and waiting
           (concat (propertize (concat "waiting " waiting)
                               'face 'agent-shell-vertico-sidebar-blocked)
@@ -7415,6 +7679,8 @@ SCOPE is persp-mode's activation scope, as for
           #'agent-shell-vertico-sidebar--window-size-change)
 (add-hook 'window-configuration-change-hook
           #'agent-shell-vertico-sidebar--window-configuration-change)
+(add-hook 'agent-shell-vertico-interrupt-functions
+          #'agent-shell-vertico-sidebar--cancel-continuation)
 
 (provide 'agent-shell-vertico-sidebar)
 

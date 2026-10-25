@@ -355,7 +355,8 @@ slot.
 *reader* are separate questions, and conflating them was a bug: a finished
 turn used to report a status that was really a read state, so a failure could
 never be read away. `--raw-status` answers the first question with `starting`,
-`new`, `busy`, `background`, `blocked`, `done`, `failed` or `stopped`, taking
+`new`, `busy`, `background`, `blocked`, `done`, `failed`, `limited` or
+`stopped`, taking
 what `agent-shell-status` reports and overlaying what it does not; its
 docstring gives the order. That function answers about the turn in flight, so
 whatever outlives a turn is the sidebar's own: `starting` is a session with no
@@ -384,7 +385,8 @@ sentinel fails a prompt, agent-shell emits `error` before it clears busy and
 leaves any pending permission in place, and a busy flag that outlived the
 process would spin forever; asking about the process first settles both. The
 rule is Claude Code's for a job whose worker died (`an()`, m0307.js:2009): a
-turn that had ended keeps how it ended (`done`, `stopped`, `failed`), one that
+turn that had ended keeps how it ended (`done`, `stopped`, `failed`,
+`limited`), one that
 ended on a `needs input:` question stays `blocked` and its NEEDS is that
 question alone, never a request the dead agent left behind, and anything else
 (a turn in flight, `starting`, `new`, an out-of-turn burst) is `failed`, which
@@ -394,7 +396,7 @@ prompt to the dead buffer makes acp start the process again in place
 (acp.el:456), so a stored flag would go stale. The one record is the
 `exited-at` slot, which only says the exit has been reported:
 `--note-exits` stamps it, and when the exit is what failed the session (the
-state slot is not one of the four kept above) ends a snooze, marks the session
+state slot is not one of the five kept above) ends a snooze, marks the session
 unread unless the reader is in it, and calls `--notify` once; a prompt still
 `dispatched` is given back through `--dispatch-failed`. A turn the exit
 cut short was already reported by its `error` event and so is skipped. The slot
@@ -449,9 +451,74 @@ fence is code, and a marker after it stays hidden.
 Claude Code's prose rules for a turn with no marker,
 such as a trailing question, are not ported.
 
+**A turn stopped by a usage limit.** T3 Code shows a turn a subscription
+limit stopped as Limited rather than Failed, says when the limit resets,
+and offers to continue then; this ports that. The evidence for how such a
+turn ends is claude-agent-acp's: agent-shell declares no AIR
+`sessionFailure` capability, so the CLI's `is_error` result fails the
+prompt (`failActiveWithSessionFailure` → `failActive`, acp-agent.ts:5655,
+7505) and agent-shell emits `error` with `-32603` and `Internal error:
+` before the CLI's own words, such as `You've hit your limit · resets
+8pm`. There is no stop reason and no `turn-complete`, so nothing reads the
+limit from the message classifier. agent-shell drops the error's
+`errorKind` data, so the error alone cannot say it was a limit. Two things
+can: agent-shell's record of Claude Code's rate-limit reports, `(:usage
+:rate-limits)`, which it updates and announces with `rate-limit-rejected`
+when one turns `rejected`, and the CLI's message, which starts with one
+of the SDK's exported `USAGE_LIMIT_ERROR_PREFIXES`, a list claude-agent-acp
+itself reads the message by. The record carries the window and the reset
+time, but it is not always there: claude-agent-acp forwards a rate-limit
+report only once the turn has had a reply (`lastAssistantTotalUsage`,
+nulled at each turn's start, acp-agent.ts:8408), so a turn rejected on its
+first request leaves no record, and agent-shell announces a rejection only
+once until an `allowed` report. `--limit-for` therefore asks both, at the
+`error`: a `rejected` record whose reset is still ahead
+(`--rejected-limit`; a reset already past rejects nothing), else the
+banner (`--usage-limit-text`). Either makes the state `limited` and fills
+the `limit` slot (`:type :resets-at :text`); with neither the turn is
+`failed` as before. Should the report arrive after the error, which the
+CLI's ordering allows, `rate-limit-rejected` turns a `failed` state
+`limited`. The cost of the record is that any error while a limit is
+rejected and unreset reads as limited, which is true of every request
+then except one an overage allowance lets through.
+
+A limited session is idle, in Completed, like a failure: T3 treats it as a
+terminal stop, and nothing in it can be answered before the reset, so it
+is not in the attention band, the mode line or the jump. Its STATE is
+`limited`, a sixth value beside Claude Code's five, so the face, the
+detail and `--notify`'s `:state` can tell it from a failure; its status
+word is `Limited`, which the filter's `s:` matches. `--detail-for` says
+`Limited: five-hour limit, resets 14:30` (`--limit-text`, our own words,
+the weekday added when the reset is not today), else `Limited:` and the
+CLI's banner, and the peek draws the same line under the title.
+`--exited-status` and `--note-exits` keep `limited` as they keep `failed`.
+
+`agent-shell-vertico-sidebar-continue-at-reset` (`w`, in all four places
+and the help) schedules a continuation: a timer in the `continuation`
+slot that sends `agent-shell-vertico-sidebar-continue-prompt` through
+`--send-prompt` 30 seconds after the reset (`--continue-grace`, since a
+prompt sent on the second can be rejected again). Run again it cancels,
+as T3's does, and it refuses a session that is not limited or whose
+reset is unknown. `agent-shell-vertico-sidebar-auto-continue` schedules
+every limit stop with a reset still ahead. The row says `· continues
+then` while one is pending. `--continue` sends only when the session is
+still `limited`, so a session the reader dealt with meanwhile is left
+alone. A continuation is cancelled by `input-submitted`, by a new
+`error`, by `--forget` (which covers `clean-up`, a killed buffer and the
+dead-buffer sweep) and by an interrupt. agent-shell emits nothing when
+an idle session is interrupted, so the core runs
+`agent-shell-vertico-interrupt-functions` from
+`agent-shell-vertico-interrupt-session`, before it checks the agent, and
+the sidebar cancels there; that covers the sidebar's and the peek's `i`,
+the jump's and Embark's, but not `agent-shell-interrupt` run directly in
+the shell. A continuation does not survive an Emacs restart, and a
+snooze until the reset is not offered, since the sidebar has no timed
+snooze.
+
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,
-`blocked`, `done`, `failed`, `stopped`), TEMPO (`active`, `blocked`, `idle`) and NEEDS (what the
+`blocked`, `done`, `failed`, `stopped`, and `limited`, below), TEMPO
+(`active`, `blocked`, `idle`) and NEEDS (what the
 reader is asked: `Allow: TITLE` from the pending tool call, a pending
 elicitation form's question (`--elicitation-needs`), or the `needs input:`
 line). The request named is the newest of its kind, the one agent-shell's own
@@ -1138,9 +1205,12 @@ The face follows this table, first match wins: purple
 (`-snoozed`) for a snoozed session, yellow (`-blocked`) while it waits for
 the reader, a session nobody has prompted included since its tempo is
 `blocked`, blue (`-working`) while active or in flight, red (`-failed`) for
-a failed turn, green (`-ready`) for a finished one, and grey (`-detail`)
-otherwise, which is a stopped turn. Yellow, red, green and grey are Claude
-Code's (`jn`, m0744.js:3378-3385); blue is not. Claude Code draws a working
+a failed turn, cyan (`-limited`) for one a usage limit stopped, green
+(`-ready`) for a finished one, and grey (`-detail`) otherwise, which is a
+stopped turn. Yellow, red, green and grey are Claude Code's (`jn`,
+m0744.js:3378-3385); blue and cyan are not. Cyan is the one terminal hue
+no other state took, for a session that waits on the clock rather than on
+the reader. Claude Code draws a working
 star in no colour (m0744.js:3382) and sets it apart by dimming every row but
 the focused one, which this sidebar does not do, so blue is kept; the
 `-working` face is the setting for anyone who wants Claude Code's look, and
