@@ -325,8 +325,22 @@ See `agent-shell-vertico-sidebar-continue-at-reset'."
 When non-nil, a session whose turn a usage limit stopped is sent
 `agent-shell-vertico-sidebar-continue-prompt' once the limit resets,
 as if the reader had run `agent-shell-vertico-sidebar-continue-at-reset'
-on it.  Only a limit whose reset time agent-shell recorded is scheduled.
-A prompt, an interrupt or killing the session cancels it."
+on it.  Only a limit whose reset time is known is scheduled.  A
+prompt, a new error or killing the session cancels it."
+  :type 'boolean
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-snooze-limited t
+  "Whether a turn a usage limit stopped is snoozed until the limit resets.
+
+When non-nil, a session whose turn a usage limit stopped, and whose
+reset time is known and still ahead, is snoozed as
+`agent-shell-vertico-sidebar-snooze' would, and woken at the reset: it
+is marked unread again and reported to
+`agent-shell-vertico-sidebar-notify-function'.  Anything that ends a
+snooze ends this one too.  A pinned session is left where the reader
+put it.  This only moves the row; continuing the session is
+`agent-shell-vertico-sidebar-continue-at-reset'."
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
@@ -416,6 +430,14 @@ may be nil.")
   (continuation nil :documentation "\
 The timer that continues a limited session once its limit resets, or nil.
 See `agent-shell-vertico-sidebar-continue-at-reset'.")
+  (limit-snooze nil :documentation "\
+The snooze a usage limit put the session in until it resets, or nil.
+
+A plist: `:snoozed', the value the limit wrote to `snoozed'; `:until',
+the reset time; and `:timer', which wakes the session then.  The wake
+acts only while `snoozed' still holds that value, so a snooze the reader
+or an event has ended or replaced since is left to them.  See
+`agent-shell-vertico-sidebar-snooze-limited'.")
   (needs nil :documentation "\
 The question a turn ended on, from its `needs input:' line.")
   (waiting-since nil :documentation "\
@@ -526,8 +548,10 @@ that tidy up after a killed buffer leave nothing behind."
 
 (defun agent-shell-vertico-sidebar--forget (buffer)
   "Drop everything the sidebar recorded about BUFFER.
-A continuation it had scheduled is cancelled with it."
+A continuation it had scheduled is cancelled with it, and so is the
+wake at its limit's reset."
   (agent-shell-vertico-sidebar--cancel-continuation buffer)
+  (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
   (remhash buffer agent-shell-vertico-sidebar--sessions))
 
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
@@ -1673,7 +1697,9 @@ repeating those queries during one redisplay."
            (agent-shell-vertico-sidebar--get buffer 'waiting-since)
            :limit (agent-shell-vertico-sidebar--get buffer 'limit)
            :continuation
-           (and (agent-shell-vertico-sidebar--get buffer 'continuation) t))
+           (and (agent-shell-vertico-sidebar--get buffer 'continuation) t)
+           :limit-snoozed
+           (agent-shell-vertico-sidebar--limit-snoozed-p buffer))
      (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
 
 (defun agent-shell-vertico-sidebar--limit-name (type)
@@ -1718,10 +1744,11 @@ has prompted is a prompt, and a working one its newest entry, which
 for a session dispatched and not yet sent its prompt is that prompt,
 queued.  A failure says why, and a stopped turn only that it stopped.
 A turn a usage limit stopped says which and when it resets, and that it
-continues then when a continuation is scheduled.
+continues then when a continuation is scheduled, or else that it wakes
+then when it is snoozed until the reset.
 Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
   (pcase-let (((map :state :tempo :needs :detail :result :error :dispatched
-                    :limit :continuation)
+                    :limit :continuation :limit-snoozed)
                snapshot))
     (cond ((eq tempo 'blocked) needs)
           ((and (eq tempo 'active) dispatched)
@@ -1730,7 +1757,8 @@ Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
           ((eq tempo 'active) detail)
           ((eq state 'limited)
            (concat "Limited: " (agent-shell-vertico-sidebar--limit-text limit)
-                   (and continuation " · continues then")))
+                   (cond (continuation " · continues then")
+                         (limit-snoozed " · wakes then"))))
           ((eq state 'failed)
            (if (stringp error) (concat "Failed: " error) "Failed"))
           ((eq state 'stopped) "Stopped")
@@ -2299,6 +2327,8 @@ Purple is what the reader has put off, yellow what waits for the
 reader, blue what works, red a failure, cyan a turn a usage limit
 stopped and green a finished turn.  A session nobody has prompted waits
 for its first prompt, so it is yellow too.  A stopped session is grey.
+A limited session stays cyan while snoozed, since snoozing is how it
+waits for its limit to reset.
 Unread output
 does not colour the mark: it makes the title bold.
 
@@ -2309,7 +2339,9 @@ apart by dimming every row but the focused one, which this sidebar does
 not do, and grey already means stopped here.  The faces are the
 setting; see `agent-shell-vertico-sidebar-working'."
   (pcase-let (((map :state :tempo :snoozed :in-flight) snapshot))
-    (cond (snoozed 'agent-shell-vertico-sidebar-snoozed)
+    (cond (snoozed (if (eq state 'limited)
+                       'agent-shell-vertico-sidebar-limited
+                     'agent-shell-vertico-sidebar-snoozed))
           ((eq tempo 'blocked) 'agent-shell-vertico-sidebar-blocked)
           ((or (eq tempo 'active) in-flight)
            'agent-shell-vertico-sidebar-working)
@@ -3220,13 +3252,16 @@ Values are downcased, because every comparison ignores case."
 Its status word (`--status-name-for') and the labels of its own section
 and band, as Claude Code matches a job's own state and section.  A
 snoozed session answers to Snoozed alone, because the reader has put it
-off whatever its status says.  The STATE field is not offered: it says
-`done' for a session waiting on the reader, so `s:done' would keep it."
+off whatever its status says, except a limited one, which a snooze is
+how it waits for its limit to reset (`--snooze-until-reset').  The
+STATE field is not offered: it says `done' for a session waiting on the
+reader, so `s:done' would keep it."
   (let ((section (alist-get (plist-get snapshot :section)
                             agent-shell-vertico-sidebar--sections))
         (band (alist-get (plist-get snapshot :band)
                          agent-shell-vertico-sidebar--sections)))
-    (if (eq (plist-get snapshot :band) 'snoozed)
+    (if (and (eq (plist-get snapshot :band) 'snoozed)
+             (not (eq (plist-get snapshot :state) 'limited)))
         (list section band)
       (list (plist-get snapshot :status-name) section band))))
 
@@ -4364,6 +4399,78 @@ CLI's result text, which agent-shell passes on as the message."
                      agent-shell-vertico-sidebar--usage-limit-prefixes)
            text))))
 
+(defconst agent-shell-vertico-sidebar--reset-months
+  '("Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec")
+  "The month names the CLI's reset times use, in order.")
+
+(defconst agent-shell-vertico-sidebar--reset-regexp
+  (rx "resets " (? "at ")
+      (? (group-n 1 (or "Jan" "Feb" "Mar" "Apr" "May" "Jun"
+                        "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"))
+         " " (group-n 2 (** 1 2 digit))
+         (? ", " (group-n 3 (= 4 digit)))
+         (or ", " " at "))
+      (group-n 4 (** 1 2 digit)) (? ":" (group-n 5 (= 2 digit)))
+      (group-n 6 (or "am" "pm"))
+      (? " (" (group-n 7 (+ (not (any "() ")))) ")")
+      (or eos (not (any alnum))))
+  "How the Claude CLI says when a usage limit resets.
+
+The CLI writes every reset time with one formatter, en-US on a 12-hour
+clock with the minutes dropped when they are zero and the meridiem
+lowercased: `8pm' or `8:30pm' within a day, `Oct 27, 8pm' further off,
+`Jan 2, 2027, 8pm' in another year, then the IANA zone it was written
+in, as ` (Asia/Shanghai)'.  ICU puts `, ' or ` at ' between the date
+and the time depending on its version, so both are read.  The usage
+limit message says `resets 8pm', the paused banner `resets at 8pm'.")
+
+(defun agent-shell-vertico-sidebar--parse-reset (text &optional now)
+  "Return when the usage limit TEXT names resets, in epoch seconds, or nil.
+
+TEXT is the CLI's own words, read by `--reset-regexp'.  The time is in
+the zone TEXT names, or local when it names none.  A clock time with no
+date means its next occurrence after NOW, which defaults to the current
+time, so one already past today means tomorrow.  The CLI drops the
+seconds, so a time means the end of its minute: a continuation sent at
+the start could reach the limit before it resets.  Anything else, an
+hour past 12 included, is nil: the reset stays unknown."
+  (when (and (stringp text)
+             (let ((case-fold-search nil))
+               (string-match agent-shell-vertico-sidebar--reset-regexp text)))
+    (let* ((month-name (match-string 1 text))
+           (month (and month-name
+                       (1+ (seq-position
+                            agent-shell-vertico-sidebar--reset-months
+                            month-name))))
+           (day (and month (string-to-number (match-string 2 text))))
+           (year (and (match-string 3 text)
+                      (string-to-number (match-string 3 text))))
+           (hour12 (string-to-number (match-string 4 text)))
+           (minute (if (match-string 5 text)
+                       (string-to-number (match-string 5 text))
+                     0))
+           (hour (+ (% hour12 12)
+                    (if (equal (match-string 6 text) "pm") 12 0)))
+           (zone (match-string 7 text))
+           (now (or now (float-time)))
+           (today (decode-time now zone)))
+      (when (and (<= 1 hour12 12) (< minute 60)
+                 (or (null day) (<= 1 day 31)))
+        (cl-flet ((at (day month year)
+                    (float-time
+                     (encode-time (list 59 minute hour day month year
+                                        nil -1 zone)))))
+          (if month
+              (at day month (or year (decoded-time-year today)))
+            (let ((time (at (decoded-time-day today)
+                            (decoded-time-month today)
+                            (decoded-time-year today))))
+              (if (> time now)
+                  time
+                (at (1+ (decoded-time-day today))
+                    (decoded-time-month today)
+                    (decoded-time-year today))))))))))
+
 (defun agent-shell-vertico-sidebar--rejected-limit (buffer)
   "Return the rate limit agent-shell records BUFFER as rejected by, or nil.
 A limit whose reset time has passed no longer rejects anything, though
@@ -4384,12 +4491,14 @@ agent-shell as an `error' event, like any other failure.  What tells
 the two apart is agent-shell's record of the rate limits Claude Code
 reported, which it updates before the turn fails, or else the CLI's own
 words for a usage limit at the head of the message: the report is lost
-for a turn rejected before any reply."
+for a turn rejected before any reply.  The reset time is the record's,
+else what the CLI's words say (`--parse-reset')."
   (let ((rejected (agent-shell-vertico-sidebar--rejected-limit buffer))
         (text (agent-shell-vertico-sidebar--usage-limit-text message)))
     (when (or rejected text)
       (list :type (map-elt rejected :type)
-            :resets-at (map-elt rejected :resets-at)
+            :resets-at (or (map-elt rejected :resets-at)
+                           (agent-shell-vertico-sidebar--parse-reset text))
             :text text))))
 
 (defun agent-shell-vertico-sidebar--set-limited (buffer limit)
@@ -4402,6 +4511,59 @@ session to continue once the limit resets."
     (when (and agent-shell-vertico-sidebar-auto-continue
                resets-at (> resets-at (float-time)))
       (agent-shell-vertico-sidebar--schedule-continuation buffer))))
+
+(defun agent-shell-vertico-sidebar--cancel-limit-wake (buffer)
+  "Cancel the wake at BUFFER's limit reset, and forget the limit's snooze.
+The snooze itself, when it still holds, is left as it is."
+  (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
+    (cancel-timer (plist-get wake :timer))
+    (agent-shell-vertico-sidebar--set buffer 'limit-snooze nil)))
+
+(defun agent-shell-vertico-sidebar--limit-snoozed-p (buffer)
+  "Return non-nil while BUFFER is in the snooze its usage limit set."
+  (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
+    (equal (agent-shell-vertico-sidebar--get buffer 'snoozed)
+           (plist-get wake :snoozed))))
+
+(defun agent-shell-vertico-sidebar--snooze-until-reset (buffer)
+  "Snooze BUFFER until the usage limit that stopped it resets.
+
+Only a `limited' session whose reset is known and still ahead is
+snoozed, and only with `agent-shell-vertico-sidebar-snooze-limited' on.
+A session the reader pinned or snoozed is left as they put it."
+  (let ((resets-at (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
+                              :resets-at))
+        (now (float-time)))
+    (when (and agent-shell-vertico-sidebar-snooze-limited
+               (eq (agent-shell-vertico-sidebar--get buffer 'state) 'limited)
+               resets-at (> resets-at now)
+               (not (agent-shell-vertico-sidebar--get buffer 'pinned))
+               (not (agent-shell-vertico-sidebar--get buffer 'snoozed)))
+      (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+      (agent-shell-vertico-sidebar--set buffer 'snoozed now)
+      (agent-shell-vertico-sidebar--set
+       buffer 'limit-snooze
+       (list :snoozed now :until resets-at
+             :timer (run-at-time (- resets-at now) nil
+                                 #'agent-shell-vertico-sidebar--limit-wake
+                                 buffer)))
+      (agent-shell-vertico-sidebar--schedule-refresh))))
+
+(defun agent-shell-vertico-sidebar--limit-wake (buffer)
+  "Wake BUFFER from the snooze its usage limit set, which has reset.
+The session is marked unread, back at the end of the queue, and
+reported once, unless the reader is in it.  A snooze that has ended or
+changed since is not the limit's any more, and is left alone."
+  (when (buffer-live-p buffer)
+    (let ((ours (agent-shell-vertico-sidebar--limit-snoozed-p buffer)))
+      (agent-shell-vertico-sidebar--set buffer 'limit-snooze nil)
+      (when ours
+        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
+            (agent-shell-vertico-sidebar--set buffer 'unread nil)
+          (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))
+          (agent-shell-vertico-sidebar--notify buffer))
+        (agent-shell-vertico-sidebar--schedule-refresh)))))
 
 (defconst agent-shell-vertico-sidebar--continue-grace 30
   "Seconds a continuation waits past a limit's reset time.
@@ -4541,6 +4703,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
        (agent-shell-vertico-sidebar--cancel-continuation buffer)
+       (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
        (let ((message (map-nested-elt event '(:data :message))))
          (agent-shell-vertico-sidebar--set buffer 'error (or message t))
          (if-let* ((limit (agent-shell-vertico-sidebar--limit-for
@@ -4561,7 +4724,9 @@ dispatched prompt the dead agent never sent is given back."
            (agent-shell-vertico-sidebar--set buffer 'unread nil)
          (agent-shell-vertico-sidebar--mark-unread-at buffer now)
          (agent-shell-vertico-sidebar--notify
-          buffer (agent-shell-vertico-sidebar--settled-status buffer))))
+          buffer (agent-shell-vertico-sidebar--settled-status buffer)))
+       ;; Snoozed only once reported: the stop is news, the wait is not.
+       (agent-shell-vertico-sidebar--snooze-until-reset buffer))
       ('turn-complete
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
@@ -4590,6 +4755,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'limit nil)
        ;; The prompt is what a continuation would have sent.
        (agent-shell-vertico-sidebar--cancel-continuation buffer)
+       (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
        ;; What the last turn said is no answer to this prompt.
        (agent-shell-vertico-sidebar--set buffer 'message nil)
@@ -4616,7 +4782,8 @@ dispatched prompt the dead agent never sent is given back."
           (list :type (map-nested-elt event '(:data :type))
                 :resets-at (map-nested-elt event '(:data :resets-at))
                 :text (agent-shell-vertico-sidebar--usage-limit-text
-                       (agent-shell-vertico-sidebar--get buffer 'error))))))
+                       (agent-shell-vertico-sidebar--get buffer 'error))))
+         (agent-shell-vertico-sidebar--snooze-until-reset buffer)))
       ('session-restored
        ;; A restored session has a history, so it has been prompted.
        (agent-shell-vertico-sidebar--set buffer 'fresh nil))
@@ -5864,7 +6031,7 @@ count leaves them out.  Nothing is shown when none waits."
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
-   "  w           Continue a limited session once its limit resets,\n"
+   "  w (gw)      Continue a limited session once its limit resets,\n"
    "              or cancel that\n"
    "  P           Pin the session to the top, or unpin it\n"
    "  U           Undo the last pin, snooze or read mark\n"
@@ -5976,9 +6143,11 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-refresh)
     (define-key map (kbd "h") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-dispatch)
+    (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
     map)
   "Prefix map for the Evil `g' bindings.
-`gr' refreshes, `gh' resumes a past session and `gc' dispatches.")
+`gr' refreshes, `gh' resumes a past session, `gc' dispatches and `gw'
+continues a limited session at its reset.")
 
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
@@ -6016,7 +6185,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
-    ("w" . agent-shell-vertico-sidebar-continue-at-reset)
+    ("gw" . agent-shell-vertico-sidebar-continue-at-reset)
     ("P" . agent-shell-vertico-sidebar-pin)
     ("U" . agent-shell-vertico-sidebar-undo)
     ("p" . agent-shell-vertico-sidebar-peek)
@@ -6028,8 +6197,9 @@ count leaves them out.  Nothing is shown when none waits."
 The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
 move a whole row at a time; `D'/`R'/`I' are the destructive session
 actions so navigation and lowercase mnemonics remain available.  Refresh is
-`gr', resuming a past session `gh' and dispatching `gc', which leave `H'
-to `evil-window-top' and `d' to Evil's delete operator.  The other
+`gr', resuming a past session `gh', dispatching `gc' and continuing at a
+limit's reset `gw', which leave `H' to `evil-window-top', `d' to Evil's
+delete operator and `w' to its word motion.  The other
 mnemonic actions intentionally take precedence over their generic Evil
 commands in this read-only sidebar.")
 
@@ -6055,7 +6225,7 @@ while normal and motion states get the same direct mnemonic commands."
       (evil-local-set-key state [remap evil-undo]
                           #'agent-shell-vertico-sidebar-undo)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
-        (unless (member (car binding) '("gr" "gh" "gc"))
+        (unless (member (car binding) '("gr" "gh" "gc" "gw"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "U" "p"
@@ -6397,13 +6567,14 @@ Called outside the sidebar, the current session is continued.  When the
 turn a usage limit stopped has a reset time, a timer sends
 `agent-shell-vertico-sidebar-continue-prompt' to the session shortly
 after it, and the row says it continues then.  Running this again
-cancels it, and so do a prompt, an interrupt and killing the session.
+cancels it, and so do a prompt, a new error and killing the session.
 A session that is no longer limited when the timer fires is sent
 nothing.  `agent-shell-vertico-sidebar-auto-continue' schedules every
 limit stop this way.
 
 A session that is not limited is refused, and so is one whose reset
-time agent-shell never recorded."
+time is unknown: neither agent-shell's record nor the CLI's message
+gave one."
   (interactive)
   (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
          (resets-at (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
@@ -7723,8 +7894,6 @@ SCOPE is persp-mode's activation scope, as for
           #'agent-shell-vertico-sidebar--window-size-change)
 (add-hook 'window-configuration-change-hook
           #'agent-shell-vertico-sidebar--window-configuration-change)
-(add-hook 'agent-shell-vertico-interrupt-functions
-          #'agent-shell-vertico-sidebar--cancel-continuation)
 
 (provide 'agent-shell-vertico-sidebar)
 

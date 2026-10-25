@@ -19467,7 +19467,7 @@ resets at RESETS-AT, in epoch seconds."
            (agent-shell-test-buffers (list alpha)))
        (unwind-protect
            (progn ,@body)
-         (agent-shell-vertico-sidebar--cancel-continuation alpha)))))
+         (agent-shell-vertico-sidebar--forget alpha)))))
 
 (defconst agent-shell-vertico-tests--limit-error
   '((:event . error)
@@ -19477,6 +19477,12 @@ resets at RESETS-AT, in epoch seconds."
   "The `error' event a turn stopped by a usage limit ends with.
 claude-agent-acp fails the prompt with the CLI's result text, and
 agent-shell passes on only the code and the message.")
+
+(defconst agent-shell-vertico-tests--limit-error-no-reset
+  '((:event . error)
+    (:data . ((:code . -32603)
+              (:message . "Internal error: You've hit your limit"))))
+  "The `error' of a usage limit whose message names no reset time.")
 
 (defconst agent-shell-vertico-tests--bare-error
   '((:event . error) (:data . ((:message . "Internal error"))))
@@ -19494,8 +19500,8 @@ the ones asking the reader, and its job STATE says so."
                    "Limited"))
     (should (equal (agent-shell-vertico-sidebar--job-state alpha)
                    '(limited idle nil)))
-    (should (eq (agent-shell-vertico-sidebar--band alpha) 'idle))
-    (should (agent-shell-vertico-sidebar--unread-p alpha))
+    (should (eq (agent-shell-vertico-sidebar--band alpha) 'snoozed))
+    (should (agent-shell-vertico-sidebar--get alpha 'unread))
     (should-not (agent-shell-vertico-sidebar--waits-p alpha))
     (should (member "Limited"
                     (agent-shell-vertico-sidebar--filter-state-labels
@@ -19522,14 +19528,18 @@ the ones asking the reader, and its job STATE says so."
 (ert-deftest agent-shell-vertico-sidebar-limit-banner-is-limited ()
   "The CLI's usage-limit banner marks a limit agent-shell never recorded.
 claude-agent-acp drops the rate-limit report of a turn rejected before
-any reply, so the error's text is all there is; the row says it."
+any reply, so the error's text is all there is; the row says it when
+it names no reset time to read."
   (agent-shell-vertico-tests--with-alpha
     (agent-shell-vertico-sidebar--handle-event
-     alpha agent-shell-vertico-tests--limit-error)
+     alpha agent-shell-vertico-tests--limit-error-no-reset)
     (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
     (should (equal (agent-shell-vertico-sidebar--detail-for
                     (agent-shell-vertico-sidebar--session-snapshot alpha))
-                   "Limited: You've hit your limit · resets 8pm"))))
+                   "Limited: You've hit your limit"))
+    ;; With no reset known there is nothing to snooze until.
+    (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+    (should (eq (agent-shell-vertico-sidebar--band alpha) 'idle))))
 
 (ert-deftest agent-shell-vertico-sidebar-late-limit-report-limits-a-failure ()
   "A rejected-limit report arriving after the failure makes it limited."
@@ -19641,7 +19651,7 @@ command again cancels it."
       (should-error (agent-shell-vertico-sidebar-continue-at-reset)
                     :type 'user-error))
     (agent-shell-vertico-sidebar--handle-event
-     alpha agent-shell-vertico-tests--limit-error)
+     alpha agent-shell-vertico-tests--limit-error-no-reset)
     (with-current-buffer alpha
       (should-error (agent-shell-vertico-sidebar-continue-at-reset)
                     :type 'user-error))
@@ -19661,13 +19671,15 @@ command again cancels it."
       (should-not agent-shell-test-calls))))
 
 (ert-deftest agent-shell-vertico-sidebar-continuation-cancel-points ()
-  "A prompt, an interrupt and forgetting the session cancel a continuation."
+  "A prompt, a new error and forgetting the session cancel a continuation."
   (dolist (cancel
            (list (lambda (buffer)
                    (agent-shell-vertico-sidebar--handle-event
                     buffer '((:event . input-submitted)
                              (:data . ((:prompt . "go"))))))
-                 #'agent-shell-vertico-interrupt-session
+                 (lambda (buffer)
+                   (agent-shell-vertico-sidebar--handle-event
+                    buffer agent-shell-vertico-tests--bare-error))
                  (lambda (buffer)
                    (agent-shell-vertico-sidebar--handle-event
                     buffer '((:event . clean-up))))
@@ -19698,16 +19710,244 @@ command again cancels it."
     (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))))
 
 (ert-deftest agent-shell-vertico-sidebar-continue-at-reset-is-bound ()
-  "`w' continues at the reset in both maps and under Evil.
-The help names it too."
+  "`w' continues at the reset in both maps, `gw' under Evil.
+Evil keeps its own `w', the word motion.  The help names both."
   (dolist (map (list agent-shell-vertico-sidebar-mode-map
                      agent-shell-vertico-sidebar-action-map))
     (should (eq (lookup-key map (kbd "w"))
                 #'agent-shell-vertico-sidebar-continue-at-reset)))
-  (should (eq (cdr (assoc "w" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (cdr (assoc "gw" agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-continue-at-reset))
-  (should (string-match-p "^  w "
+  (should-not (assoc "w" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (lookup-key agent-shell-vertico-sidebar--evil-g-map (kbd "w"))
+              #'agent-shell-vertico-sidebar-continue-at-reset))
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (_state key definition)
+                 (push (cons (key-description key) definition) bindings)))
+              ((symbol-function 'evil-get-auxiliary-keymap)
+               (lambda (&rest _args) nil)))
+      (agent-shell-vertico-sidebar--bind-evil-keys))
+    (should-not (assoc "w" bindings))
+    (should-not (assoc "g w" bindings))
+    (should (eq (cdr (assoc "C-c w" bindings))
+                #'agent-shell-vertico-sidebar-continue-at-reset)))
+  (should (string-match-p "^  w (gw) "
                           (agent-shell-vertico-sidebar--help-text))))
+
+;;; Reading the reset time from the CLI's message
+
+(defun agent-shell-vertico-tests--utc (year month day hour minute
+                                            &optional second)
+  "Return the epoch seconds of YEAR MONTH DAY HOUR MINUTE SECOND, in UTC."
+  (float-time (encode-time (list (or second 0) minute hour day month year
+                                 nil nil t))))
+
+(ert-deftest agent-shell-vertico-sidebar-parse-reset-clock-times ()
+  "A clock time means today in its zone, or tomorrow once it has passed.
+The CLI drops the seconds, so a time means the end of its minute."
+  (let ((now (agent-shell-vertico-tests--utc 2026 10 25 9 0)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 8pm (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 25 20 0 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 8:30pm (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 25 20 30 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 12pm (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 25 12 0 59)))
+    ;; Already past today: tomorrow.
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 12:05am (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 26 0 5 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 8am (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 26 8 0 59)))
+    ;; The Paused banner's spelling.
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "usage limit resets at 8pm (UTC)" now)
+                   (agent-shell-vertico-tests--utc 2026 10 25 20 0 59)))
+    ;; Another zone: 8pm in Shanghai is noon UTC.
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 8pm (Asia/Shanghai)"
+                    now)
+                   (agent-shell-vertico-tests--utc 2026 10 25 12 0 59)))))
+
+(ert-deftest agent-shell-vertico-sidebar-parse-reset-local-time ()
+  "With no zone named, the time is local."
+  (let ((now (float-time (encode-time (list 0 0 9 25 10 2026 nil -1 nil)))))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your limit · resets 8pm" now)
+                   (float-time
+                    (encode-time (list 59 0 20 25 10 2026 nil -1 nil)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-parse-reset-dates ()
+  "A reset more than a day away carries its date, and a year not this one.
+Either separator ICU puts before the time is read."
+  (let ((now (agent-shell-vertico-tests--utc 2026 10 25 9 0)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    "You've hit your weekly limit · resets Oct 27, 8pm (UTC)"
+                    now)
+                   (agent-shell-vertico-tests--utc 2026 10 27 20 0 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    (concat "You've hit your weekly limit · resets "
+                            "Oct 27 at 8:30pm (UTC)")
+                    now)
+                   (agent-shell-vertico-tests--utc 2026 10 27 20 30 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    (concat "You've hit your weekly limit · resets "
+                            "Jan 2, 2027, 12:05am (UTC) · progress saved")
+                    now)
+                   (agent-shell-vertico-tests--utc 2027 1 2 0 5 59)))
+    (should (equal (agent-shell-vertico-sidebar--parse-reset
+                    (concat "You've hit your weekly limit · resets "
+                            "Jan 2, 2027 at 12pm (UTC)")
+                    now)
+                   (agent-shell-vertico-tests--utc 2027 1 2 12 0 59)))))
+
+(ert-deftest agent-shell-vertico-sidebar-parse-reset-unrecognised ()
+  "Anything else leaves the reset unknown."
+  (let ((now (agent-shell-vertico-tests--utc 2026 10 25 9 0)))
+    (dolist (text '("You've hit your limit"
+                    "You've hit your limit · resets in 3 hours"
+                    "You've hit your limit · resets 20:00"
+                    "You've hit your limit · resets 13pm (UTC)"
+                    "You've hit your limit · resets Foo 3, 8pm (UTC)"
+                    "You've hit your limit · resets Oct 27 8pm (UTC)"
+                    "You've hit your limit · resets tomorrow"
+                    nil))
+      (should-not (agent-shell-vertico-sidebar--parse-reset text now)))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-reset-read-from-the-message ()
+  "With no rate-limit record, the reset time comes from the CLI's words."
+  (agent-shell-vertico-tests--with-alpha
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-sidebar--handle-event
+           alpha '((:event . error)
+                   (:data . ((:message . "Internal error: You've hit your \
+limit · resets Oct 27, 2099, 8pm (UTC)")))))
+          (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                      'limited))
+          (should (equal (plist-get (agent-shell-vertico-sidebar--get
+                                     alpha 'limit)
+                                    :resets-at)
+                         (agent-shell-vertico-tests--utc 2099 10 27 20 0 59))))
+      (agent-shell-vertico-sidebar--forget alpha))))
+
+;;; A limited session is snoozed until its limit resets
+
+(defun agent-shell-vertico-tests--fire-limit-wake (buffer)
+  "Run the timer that wakes BUFFER at its limit's reset."
+  (let ((timer (plist-get (agent-shell-vertico-sidebar--get
+                           buffer 'limit-snooze)
+                          :timer)))
+    (should (timerp timer))
+    (apply (timer--function timer) (timer--args timer))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-snoozes-until-the-reset ()
+  "A limit stop with a known reset is snoozed, announced, and woken then.
+The row keeps the limit's colour and says it wakes at the reset; the
+wake marks it unread again and announces it once more."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (should (= (length notifications) 1))
+      (should (agent-shell-vertico-sidebar--get alpha 'snoozed))
+      (should (eq (agent-shell-vertico-sidebar--band alpha) 'snoozed))
+      (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+      (let ((snapshot (agent-shell-vertico-sidebar--session-snapshot alpha)))
+        (should (eq (agent-shell-vertico-sidebar--mark-face snapshot)
+                    'agent-shell-vertico-sidebar-limited))
+        (should (string-suffix-p " · wakes then"
+                                 (agent-shell-vertico-sidebar--detail-for
+                                  snapshot))))
+      (agent-shell-vertico-sidebar--set alpha 'unread nil)
+      (agent-shell-vertico-tests--fire-limit-wake alpha)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'limit-snooze))
+      (should (agent-shell-vertico-sidebar--get alpha 'unread))
+      (should (= (length notifications) 2))
+      (should (equal (plist-get (car notifications) :status) "Limited")))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-wake-leaves-a-changed-snooze ()
+  "The wake does nothing once the snooze it set has ended some other way.
+A session the reader woke, or snoozed again by hand, is theirs."
+  (dolist (change (list (lambda (buffer)
+                          (with-current-buffer buffer
+                            (agent-shell-vertico-sidebar-snooze)))
+                        (lambda (buffer)
+                          (with-current-buffer buffer
+                            (agent-shell-vertico-sidebar-snooze)
+                            (agent-shell-vertico-sidebar--set
+                             buffer 'snoozed (+ (float-time) 1))))))
+    (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+      (agent-shell-vertico-tests--with-notifications
+        (agent-shell-vertico-sidebar--handle-event
+         alpha agent-shell-vertico-tests--bare-error)
+        (setq notifications nil)
+        (agent-shell-vertico-sidebar--set alpha 'unread nil)
+        (let ((timer (plist-get (agent-shell-vertico-sidebar--get
+                                 alpha 'limit-snooze)
+                                :timer)))
+          (funcall change alpha)
+          (let ((snoozed (agent-shell-vertico-sidebar--get alpha 'snoozed)))
+            (apply (timer--function timer) (timer--args timer))
+            (should (equal (agent-shell-vertico-sidebar--get alpha 'snoozed)
+                           snoozed))
+            (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+            (should-not notifications)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-snooze-exceptions ()
+  "No snooze with the option off, nor for a session the reader pinned."
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (let ((agent-shell-vertico-sidebar-snooze-limited nil))
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'limit-snooze))))
+  (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+    (agent-shell-vertico-sidebar--set alpha 'pinned (float-time))
+    (agent-shell-vertico-sidebar--handle-event
+     alpha agent-shell-vertico-tests--bare-error)
+    (should (agent-shell-vertico-sidebar--get alpha 'pinned))
+    (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))))
+
+(ert-deftest agent-shell-vertico-sidebar-late-limit-report-snoozes ()
+  "A rejected-limit report that turns a failure limited snoozes it too."
+  (agent-shell-vertico-tests--with-alpha
+    (unwind-protect
+        (progn
+          (agent-shell-vertico-sidebar--handle-event
+           alpha agent-shell-vertico-tests--bare-error)
+          (agent-shell-vertico-sidebar--handle-event
+           alpha `((:event . rate-limit-rejected)
+                   (:data . ((:type . "seven_day") (:status . "rejected")
+                             (:resets-at . ,(+ (float-time) 3600))))))
+          (should (agent-shell-vertico-sidebar--get alpha 'snoozed)))
+      (agent-shell-vertico-sidebar--forget alpha))))
+
+(ert-deftest agent-shell-vertico-sidebar-limit-wake-cancelled ()
+  "A new turn and forgetting the session cancel the wake."
+  (dolist (cancel
+           (list (lambda (buffer)
+                   (agent-shell-vertico-sidebar--handle-event
+                    buffer '((:event . input-submitted)
+                             (:data . ((:prompt . "go"))))))
+                 #'agent-shell-vertico-sidebar--forget))
+    (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
+      (agent-shell-vertico-sidebar--handle-event
+       alpha agent-shell-vertico-tests--bare-error)
+      (let ((timer (plist-get (agent-shell-vertico-sidebar--get
+                               alpha 'limit-snooze)
+                              :timer)))
+        (should (memq timer timer-list))
+        (funcall cancel alpha)
+        (should-not (memq timer timer-list))
+        (should-not (agent-shell-vertico-sidebar--get alpha
+                                                      'limit-snooze))))))
 
 (provide 'agent-shell-vertico-tests)
 

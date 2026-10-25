@@ -337,7 +337,7 @@ slot. `:no-display` does not stop an agent that has to authenticate from
 asking, so "out of sight" is not guaranteed there. Like every sidebar key,
 `d` is bound in four places plus the help text: the mode map, the `C-c` action
 map, the Evil bindings (as `gc` in `--evil-g-map`, listed in
-`--evil-bindings` and skipped by the direct install as `gr` and `gh` are,
+`--evil-bindings` and skipped by the direct install as `gr`, `gh` and `gw` are,
 since Evil's `d` is its delete operator) and the `C-c` key list in
 `--bind-evil-keys`.
 
@@ -476,25 +476,59 @@ once until an `allowed` report. `--limit-for` therefore asks both, at the
 (`--rejected-limit`; a reset already past rejects nothing), else the
 banner (`--usage-limit-text`). Either makes the state `limited` and fills
 the `limit` slot (`:type :resets-at :text`); with neither the turn is
-`failed` as before. Should the report arrive after the error, which the
+`failed` as before. The reset time is the record's, else the banner's
+(`--parse-reset`). The CLI writes every reset time with one formatter
+(`dA` in the 2.1.309 binary, reached through `Cv`), en-US on a 12-hour
+clock with the minutes dropped when zero and the meridiem lowercased, and
+the usage-limit message always asks it for the zone: `resets 8pm
+(Asia/Shanghai)`, `resets 8:30pm (UTC)` within a day, `resets Oct 27,
+8pm (...)` further off, and `Jan 2, 2027, 8pm` in another year. ICU
+writes `Oct 27 at 8pm` or `Oct 27, 8pm` by version (Bun's says `at`,
+Node's a comma), so both are read; the paused banner's `resets at 8pm`
+is read too. The zone, an IANA name, goes to `encode-time`; with none the
+time is local. A clock time already past is tomorrow's, and a time means
+the end of its minute, since the CLI drops the seconds and a continuation
+sent at the start could beat the reset. Any other shape leaves the reset
+unknown; the other messages that say `resets` (a spend limit's
+`limitName resets resetTime`, a fast-mode `resets in 5m`) are not
+parsed. Should the report arrive after the error, which the
 CLI's ordering allows, `rate-limit-rejected` turns a `failed` state
 `limited`. The cost of the record is that any error while a limit is
 rejected and unreset reads as limited, which is true of every request
 then except one an overage allowance lets through.
 
-A limited session is idle, in Completed, like a failure: T3 treats it as a
-terminal stop, and nothing in it can be answered before the reset, so it
-is not in the attention band, the mode line or the jump. Its STATE is
+A limited session is idle, like a failure: T3 treats it as a terminal
+stop, and nothing in it can be answered before the reset, so it is not in
+the attention band, the mode line or the jump. Where it is drawn follows
+T3's "Snooze limited threads": with a reset known and ahead,
+`--snooze-until-reset` snoozes it (`agent-shell-vertico-sidebar-snooze-limited`,
+on by default), after the `error` has marked and reported it, so the stop
+is news and the wait is not. It writes the ordinary `snoozed` slot, so
+the row files under Snoozed, `z` wakes it, undo and every event that ends
+a snooze treat it as any other; the `limit-snooze` slot remembers the
+value it wrote and a timer at the reset. The timer (`--limit-wake`) acts
+only while `snoozed` still holds that value, and then clears it, marks the
+session unread at the back of the queue and calls `--notify` once,
+reporting `Limited`; a snooze the reader ended or replaced is theirs. The
+timer is cancelled by a prompt, a new `error` and `--forget`, not by the
+snooze ending: undo can put a woken snooze back, and the wake must still
+come then. A pinned session, or one the reader had already snoozed, is
+left alone, since pinning and snoozing cancel each other. With no reset
+known it stays in Completed. A limited row keeps its cyan mark while
+snoozed, and its status word still answers `s:limited`, because a snooze
+is how it waits rather than the reader putting it off. Its STATE is
 `limited`, a sixth value beside Claude Code's five, so the face, the
 detail and `--notify`'s `:state` can tell it from a failure; its status
 word is `Limited`, which the filter's `s:` matches. `--detail-for` says
 `Limited: five-hour limit, resets 14:30` (`--limit-text`, our own words,
 the weekday added when the reset is not today), else `Limited:` and the
 CLI's banner, and the peek draws the same line under the title.
+It adds `· wakes then` while the limit's snooze holds.
 `--exited-status` and `--note-exits` keep `limited` as they keep `failed`.
 
-`agent-shell-vertico-sidebar-continue-at-reset` (`w`, in all four places
-and the help) schedules a continuation: a timer in the `continuation`
+`agent-shell-vertico-sidebar-continue-at-reset` (`w`, `gw` under Evil,
+whose `w` is its word motion; bound in the four places and the help like
+`gh`) schedules a continuation: a timer in the `continuation`
 slot that sends `agent-shell-vertico-sidebar-continue-prompt` through
 `--send-prompt` 30 seconds after the reset (`--continue-grace`, since a
 prompt sent on the second can be rejected again). Run again it cancels,
@@ -505,15 +539,14 @@ then` while one is pending. `--continue` sends only when the session is
 still `limited`, so a session the reader dealt with meanwhile is left
 alone. A continuation is cancelled by `input-submitted`, by a new
 `error`, by `--forget` (which covers `clean-up`, a killed buffer and the
-dead-buffer sweep) and by an interrupt. agent-shell emits nothing when
-an idle session is interrupted, so the core runs
-`agent-shell-vertico-interrupt-functions` from
-`agent-shell-vertico-interrupt-session`, before it checks the agent, and
-the sidebar cancels there; that covers the sidebar's and the peek's `i`,
-the jump's and Embark's, but not `agent-shell-interrupt` run directly in
-the shell. A continuation does not survive an Emacs restart, and a
-snooze until the reset is not offered, since the sidebar has no timed
-snooze.
+dead-buffer sweep) and by running the command again. An interrupt does
+not cancel it: a limited session is idle, so there is nothing to stop,
+and a hook in `agent-shell-vertico-interrupt-session` ran before
+agent-shell's confirmation and missed an interrupt typed in the shell.
+The continuation is independent of the snooze: the snooze wakes without
+sending, the continuation sends 30 seconds later, and either may be set
+alone. A continuation does not survive an Emacs restart, and neither
+does the snooze's wake.
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,
@@ -903,9 +936,10 @@ snooze is dealing with the session or a new ask: `input-submitted`, a
 and settled out-of-turn output all leave it alone. `--snoozed-for` is to the
 snooze what `--unread-for` is to unread: a working session is drawn and ranked
 as working, the record kept for when it goes quiet; the command refuses one for
-the same reason `mark-unread` does. A timed snooze was left for later: the
-record's presence is the whole answer today, and a timer would only add a way to
-end it.
+the same reason `mark-unread` does. A timed snooze is not offered to the
+reader: the record's presence is the whole answer, and a timer would only add a
+way to end it. The one timer is a usage limit's, which wakes the snooze it set
+at the reset (see "A turn stopped by a usage limit").
 
 **Undoing a parking action.** `agent-shell-vertico-sidebar-undo` (`U`, and
 `undo` remapped, so `C-/` and `C-x u` unless a minor mode such as
