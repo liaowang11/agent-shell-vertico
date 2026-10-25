@@ -13802,6 +13802,38 @@ after the test has already finished.  Tests call
                               :time)
                    20.0))))))
 
+(ert-deftest agent-shell-vertico-sidebar-restore-replay-is-not-news ()
+  "Replaying a restored session's history marks nothing and reports nothing.
+agent-shell replays the first and last turns through its ordinary
+dispatch, so the sidebar hears agent messages and tool calls with no
+turn of the reader's in flight; they are history, not output to read."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:title . "Alpha"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (agent-shell-vertico-tests--with-notifications
+        (let ((agent-shell-test-statuses (list (cons alpha 'ready))))
+          (agent-shell-vertico-sidebar--watch-buffer alpha)
+          (with-current-buffer alpha
+            (setq-local agent-shell--state
+                        '((:session . ((:id . "a") (:title . "Alpha"))))))
+          (agent-shell-test--replay-restore
+           alpha
+           '(((:event . agent-message-chunk)
+              (:data . ((:text-chunk . "Earlier answer.\n"))))
+             ((:event . tool-call-update)
+              (:data . ((:tool-call-id . "t1")
+                        (:tool-call . ((:title . "Read file")
+                                       (:status . "completed"))))))
+             ((:event . agent-message-chunk)
+              (:data . ((:text-chunk . "result: all done\n"))))))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'out-of-turn))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'busy-since))
+          (should-not (agent-shell-vertico-sidebar--unread-p alpha))
+          (should-not notifications)
+          (should (eq (agent-shell-vertico-sidebar--raw-status alpha)
+                      'done)))))))
+
 (defun agent-shell-vertico-tests--declare-state (buffer state)
   "Have BUFFER's agent declare run STATE, as agent-shell reports it."
   (with-current-buffer buffer

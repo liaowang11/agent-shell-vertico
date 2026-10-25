@@ -332,6 +332,37 @@ a word."
       ('thought (propertize "Thinking" 'font-lock-face 'shadow))
       ('message (propertize "Writing" 'font-lock-face 'shadow)))))
 
+(defun agent-shell-test--emit (buffer event)
+  "Run BUFFER's subscribers on EVENT, an alist with `:event' and `:data'.
+Subscribers registered for a single event kind hear only that kind."
+  (dolist (subscription (copy-sequence agent-shell-test-subscriptions))
+    (pcase-let ((`(,shell ,kind ,on-event) subscription))
+      (when (and (eq shell buffer)
+                 (or (null kind) (eq kind (map-elt event :event))))
+        (with-current-buffer buffer
+          (funcall on-event event))))))
+
+(defun agent-shell-test--replay-restore (buffer events)
+  "Replay EVENTS into BUFFER the way agent-shell restores a session.
+
+Mirrors `agent-shell--render-pending-restore': the session id is already
+set, from the `session/load' response, when the buffered turns replay;
+they replay through the ordinary dispatch, which emits the ordinary
+events, with a `session/load' request pushed onto `:active-requests' for
+the duration so the handlers do not take the replay for out-of-turn
+output; then the requests are put back and `session-restored' is
+emitted."
+  (with-current-buffer buffer
+    (let ((saved (map-elt agent-shell--state :active-requests)))
+      (setq-local agent-shell--state (copy-alist agent-shell--state))
+      (setf (alist-get :active-requests agent-shell--state)
+            (cons (list (cons :method "session/load")) saved))
+      (unwind-protect
+          (dolist (event events)
+            (agent-shell-test--emit buffer event))
+        (setf (alist-get :active-requests agent-shell--state) saved))))
+  (agent-shell-test--emit buffer '((:event . session-restored))))
+
 (defvar agent-shell-test-calls nil
   "Log of recorded calls, newest first, as (COMMAND BUFFER ARGS).
 Kept beside `agent-shell-test-last-command' for tests that need to see
