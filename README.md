@@ -116,13 +116,13 @@ between live sessions without opening a minibuffer.  It is modelled on Claude
 Code's agent view, and it has two views; `=` switches between them:
 
 - **state** (the default) puts each session under one of the agent view's
-  sections: Pinned, Needs input, Working, Completed and Snoozed.  Empty
-  sections are left out.  Snoozed starts folded
-  (`agent-shell-vertico-sidebar-folded-sections`); an open section shows
-  every session it holds.
+  sections: Pinned, Needs input, Working, Completed and Snoozed, plus T3
+  Code's Settled.  Empty sections are left out.  Snoozed and Settled start
+  folded (`agent-shell-vertico-sidebar-folded-sections`); an open section
+  shows every session it holds.
 - **project** puts each session under a foldable project header, with a
-  Pinned section above the projects.  Projects start open
-  (`agent-shell-vertico-sidebar-expand-by-default`).
+  Pinned section above the projects and a Settled section below them.
+  Projects start open (`agent-shell-vertico-sidebar-expand-by-default`).
 
 `agent-shell-vertico-sidebar-group-by` picks the view: `state` or `project`.
 Any other value, nil included, is the state view.
@@ -173,8 +173,9 @@ whose turn the sidebar never saw finish, for example, has none.
 
 The mark is Claude Code's star, and its colour is the session's state: blue
 while it works, yellow while it waits for you or for its first prompt, red
-when its last turn failed, green when its last turn finished, grey when it
-stopped, and purple when you snoozed it.  A shell still
+when its last turn failed, cyan when a usage limit stopped it, green when
+its last turn finished, grey when it stopped, and purple when you snoozed
+it.  A shell still
 starting its agent session counts as working: its star is blue and spins.  A
 working star spins through Claude Code's own frames, `· ✢ ✳ ✶ ✻ ✽`; with
 `agent-shell-vertico-sidebar-animate-busy` off it is a still `●`.  A session
@@ -275,7 +276,8 @@ newest first, so reading a finished session does not drop it below stale idle
 ones.  In the state view each section keeps this order among its own sessions.
 In the project view, projects follow the highest-priority session they contain.
 `s` switches between priority, activity, recency, status, and name sorting.
-Whatever the sort, pinned sessions come first and snoozed ones last.
+Whatever the sort, pinned sessions come first, then snoozed ones below the
+rest, and settled ones last.
 
 A fringe marker runs down the rows of the sessions the selected frame is
 showing, so the list says where you already are.  The session you are
@@ -360,6 +362,43 @@ Pinned header at the top.  It keeps its state, so a pinned session waiting
 for you still counts in the mode line.  Pinning wakes a snoozed session,
 snoozing unpins one, and `P` again unpins.
 
+`e` (`ge` in Evil) settles a session you are done with but not ready to
+kill, as T3 Code does.  It moves to the Settled section, which starts
+folded, and leaves the mode-line count, a project header's `✻` count, the
+jump and the notifications.  Settling does not read it, so the Settled
+header still counts unread output.  Settle, pin and snooze cancel each
+other.  A new prompt, a permission request, a form, an error or `u`
+un-settles it, and so does `e` again; a finished turn only marks it unread,
+silently.  A working session is refused.  Settling the session you are in
+moves you on to the next session down the sidebar that is neither settled
+nor snoozed, or to the sidebar when there is none; with a prefix argument
+you stay.  From a sidebar row, point moves to the next row.  Set
+`agent-shell-vertico-sidebar-auto-settle-after` to a number of seconds to
+settle a finished, read session idle that long; a session you un-settled by
+hand is left alone until its next prompt.
+
+`U` undoes your latest pin, unpin, snooze, wake, settle, un-settle, mark
+unread or mark read, restoring the session's records exactly, so a session
+marked unread by mistake returns to its old place in the queue.  `undo`
+(`C-/`, `C-x u`) and, under Evil, `evil-undo` are remapped to it in the
+sidebar.  Repeating walks further back; there is no redo.  An action whose
+session changed since, such as a permission request ending a snooze, is
+refused and dropped.
+
+A turn a usage limit stopped is `Limited`, not Failed: a cyan star and a
+detail line such as `Limited: five-hour limit, resets 14:30`, read from
+agent-shell's rate-limit record or the CLI's own message.  It is idle, so it
+asks nothing of you.  When the reset time is known and still ahead, the
+session is snoozed until then (`agent-shell-vertico-sidebar-snooze-limited`,
+on by default) and woken at the reset, marked unread and notified; `z`
+wakes it sooner.  `w` (`gw` in Evil) schedules a continuation: shortly after
+the reset it sends `agent-shell-vertico-sidebar-continue-prompt`
+(`Continue.` by default), and `w` again cancels it.  The row says `· wakes
+then` or `· continues then` while either is pending.  Set
+`agent-shell-vertico-sidebar-auto-continue` to schedule every limit stop
+with a known reset.  A prompt, a new error or killing the session cancels
+the continuation, and neither it nor the wake survives an Emacs restart.
+
 A session whose turn has ended but which still has a subagent or an async task
 running is shown as `Background`: a blue star that does not spin, in the
 Working section, and a line under the row counting what runs, such as `2
@@ -369,8 +408,10 @@ working session, and it sorts just below the working sessions under
 attention by itself, so `agent-shell-vertico-sidebar-jump` passes over it, but a
 finished turn still marks it unread as usual.  The report the agent writes once
 the work has ended is announced even though the session is already unread, so
-the notification you get is the result, not only the launch.  Any running task
-counts, a dev server included.  `S` opens `agent-shell-subagents` for the
+the notification you get is the result, not only the launch.  A background
+shell command, monitor or eval job, such as a dev server or a watcher, is
+listed on that line but does not hold the session in Working: the session
+reads as finished behind it.  `S` opens `agent-shell-subagents` for the
 session, the list agent-shell keeps of its subagents and tasks, where they can
 be opened or stopped.  agent-shell reports none of this as an event, so the
 sidebar reads it from the session's state, and checks every two seconds while it
@@ -546,7 +587,11 @@ built-in `help-at-pt` support:
    '(?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9 ?a ?s ?d ?f ?g ?h ?j ?k ?l))
   (agent-shell-vertico-sidebar-jump-dim-others t)
   (agent-shell-vertico-sidebar-group-by 'state)
-  (agent-shell-vertico-sidebar-folded-sections '(snoozed))
+  (agent-shell-vertico-sidebar-folded-sections '(snoozed settled))
+  (agent-shell-vertico-sidebar-auto-settle-after nil)
+  (agent-shell-vertico-sidebar-snooze-limited t)
+  (agent-shell-vertico-sidebar-auto-continue nil)
+  (agent-shell-vertico-sidebar-continue-prompt "Continue.")
   (agent-shell-vertico-sidebar-expand-by-default t)
   (agent-shell-vertico-sidebar-show-details nil)
   (agent-shell-vertico-sidebar-extra-info
@@ -571,8 +616,10 @@ levels), `=` (switch between the state and project views), `s` (sort), `f`
 `m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation), `F`
 (fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `H` (resume
 a past session of the project at point; with a prefix, of any project),
-`u`/`!` (mark unread/read), `z` (snooze), `P` (pin), `p` (peek), `S` (list
-subagents), `?` (show the key reference), and `q` (close the side window).
+`u`/`!` (mark unread/read), `z` (snooze), `e` (settle), `P` (pin), `U`
+(undo the last pin, snooze, settle or read mark), `w` (continue a limited
+session at its reset), `p` (peek), `S` (list subagents), `?` (show the key
+reference), and `q` (close the side window).
 
 In Evil states the sidebar uses a Dired-like direct map: `j`/`k` move between
 rows, `C-j`/`C-k` move a whole session row at a time, skipping headers, `RET`
@@ -581,7 +628,9 @@ activates the current row or metadata field, `o` jumps to a session by key,
 row, `S-TAB` cycles every row through the fold levels, and `f` filters the
 sessions in place of `evil-find-char`.
 `gr` refreshes, `gh` resumes a past session of the project at point, `gc`
-dispatches a prompt (Evil keeps `d` for its delete operator), `D`
+dispatches a prompt (Evil keeps `d` for its delete operator), `ge` settles
+and `gw` continues a limited session at its reset (Evil keeps `e` and `w`
+for its word motions), `U` undoes, `D`
 kills, `R` restarts, and `I` interrupts the current session;
 `t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
 read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
