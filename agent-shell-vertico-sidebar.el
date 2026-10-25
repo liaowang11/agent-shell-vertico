@@ -152,16 +152,29 @@ other value, nil included, is read as `state'."
                  (const :tag "Project" project))
   :group 'agent-shell-vertico-sidebar)
 
-(defcustom agent-shell-vertico-sidebar-folded-sections '(snoozed)
+(defcustom agent-shell-vertico-sidebar-folded-sections '(snoozed settled)
   "State sections that start folded in the state view.
 
 An explicit fold or unfold of a section overrides this for the current
-sidebar buffer."
+sidebar buffer.  The project view's Settled section follows it too."
   :type '(set (const :tag "Pinned" pinned)
               (const :tag "Needs input" attention)
               (const :tag "Working" working)
               (const :tag "Completed" idle)
-              (const :tag "Snoozed" snoozed))
+              (const :tag "Snoozed" snoozed)
+              (const :tag "Settled" settled))
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-auto-settle-after nil
+  "Seconds a finished session waits before the sidebar settles it, or nil.
+
+When a number, a session idle that long is settled as if the reader had
+run `agent-shell-vertico-sidebar-settle' on it, checked whenever the
+sidebar renders.  Idle means Completed with nothing unread, not pinned
+or snoozed, no background work, and not failed by its agent exiting.  A
+session the reader un-settled by hand is left alone until its next
+prompt.  Nil, the default, never settles a session by itself."
+  :type '(choice (const :tag "Never" nil) (natnum :tag "Seconds"))
   :group 'agent-shell-vertico-sidebar)
 
 (defcustom agent-shell-vertico-sidebar-sort-by 'priority
@@ -385,6 +398,17 @@ it nor being done with it, so it is a record of its own beside `unread'
 and `error' rather than a value of either.  Presence is the whole
 record.  The time orders the snoozed tier oldest first, the way the
 attention tier is ordered.")
+  (settled nil :documentation "\
+When the reader settled the session, or nil.
+
+Settling says the reader is done with a session without killing it: it
+moves to the Settled section, folded at the bottom, and asks for nobody
+until something new does.  Presence is the whole record, as with
+`snoozed'.  Settle, pin and snooze cancel each other.")
+  (unsettled nil :documentation "\
+Non-nil when the reader un-settled the session by hand since its last
+prompt.  `agent-shell-vertico-sidebar-auto-settle-after' leaves such a
+session alone until its next turn starts.")
   (pinned nil :documentation "\
 When the reader pinned the session, or nil.
 
@@ -1320,11 +1344,12 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
 
 (defconst agent-shell-vertico-sidebar--sections
   '((pinned . "Pinned") (attention . "Needs input") (working . "Working")
-    (idle . "Completed") (snoozed . "Snoozed"))
+    (idle . "Completed") (snoozed . "Snoozed") (settled . "Settled"))
   "State sections in display order, with their labels.
 
-The labels are Claude Code's.  The symbols are the bands `--band-for'
-answers, so the Completed section is the `idle' band.")
+The labels are Claude Code's but Settled, which is T3 Code's.  The
+symbols are the bands `--band-for' answers, so the Completed section is
+the `idle' band.")
 
 (defun agent-shell-vertico-sidebar--band-for (snapshot)
   "Return the band of SNAPSHOT.  The first match wins, as in Claude Code.
@@ -1332,9 +1357,12 @@ answers, so the Completed section is the `idle' band.")
 Unread output does not change the band: a finished session is idle,
 read or not.  A session nobody has prompted waits for its first prompt,
 so it is in the attention band.  Work behind a prompt, a subagent or a task
-still running, is working, as Claude Code files it."
+still running, is working, as Claude Code files it.  A session the
+reader settled is settled, and one they snoozed snoozed, unless it is
+active."
   (let ((tempo (plist-get snapshot :tempo)))
     (cond
+     ((and (plist-get snapshot :settled) (not (eq tempo 'active))) 'settled)
      ((and (plist-get snapshot :snoozed) (not (eq tempo 'active))) 'snoozed)
      ((eq tempo 'active) 'working)
      ((eq tempo 'blocked) 'attention)
@@ -1353,12 +1381,17 @@ section instead, which `--family-section' answers."
   "Return the job fields of BUFFER in STATUS as a plist.
 
 SNOOZED is the session's snooze time as drawn.  The plist holds
-`:state', `:tempo', `:needs', `:in-flight', `:band', `:pinned' and
-`:section', the part of a render snapshot that `--band-for' reads."
+`:state', `:tempo', `:needs', `:in-flight', `:settled', `:band',
+`:pinned' and `:section', the part of a render snapshot that
+`--band-for' reads."
   (pcase-let* ((`(,state ,tempo ,needs)
                 (agent-shell-vertico-sidebar--job-state buffer status))
                (fields (list :state state :tempo tempo :needs needs
-                             :in-flight (eq status 'background)))
+                             :in-flight (eq status 'background)
+                             :settled (agent-shell-vertico-sidebar--settled-for
+                                       status
+                                       (agent-shell-vertico-sidebar--get
+                                        buffer 'settled))))
                (band (agent-shell-vertico-sidebar--band-for
                       (append (list :snoozed snoozed) fields)))
                (pinned (agent-shell-vertico-sidebar--get buffer 'pinned)))
@@ -1484,6 +1517,24 @@ as `agent-shell-vertico-sidebar--unread-for' keeps the unread one."
   "Return non-nil when the reader has put BUFFER off."
   (and (agent-shell-vertico-sidebar--snoozed-time buffer) t))
 
+(defun agent-shell-vertico-sidebar--settled-for (status time)
+  "Return TIME when a session in STATUS is drawn and ranked as settled.
+A working session is working, settled or not, as with
+`agent-shell-vertico-sidebar--snoozed-for'."
+  (unless (eq status 'busy)
+    time))
+
+(defun agent-shell-vertico-sidebar--settled-time (buffer)
+  "Return when BUFFER was settled, or nil when it is not settled."
+  (or (agent-shell-vertico-sidebar--snapshot-field buffer :settled)
+      (agent-shell-vertico-sidebar--settled-for
+       (agent-shell-vertico-sidebar--raw-status buffer)
+       (agent-shell-vertico-sidebar--get buffer 'settled))))
+
+(defun agent-shell-vertico-sidebar--settled-p (buffer)
+  "Return non-nil when the reader has settled BUFFER."
+  (and (agent-shell-vertico-sidebar--settled-time buffer) t))
+
 (defun agent-shell-vertico-sidebar--pinned-p (buffer)
   "Return non-nil when the reader has pinned BUFFER."
   (and (or (agent-shell-vertico-sidebar--snapshot-field buffer :pinned)
@@ -1501,11 +1552,13 @@ the whole answer and no record can go stale.
 
 A working session asks for nobody, whatever it is holding: see
 `agent-shell-vertico-sidebar--unread-for'.  Neither does a snoozed one,
-because the reader has said when they will come back to it.  A session
+because the reader has said when they will come back to it, nor a
+settled one, which the reader is done with.  A session
 nobody has prompted is in the attention band, but its status is `new',
 not `blocked': no decision is pending, so it asks for the reader only
 once it holds unread output."
   (and (not (agent-shell-vertico-sidebar--snoozed-p buffer))
+       (not (agent-shell-vertico-sidebar--settled-p buffer))
        (or (agent-shell-vertico-sidebar--unread-p buffer)
            (eq (agent-shell-vertico-sidebar--raw-status buffer) 'blocked))))
 
@@ -1524,7 +1577,8 @@ a finished turn leaves a session `Done'."
       (agent-shell-vertico-sidebar--status-rank-for
        (agent-shell-vertico-sidebar--raw-status buffer)
        (agent-shell-vertico-sidebar--unread-p buffer)
-       (agent-shell-vertico-sidebar--snoozed-p buffer))))
+       (agent-shell-vertico-sidebar--snoozed-p buffer)
+       (agent-shell-vertico-sidebar--settled-p buffer))))
 
 (defun agent-shell-vertico-sidebar--status-sort-rank (buffer)
   "Return the raw status rank for BUFFER.  Lower ranks sort first.
@@ -1536,8 +1590,9 @@ ignores attention metadata; attention is the concern of `priority'."
        (agent-shell-vertico-sidebar--raw-status buffer))))
 
 (defun agent-shell-vertico-sidebar--status-rank-for (status unread
-                                                         &optional snoozed)
-  "Return the priority rank for STATUS, given UNREAD and SNOOZED.
+                                                         &optional snoozed
+                                                         settled)
+  "Return the priority rank for STATUS, given UNREAD, SNOOZED and SETTLED.
 
 The attention tier is two ranks, not one, because its two halves ask
 for the reader differently.  Unread output ranks first: arriving is
@@ -1555,19 +1610,22 @@ sessions run as one queue.  Where the queue sits is not the rank's
 business: `agent-shell-vertico-sidebar--compare-buffers' puts every
 snoozed session after every other one, whatever the sort.  SNOOZED is the
 answer of `agent-shell-vertico-sidebar--snoozed-for', which is already
-nil for a working session, so a burst ranks as work.
+nil for a working session, so a burst ranks as work.  A settled
+session has the rank after it, for the same reason, and
+`--compare-buffers' puts the settled sessions after the snoozed ones.
 
 A session nobody is waiting on ranks by what it is doing.  A failed one
 that has been read ranks last with the sessions that can do nothing:
 it has already said all it has to say."
   (cond
    (snoozed 4)
+   (settled 5)
    (unread 0)
    ((eq status 'blocked) 1)
    ((eq status 'busy) 2)
    ((eq status 'background) 3)
-   ((memq status '(done stopped new)) 5)
-   (t 6)))
+   ((memq status '(done stopped new)) 6)
+   (t 7)))
 
 (defun agent-shell-vertico-sidebar--oldest-first-rank-p (rank)
   "Return non-nil when priority orders the tier at RANK oldest first.
@@ -1579,12 +1637,12 @@ the one a jump visits and the snoozed tier a queue.  The tiers that are
 waiting on nobody lead with whoever was read or finished most recently."
   (<= rank 4))
 
-(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 5 4 2 3]
+(defconst agent-shell-vertico-sidebar--statistics-slots [0 0 1 5 4 6 2 3]
   "Which statistic each status rank is counted in.
 
 The jump reports these when nothing needs attention.  The statistics
 keep one attention count, so both attention ranks land in the same
-slot.  The snoozed and background counts come last, in the
+slot.  The snoozed, background and settled counts come last, in the
 order they were added, so the slots that were there before them kept
 their places.  See
 `agent-shell-vertico-sidebar--status-rank-for' for the ranks and
@@ -1670,7 +1728,12 @@ repeating those queries during one redisplay."
            :status-name
            (agent-shell-vertico-sidebar--status-name-for status)
            :status-rank (agent-shell-vertico-sidebar--status-rank-for
-                         status (and unread t) (and snoozed t))
+                         status (and unread t) (and snoozed t)
+                         (and (agent-shell-vertico-sidebar--settled-for
+                               status
+                               (agent-shell-vertico-sidebar--get
+                                buffer 'settled))
+                              t))
            :live (agent-shell-vertico-sidebar--live-p buffer)
            :raw-status-rank
            (agent-shell-vertico-sidebar--status-sort-rank-for status)
@@ -1766,12 +1829,13 @@ Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
 
 (defun agent-shell-vertico-sidebar--state-since (snapshot)
   "Return when the session in SNAPSHOT entered its band, or nil."
-  (pcase-let (((map :band :snoozed :busy-since-time
+  (pcase-let (((map :band :snoozed :settled :busy-since-time
                     :background-since :last-terminal-at :created-at
                     :waiting-since)
                snapshot))
     (pcase band
       ('snoozed snoozed)
+      ('settled settled)
       ('attention (or waiting-since last-terminal-at created-at))
       ('working (or busy-since-time background-since created-at))
       (_ (or last-terminal-at created-at)))))
@@ -1914,8 +1978,10 @@ uses its latest activity, so one read or finished recently stays above
 stale idle sessions instead of dropping to its alphabetical slot.  A
 session in the background uses the time it was first seen there.  A
 snoozed session uses the time it was snoozed, whatever it holds, since
-that is the order the reader put the sessions off in."
+that is the order the reader put the sessions off in, and a settled one
+the time it was settled, newest first."
   (or (agent-shell-vertico-sidebar--snoozed-time buffer)
+      (agent-shell-vertico-sidebar--settled-time buffer)
       (agent-shell-vertico-sidebar--unread-time buffer)
       (agent-shell-vertico-sidebar--snapshot-field buffer :busy-since-time)
       (agent-shell-vertico-sidebar--get buffer 'busy-since)
@@ -2373,11 +2439,14 @@ the top of its tier.  See
 `agent-shell-vertico-sidebar--oldest-first-rank-p' for which is which.
 
 Whatever SORT-BY is, a pinned session sorts before every session that
-is not, and a snoozed one after every session that is not, and each
-party keeps SORT-BY's order among itself: the reader has put the pinned
-ones first and said the snoozed ones can wait."
+is not, a snoozed one after every session that is not, and a settled
+one after those, and each party keeps SORT-BY's order among itself: the
+reader has put the pinned ones first, said the snoozed ones can wait and
+the settled ones are done."
   (let* ((left-pinned (agent-shell-vertico-sidebar--pinned-p left))
          (right-pinned (agent-shell-vertico-sidebar--pinned-p right))
+         (left-settled (agent-shell-vertico-sidebar--settled-p left))
+         (right-settled (agent-shell-vertico-sidebar--settled-p right))
          (left-snoozed (agent-shell-vertico-sidebar--snoozed-p left))
          (right-snoozed (agent-shell-vertico-sidebar--snoozed-p right))
          (left-title (agent-shell-vertico-sidebar--title left))
@@ -2416,6 +2485,7 @@ ones first and said the snoozed ones can wait."
                        (_ 0.0))))
     (cond
      ((not (eq left-pinned right-pinned)) left-pinned)
+     ((not (eq left-settled right-settled)) right-settled)
      ((not (eq left-snoozed right-snoozed)) right-snoozed)
      ((eq sort-by 'name)
       (agent-shell-vertico-sidebar--text-lessp left-title right-title))
@@ -2779,7 +2849,10 @@ parent-child relationship."
        (and detail-text (> (string-width detail-text) content-width))))
     (dolist (face (list (and (agent-shell-vertico-sidebar--unread-p buffer)
                              'agent-shell-vertico-sidebar-unread-title)
-                        (and (agent-shell-vertico-sidebar--snoozed-p buffer)
+                        (and (or (agent-shell-vertico-sidebar--snoozed-p
+                                  buffer)
+                                 (agent-shell-vertico-sidebar--settled-p
+                                  buffer))
                              'agent-shell-vertico-sidebar-snoozed-title)))
       (when face
         ;; Prepended, so it wins over whatever face the title carries.
@@ -3044,6 +3117,7 @@ Pinned holds every state, so it keeps the plain header face."
     ('working 'agent-shell-vertico-sidebar-working)
     ('idle 'agent-shell-vertico-sidebar-ready)
     ('snoozed 'agent-shell-vertico-sidebar-snoozed)
+    ('settled 'agent-shell-vertico-sidebar-detail)
     (_ 'agent-shell-vertico-sidebar-section)))
 
 (defun agent-shell-vertico-sidebar--header-counts (buffers &optional folded)
@@ -3162,6 +3236,20 @@ the projects."
         (push buffer rest)))
     (cons (nreverse pinned) (nreverse rest))))
 
+(defun agent-shell-vertico-sidebar--project-view-parts (roots)
+  "Return (PINNED REST SETTLED), ROOTS as the project view draws them.
+The pinned roots go under Pinned above the projects, the families whose
+every member is settled under Settled below them, the rest in their
+projects."
+  (pcase-let ((`(,pinned . ,rest)
+               (agent-shell-vertico-sidebar--split-pinned roots)))
+    (let ((settled-p (lambda (root)
+                       (eq (agent-shell-vertico-sidebar--family-section root)
+                           'settled))))
+      (list pinned
+            (seq-remove settled-p rest)
+            (seq-filter settled-p rest)))))
+
 (defun agent-shell-vertico-sidebar--section-folded-p (section)
   "Return non-nil when state SECTION hides its rows in this sidebar."
   (let ((unset (make-symbol "unset")))
@@ -3253,15 +3341,17 @@ Its status word (`--status-name-for') and the labels of its own section
 and band, as Claude Code matches a job's own state and section.  A
 snoozed session answers to Snoozed alone, because the reader has put it
 off whatever its status says, except a limited one, which a snooze is
-how it waits for its limit to reset (`--snooze-until-reset').  The
+how it waits for its limit to reset (`--snooze-until-reset').  A
+settled session answers to Settled alone, for the same reason.  The
 STATE field is not offered: it says `done' for a session waiting on the
 reader, so `s:done' would keep it."
   (let ((section (alist-get (plist-get snapshot :section)
                             agent-shell-vertico-sidebar--sections))
         (band (alist-get (plist-get snapshot :band)
                          agent-shell-vertico-sidebar--sections)))
-    (if (and (eq (plist-get snapshot :band) 'snoozed)
-             (not (eq (plist-get snapshot :state) 'limited)))
+    (if (or (eq (plist-get snapshot :band) 'settled)
+            (and (eq (plist-get snapshot :band) 'snoozed)
+                 (not (eq (plist-get snapshot :state) 'limited))))
         (list section band)
       (list (plist-get snapshot :status-name) section band))))
 
@@ -3459,6 +3549,7 @@ every session it holds."
          ;; Before any snapshot is taken, so a notification reads the
          ;; sessions afresh rather than a render half built.
          (_ (agent-shell-vertico-sidebar--note-exits buffers))
+         (_ (agent-shell-vertico-sidebar--auto-settle buffers))
          ;; A child with a live parent is inserted under it instead, by
          ;; `--insert-session-and-children'; everything else, including an
          ;; orphan whose parent just died, roots its own place in the sort
@@ -3563,8 +3654,9 @@ every session it holds."
                  (agent-shell-vertico-sidebar--insert-section
                   section members width)))
               ('project
-               (pcase-let ((`(,pinned . ,rest)
-                            (agent-shell-vertico-sidebar--split-pinned roots)))
+               (pcase-let ((`(,pinned ,rest ,settled)
+                            (agent-shell-vertico-sidebar--project-view-parts
+                             roots)))
                  (when pinned
                    (agent-shell-vertico-sidebar--insert-section
                     'pinned
@@ -3576,7 +3668,13 @@ every session it holds."
                            (agent-shell-vertico-sidebar--group-buffers rest)
                            agent-shell-vertico-sidebar-sort-by))
                    (agent-shell-vertico-sidebar--insert-project
-                    (car group) (cdr group) width))))))))
+                    (car group) (cdr group) width))
+                 (when settled
+                   (agent-shell-vertico-sidebar--insert-section
+                    'settled
+                    (agent-shell-vertico-sidebar--sort-buffers
+                     settled agent-shell-vertico-sidebar-sort-by)
+                    width))))))))
           ;; Every row is inserted with a closing newline, so the buffer
           ;; would end on a blank line carrying no session.  Point left
           ;; there, by a key at the end of the list or a click in the empty
@@ -4611,8 +4709,8 @@ is left alone: the continuation was for the turn the limit stopped."
 
 The report goes to `agent-shell-vertico-sidebar-notify-function'.  Call
 this after the unread mark and the status are in place, since both are
-read back from the session.  A snoozed session is not reported: the
-events that end a snooze end it before they get here.  Nor is one
+read back from the session.  A snoozed or settled session is not
+reported: the events that end either end it before they get here.  Nor is one
 nobody has prompted, which asks the reader nothing yet.
 
 STATUS is the status to report, when what agent-shell says at the call
@@ -4624,6 +4722,9 @@ is not yet true; by default the session's `--raw-status'."
       (when (and (not (agent-shell-vertico-sidebar--snoozed-for
                        status (agent-shell-vertico-sidebar--get
                                buffer 'snoozed)))
+                 (not (agent-shell-vertico-sidebar--settled-for
+                       status (agent-shell-vertico-sidebar--get
+                               buffer 'settled)))
                  (not (eq status 'new))
                  (not (agent-shell-vertico-sidebar--session-focused-p
                        buffer)))
@@ -4672,6 +4773,7 @@ dispatched prompt the dead agent never sent is given back."
           (unless (memq (agent-shell-vertico-sidebar--get buffer 'state)
                         '(done stopped failed limited blocked))
             (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+            (agent-shell-vertico-sidebar--set buffer 'settled nil)
             (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
               (agent-shell-vertico-sidebar--mark-unread-at buffer now)
               (with-demoted-errors "Agent shell sidebar notification: %S"
@@ -4690,10 +4792,11 @@ dispatched prompt the dead agent never sent is given back."
        ;; The request itself is news, a permission or a form alike, to
        ;; a reader who is not looking; the session reports itself
        ;; blocked for as long as it waits, so nothing records that part.
-       ;; It is also a new ask, which no snooze put off.  The newest
-       ;; request is the one the session waits on, so the wait ages
-       ;; from it.
+       ;; It is also a new ask, which no snooze or settle put off.  The
+       ;; newest request is the one the session waits on, so the wait
+       ;; ages from it.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       (agent-shell-vertico-sidebar--set buffer 'settled nil)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since now)
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
            (agent-shell-vertico-sidebar--set buffer 'unread nil)
@@ -4712,9 +4815,11 @@ dispatched prompt the dead agent never sent is given back."
            (agent-shell-vertico-sidebar--set buffer 'state 'failed)
            (agent-shell-vertico-sidebar--set buffer 'limit nil)))
        (agent-shell-vertico-sidebar--stamp-terminal buffer now)
-       ;; A failure is a new ask, which no snooze put off, even when the
-       ;; reader is looking; it is unread and announced only when not.
+       ;; A failure is a new ask, which no snooze or settle put off,
+       ;; even when the reader is looking; it is unread and announced
+       ;; only when not.
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       (agent-shell-vertico-sidebar--set buffer 'settled nil)
        ;; A session that failed before its dispatched prompt was sent,
        ;; while starting most often, will not send it.
        (when-let* ((prompt (agent-shell-vertico-sidebar--get
@@ -4768,6 +4873,10 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'tool-calls nil)
        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       ;; A new turn un-settles, as in T3 Code, and lets auto-settle at
+       ;; it again once it has finished.
+       (agent-shell-vertico-sidebar--set buffer 'settled nil)
+       (agent-shell-vertico-sidebar--set buffer 'unsettled nil)
        (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil)
        ;; A prompt to a dead session starts its agent again.
        (agent-shell-vertico-sidebar--set buffer 'exited-at nil))
@@ -5650,8 +5759,8 @@ In the state view the header level folds every section and the other
 levels unfold every section.  Putting
 back each section's default fold instead would leave a sidebar whose
 sessions all sit in a section that starts folded showing headers alone
-at every level.  The project view folds or unfolds its Pinned section
-with the projects, for the same reason.
+at every level.  The project view folds or unfolds its Pinned and
+Settled sections with the projects, for the same reason.
 
 A filtered sidebar draws every header open, so there no fold is
 written: the levels would change nothing on screen, and the folds are
@@ -5663,7 +5772,8 @@ what the sidebar shows once the filter is cleared."
        (setq agent-shell-vertico-sidebar-expand-by-default (not folded))
        (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
          (clrhash agent-shell-vertico-sidebar--expanded-projects))
-       (agent-shell-vertico-sidebar--set-section-folded 'pinned folded))
+       (agent-shell-vertico-sidebar--set-section-folded 'pinned folded)
+       (agent-shell-vertico-sidebar--set-section-folded 'settled folded))
       ('state
        (dolist (section agent-shell-vertico-sidebar--sections)
          (agent-shell-vertico-sidebar--set-section-folded
@@ -5913,8 +6023,8 @@ every session."
   "Return status counts for live agent-shell sessions.
 
 The returned vector contains attention, working, ready, starting,
-snoozed and background counts in that order."
-  (let ((counts (make-vector 6 0)))
+snoozed, background and settled counts in that order."
+  (let ((counts (make-vector 7 0)))
     (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
       (cl-incf (aref counts
                      (aref agent-shell-vertico-sidebar--statistics-slots
@@ -6033,8 +6143,10 @@ count leaves them out.  Nothing is shown when none waits."
    "  z           Snooze the session until it asks again, or wake it\n"
    "  w (gw)      Continue a limited session once its limit resets,\n"
    "              or cancel that\n"
+   "  e (ge)      Settle the session: done with it, kept alive;\n"
+   "              again to un-settle\n"
    "  P           Pin the session to the top, or unpin it\n"
-   "  U           Undo the last pin, snooze or read mark\n"
+   "  U           Undo the last pin, snooze, settle or read mark\n"
    "  p           Peek: read the session's question and message, reply\n"
    "  S           List the session's subagents and background tasks\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
@@ -6079,6 +6191,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
+    (define-key map (kbd "e") #'agent-shell-vertico-sidebar-settle)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
     (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
@@ -6126,6 +6239,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
+    (define-key map (kbd "e") #'agent-shell-vertico-sidebar-settle)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
     (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
     (define-key map [remap undo] #'agent-shell-vertico-sidebar-undo)
@@ -6144,10 +6258,11 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "h") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "c") #'agent-shell-vertico-sidebar-dispatch)
     (define-key map (kbd "w") #'agent-shell-vertico-sidebar-continue-at-reset)
+    (define-key map (kbd "e") #'agent-shell-vertico-sidebar-settle)
     map)
   "Prefix map for the Evil `g' bindings.
-`gr' refreshes, `gh' resumes a past session, `gc' dispatches and `gw'
-continues a limited session at its reset.")
+`gr' refreshes, `gh' resumes a past session, `gc' dispatches, `gw'
+continues a limited session at its reset and `ge' settles a session.")
 
 (defconst agent-shell-vertico-sidebar--evil-bindings
   '(("j" . evil-next-line)
@@ -6186,6 +6301,7 @@ continues a limited session at its reset.")
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
     ("gw" . agent-shell-vertico-sidebar-continue-at-reset)
+    ("ge" . agent-shell-vertico-sidebar-settle)
     ("P" . agent-shell-vertico-sidebar-pin)
     ("U" . agent-shell-vertico-sidebar-undo)
     ("p" . agent-shell-vertico-sidebar-peek)
@@ -6197,9 +6313,10 @@ continues a limited session at its reset.")
 The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
 move a whole row at a time; `D'/`R'/`I' are the destructive session
 actions so navigation and lowercase mnemonics remain available.  Refresh is
-`gr', resuming a past session `gh', dispatching `gc' and continuing at a
-limit's reset `gw', which leave `H' to `evil-window-top', `d' to Evil's
-delete operator and `w' to its word motion.  The other
+`gr', resuming a past session `gh', dispatching `gc', continuing at a
+limit's reset `gw' and settling `ge', which leave `H' to
+`evil-window-top', `d' to Evil's delete operator and `w' and `e' to its
+word motions.  The other
 mnemonic actions intentionally take precedence over their generic Evil
 commands in this read-only sidebar.")
 
@@ -6225,11 +6342,11 @@ while normal and motion states get the same direct mnemonic commands."
       (evil-local-set-key state [remap evil-undo]
                           #'agent-shell-vertico-sidebar-undo)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
-        (unless (member (car binding) '("gr" "gh" "gc" "gw"))
+        (unless (member (car binding) '("gr" "gh" "gc" "gw" "ge"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "U" "p"
-                     "S" "w" "?" "q"))
+                     "S" "w" "e" "?" "q"))
         (when-let* ((command (lookup-key
                               agent-shell-vertico-sidebar-action-map
                               (kbd key))))
@@ -6345,10 +6462,13 @@ one, so the command works from the session the reader walked into."
     (or (agent-shell-vertico-sidebar--session-for-buffer (current-buffer))
         (user-error "No agent-shell session here"))))
 
-(defconst agent-shell-vertico-sidebar--undo-slots '(unread snoozed pinned)
+(defconst agent-shell-vertico-sidebar--undo-slots
+  '(unread snoozed pinned settled unsettled)
   "The session slots the reader's parking commands write.
-Pin and snooze cancel each other and marking unread ends a snooze, so
-every one of them may write more than its own slot.")
+Pin, snooze and settle cancel each other and marking unread ends a
+snooze or a settle, so every one of them may write more than its own
+slot.  `unsettled' is the guard an un-settle by hand leaves for
+`agent-shell-vertico-sidebar-auto-settle-after'.")
 
 (defconst agent-shell-vertico-sidebar--undo-limit 20
   "How many parking actions `agent-shell-vertico-sidebar-undo' keeps.")
@@ -6381,11 +6501,11 @@ empty action is never what undo takes back."
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-undo ()
-  "Undo the reader's latest pin, snooze, mark unread or mark read.
+  "Undo the reader's latest pin, snooze, settle, mark unread or mark read.
 
-The session's pinned, snoozed and unread records go back to exactly
-what they were, the unread time included, so a session marked unread
-by mistake returns to its old place in the queue.  Repeating walks
+The session's pinned, snoozed, settled and unread records go back to
+exactly what they were, the unread time included, so a session marked
+unread by mistake returns to its old place in the queue.  Repeating walks
 further back.  An action on a session since killed is skipped.  An
 action whose session has changed since, by an event such as a
 permission request ending a snooze or by the reader reading it, is
@@ -6444,6 +6564,7 @@ then holds only until the window is next selected."
      buffer "mark unread"
      (lambda ()
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       (agent-shell-vertico-sidebar--set buffer 'settled nil)
        (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))))
     (agent-shell-vertico-sidebar-refresh)
     (message "Session %s marked unread" (buffer-name buffer))
@@ -6555,9 +6676,118 @@ put off."
        buffer "snooze"
        (lambda ()
          (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
-         (agent-shell-vertico-sidebar--set buffer 'pinned nil)))
+         (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+         (agent-shell-vertico-sidebar--set buffer 'settled nil)))
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s snoozed" (buffer-name buffer))))))
+
+(defun agent-shell-vertico-sidebar--settle-next (buffer)
+  "Return the session to show once BUFFER is settled, or nil.
+The first after BUFFER in `--display-order', wrapping, that is neither
+settled nor snoozed."
+  (let ((order (agent-shell-vertico-sidebar--display-order)))
+    (seq-find (lambda (session)
+                (not (or (eq session buffer)
+                         (agent-shell-vertico-sidebar--get session 'settled)
+                         (agent-shell-vertico-sidebar--get session 'snoozed))))
+              (append (cdr (memq buffer order)) order))))
+
+(defun agent-shell-vertico-sidebar--row-neighbour (buffer)
+  "Return the session drawn on the row after BUFFER's, else before it."
+  (let* ((rows (mapcar #'car (agent-shell-vertico-sidebar--session-rows)))
+         (after (cadr (memq buffer rows))))
+    (or after
+        (cadr (memq buffer (reverse rows))))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-settle (&optional stay)
+  "Settle the session at point, or the current session, or un-settle it.
+
+Settling says the reader is done with a session without killing it, as
+T3 Code's settle does.  It moves to the Settled section, folded at the
+bottom of the state view and below the projects in the project view,
+and asks for nobody: the jump, the counts of who waits and
+`agent-shell-vertico-sidebar-notify-function' all pass it over.  It is
+not marked read, so the Settled header still counts output nobody has
+read.  Settling unpins and wakes the session; pinning or snoozing it
+un-settles it.  A new turn un-settles it, and so does a permission
+request, a form, an error or `agent-shell-vertico-sidebar-mark-unread'.
+Output that arrives meanwhile leaves it settled and marks it unread,
+silently.
+
+Settling the session the selected window shows moves the reader on to
+the next session the sidebar draws after it that is neither settled nor
+snoozed, wrapping, or to the sidebar when there is none.  With prefix
+argument STAY, settle it and stay.  Settled from its sidebar row, point
+moves to the row drawn after it.
+
+Run on a settled session, this un-settles it where it stands, and
+`agent-shell-vertico-sidebar-auto-settle-after' then leaves it alone
+until its next turn.  A working session is refused: it has not
+finished."
+  (interactive "P")
+  (let* ((in-sidebar (derived-mode-p 'agent-shell-vertico-sidebar-mode))
+         (buffer (agent-shell-vertico-sidebar--attention-target)))
+    (if (agent-shell-vertico-sidebar--get buffer 'settled)
+        (progn
+          (agent-shell-vertico-sidebar--recording-undo
+           buffer "unsettle"
+           (lambda ()
+             (agent-shell-vertico-sidebar--set buffer 'settled nil)
+             (agent-shell-vertico-sidebar--set buffer 'unsettled t)))
+          (agent-shell-vertico-sidebar-refresh)
+          (message "Session %s unsettled" (buffer-name buffer)))
+      (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+        (user-error "Session %s is still working" (buffer-name buffer)))
+      ;; Asked before settling moves the row to the bottom.
+      (let* ((leave (and (not in-sidebar) (not stay)
+                         (eq (agent-shell-vertico--current-session) buffer)))
+             (next (and leave
+                        (agent-shell-vertico-sidebar--settle-next buffer)))
+             (neighbour (and in-sidebar
+                             (agent-shell-vertico-sidebar--row-neighbour
+                              buffer))))
+        (agent-shell-vertico-sidebar--recording-undo
+         buffer "settle"
+         (lambda ()
+           (agent-shell-vertico-sidebar--set buffer 'settled (float-time))
+           (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+           (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
+        (agent-shell-vertico-sidebar-refresh)
+        (message "Session %s settled" (buffer-name buffer))
+        (cond (neighbour (agent-shell-vertico-sidebar--goto-node
+                          (cons 'session neighbour)))
+              (next (agent-shell-vertico-sidebar--jump-display next))
+              (leave (agent-shell-vertico-sidebar-focus)))))))
+
+(defun agent-shell-vertico-sidebar--auto-settle-p (buffer now after)
+  "Return non-nil when BUFFER has been idle AFTER seconds before NOW.
+Idle is Completed with nothing unread, not pinned, snoozed or settled,
+no background work, not failed by its agent exiting, and not un-settled
+by hand since its last prompt."
+  (and (not (agent-shell-vertico-sidebar--get buffer 'settled))
+       (not (agent-shell-vertico-sidebar--get buffer 'snoozed))
+       (not (agent-shell-vertico-sidebar--get buffer 'pinned))
+       (not (agent-shell-vertico-sidebar--get buffer 'unsettled))
+       (not (agent-shell-vertico-sidebar--get buffer 'unread))
+       (let ((snapshot (agent-shell-vertico-sidebar--session-snapshot buffer)))
+         (and (eq (plist-get snapshot :band) 'idle)
+              (not (plist-get snapshot :background))
+              (not (and (not (plist-get snapshot :live))
+                        (eq (plist-get snapshot :state) 'failed)))
+              (when-let* ((since (agent-shell-vertico-sidebar--state-since
+                                  snapshot)))
+                (>= (- now since) after))))))
+
+(defun agent-shell-vertico-sidebar--auto-settle (buffers)
+  "Settle every one of BUFFERS idle for long enough.
+See `agent-shell-vertico-sidebar-auto-settle-after'.  Nothing is
+recorded for undo: the reader did not do it."
+  (when-let* ((after agent-shell-vertico-sidebar-auto-settle-after))
+    (let ((now (float-time)))
+      (dolist (buffer buffers)
+        (when (agent-shell-vertico-sidebar--auto-settle-p buffer now after)
+          (agent-shell-vertico-sidebar--set buffer 'settled now))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-continue-at-reset ()
@@ -6616,7 +6846,8 @@ Pinning wakes a snoozed session, and snoozing unpins one."
        buffer "pin"
        (lambda ()
          (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
-         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
+         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+         (agent-shell-vertico-sidebar--set buffer 'settled nil)))
       (message "Session %s pinned" (buffer-name buffer)))
     (agent-shell-vertico-sidebar-refresh)))
 
@@ -7384,9 +7615,10 @@ should not depend on how the sidebar was left."
                            (agent-shell-vertico-sidebar--sort-buffers
                             roots sort-by))))
                         ('project
-                         (pcase-let ((`(,pinned . ,rest)
-                                      (agent-shell-vertico-sidebar--split-pinned
-                                       roots)))
+                         (pcase-let
+                             ((`(,pinned ,rest ,settled)
+                               (agent-shell-vertico-sidebar--project-view-parts
+                                roots)))
                            (append
                             (agent-shell-vertico-sidebar--sort-buffers
                              pinned sort-by)
@@ -7395,7 +7627,9 @@ should not depend on how the sidebar was left."
                              (agent-shell-vertico-sidebar--sort-groups
                               (agent-shell-vertico-sidebar--group-buffers
                                rest)
-                              sort-by))))))))
+                              sort-by))
+                            (agent-shell-vertico-sidebar--sort-buffers
+                             settled sort-by)))))))
       (seq-mapcat (lambda (buffer)
                     (cons buffer
                           (walk (agent-shell-vertico-sidebar--sort-buffers
@@ -7786,12 +8020,14 @@ see that session."
           (setq top parent))
         (pcase (agent-shell-vertico-sidebar--view)
           ('project
-           (if (agent-shell-vertico-sidebar--pinned-p top)
-               (agent-shell-vertico-sidebar--set-section-folded 'pinned nil)
-             (when (hash-table-p
-                    agent-shell-vertico-sidebar--expanded-projects)
-               (puthash (agent-shell-vertico-sidebar--project-root top) t
-                        agent-shell-vertico-sidebar--expanded-projects)))
+           (pcase (agent-shell-vertico-sidebar--family-section top)
+             ((and section (or 'pinned 'settled))
+              (agent-shell-vertico-sidebar--set-section-folded section nil))
+             (_
+              (when (hash-table-p
+                     agent-shell-vertico-sidebar--expanded-projects)
+                (puthash (agent-shell-vertico-sidebar--project-root top) t
+                         agent-shell-vertico-sidebar--expanded-projects))))
            (agent-shell-vertico-sidebar--render)
            (agent-shell-vertico-sidebar--goto-node node))
           ('state

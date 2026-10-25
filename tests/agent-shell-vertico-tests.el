@@ -14799,7 +14799,7 @@ finished since, so ranking it by age alone would pin every jump to it."
           (agent-shell-test-statuses (list (cons waiting 'blocked)
                                            (cons working 'busy))))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                     [1 1 0 0 0 0])))))
+                     [1 1 0 0 0 0 0])))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-passes-over-the-session-in-hand ()
   "A jump taken from inside a waiting session goes to the next one.
@@ -17914,7 +17914,7 @@ visited before GAMMA; snoozed, neither is visited at all."
                       agent-shell-test-buffers 'priority)
                      (list unread working idle later latest)))
       (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                     [1 1 1 0 2 0])))))
+                     [1 1 1 0 2 0 0])))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-sinks-under-every-sort ()
   "Whatever the sort, snoozed sessions follow the others, each in order."
@@ -18223,7 +18223,7 @@ BETA is live and idle beside it."
                        (list working alpha beta later)))
         (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
         (should (equal (agent-shell-vertico-sidebar--session-statistics)
-                       [0 1 1 0 1 1]))
+                       [0 1 1 0 1 1 0]))
         (should (equal (agent-shell-vertico-sidebar--no-attention-message)
                        (concat "No session needs attention, 1 working,"
                                " 1 in the background, 1 snoozed")))))))
@@ -19948,6 +19948,336 @@ A session the reader woke, or snoozed again by hand, is theirs."
         (should-not (memq timer timer-list))
         (should-not (agent-shell-vertico-sidebar--get alpha
                                                       'limit-snooze))))))
+
+;;; Settling a session
+
+(defmacro agent-shell-vertico-tests--with-three-sessions (&rest body)
+  "Evaluate BODY with ALPHA, BETA and GAMMA live, all ready.
+The state view sorts them by name, so they are drawn in that order."
+  (declare (indent 0))
+  `(agent-shell-vertico-tests--with-session-buffers
+       ((alpha "Codex Agent @ alpha" "/work/alpha/"
+               '((:session . ((:id . "a") (:title . "Alpha")))))
+        (beta "Codex Agent @ beta" "/work/beta/"
+              '((:session . ((:id . "b") (:title . "Beta")))))
+        (gamma "Codex Agent @ gamma" "/work/gamma/"
+               '((:session . ((:id . "g") (:title . "Gamma"))))))
+     (let ((agent-shell-test-buffers (list alpha beta gamma))
+           (agent-shell-test-statuses (list (cons alpha 'ready)
+                                            (cons beta 'ready)
+                                            (cons gamma 'ready)))
+           (agent-shell-vertico-sidebar-group-by 'state)
+           (agent-shell-vertico-sidebar-sort-by 'name)
+           (agent-shell-test-displayed-buffer nil)
+           (inhibit-message t))
+       ,@body)))
+
+(defun agent-shell-vertico-tests--settle (buffer &optional stay)
+  "Run the settle command with BUFFER as the current session.
+STAY is its prefix argument."
+  (with-current-buffer buffer
+    (agent-shell-vertico-sidebar-settle stay)))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-files-in-settled ()
+  "A settled session is in the Settled band and section, last and folded.
+It asks for nobody, though settling does not read its output."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((inhibit-message t))
+      (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+      (agent-shell-vertico-tests--settle alpha t)
+      (should (agent-shell-vertico-sidebar--get alpha 'settled))
+      (should (eq (agent-shell-vertico-sidebar--band alpha) 'settled))
+      (should (eq (agent-shell-vertico-sidebar--section alpha) 'settled))
+      (should (agent-shell-vertico-sidebar--unread-p alpha))
+      (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+      (should-not (agent-shell-vertico-sidebar--waits-p alpha))
+      (should-not (agent-shell-vertico-sidebar--attention-sessions))
+      (should (equal (car (last agent-shell-vertico-sidebar--sections))
+                     '(settled . "Settled")))
+      (should (memq 'settled
+                    (default-value
+                     'agent-shell-vertico-sidebar-folded-sections)))
+      (should (member "Settled"
+                      (agent-shell-vertico-sidebar--filter-state-labels
+                       (agent-shell-vertico-sidebar--session-snapshot
+                        alpha))))
+      (should-not (member "Done"
+                          (agent-shell-vertico-sidebar--filter-state-labels
+                           (agent-shell-vertico-sidebar--session-snapshot
+                            alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-header-counts-unread ()
+  "The folded Settled header counts its rows and the unread among them."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+    (agent-shell-vertico-tests--settle alpha t)
+    (agent-shell-vertico-tests--settle beta t)
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--render)
+      (should (equal (agent-shell-vertico-tests--section-headers)
+                     '("Completed · 1" "Settled · 2 · • 1 ⋯")))
+      (should (equal (agent-shell-vertico-sidebar--display-order)
+                     (list gamma alpha beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-sorts-below-snoozed ()
+  "Whatever the sort, a settled session sorts after a snoozed one."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--settle alpha t)
+    (agent-shell-vertico-tests--snooze beta)
+    (dolist (sort-by '(name priority status recency))
+      (should (equal (agent-shell-vertico-sidebar--sort-buffers
+                      (list alpha beta gamma) sort-by)
+                     (list gamma beta alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-cancels-pin-and-snooze ()
+  "Settling unpins and wakes; pinning or snoozing un-settles."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((inhibit-message t))
+      (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
+      (agent-shell-vertico-tests--settle alpha t)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (with-current-buffer alpha (agent-shell-vertico-sidebar-pin))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+      (agent-shell-vertico-tests--snooze beta)
+      (agent-shell-vertico-tests--settle beta t)
+      (should-not (agent-shell-vertico-sidebar--get beta 'snoozed))
+      (agent-shell-vertico-tests--snooze beta)
+      (should-not (agent-shell-vertico-sidebar--get beta 'settled))
+      (should (agent-shell-vertico-sidebar--get beta 'snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-ends-on-a-new-ask ()
+  "A prompt, a request, an error or marking it unread un-settles it."
+  (dolist (end (list (lambda (buffer)
+                       (agent-shell-vertico-sidebar--handle-event
+                        buffer '((:event . input-submitted)
+                                 (:data . ((:prompt . "go"))))))
+                     (lambda (buffer)
+                       (agent-shell-vertico-sidebar--handle-event
+                        buffer '((:event . permission-request))))
+                     (lambda (buffer)
+                       (agent-shell-vertico-sidebar--handle-event
+                        buffer '((:event . elicitation-request))))
+                     (lambda (buffer)
+                       (agent-shell-vertico-sidebar--handle-event
+                        buffer '((:event . error))))
+                     (lambda (buffer)
+                       (with-current-buffer buffer
+                         (agent-shell-vertico-sidebar-mark-unread t)))))
+    (agent-shell-vertico-tests--with-two-sessions
+      (let ((inhibit-message t))
+        (agent-shell-vertico-tests--settle alpha t)
+        (funcall end alpha)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'settled))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-keeps-through-output ()
+  "A finished turn, output and reading leave it settled, marked silently."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--with-notifications
+      (let ((inhibit-message t))
+        (agent-shell-vertico-tests--settle alpha t)
+        (agent-shell-vertico-tests--end-turn alpha)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should (agent-shell-vertico-sidebar--unread-p alpha))
+        (should-not notifications)
+        (with-current-buffer alpha (agent-shell-vertico-sidebar-mark-read))
+        (agent-shell-vertico-sidebar--mark-seen alpha)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-family-stays-awake ()
+  "A family is Settled only when every live member is."
+  (agent-shell-vertico-tests--with-family nil
+    (let ((inhibit-message t))
+      (agent-shell-vertico-tests--settle parent t)
+      (should (eq (agent-shell-vertico-sidebar--family-section parent)
+                  'idle))
+      (agent-shell-vertico-tests--settle child t)
+      (should (eq (agent-shell-vertico-sidebar--family-section parent)
+                  'settled)))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-moves-on ()
+  "Settling the session the reader is in shows the next one drawn.
+Settled and snoozed sessions are passed over, and the order wraps."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-jump-history
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-tests--look-at beta)
+        (agent-shell-vertico-tests--settle beta)
+        (should (eq agent-shell-test-displayed-buffer gamma))
+        (setq agent-shell-test-displayed-buffer nil)
+        (agent-shell-vertico-tests--snooze alpha)
+        (agent-shell-vertico-tests--look-at gamma)
+        (agent-shell-vertico-tests--settle gamma)
+        ;; ALPHA is snoozed and BETA settled: none is left to show.
+        (should-not agent-shell-test-displayed-buffer)
+        (should (eq (window-buffer (selected-window)) sidebar))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-wraps ()
+  "Past the last row the next session is the first."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-jump-history
+      (agent-shell-vertico-tests--look-at gamma)
+      (agent-shell-vertico-tests--settle gamma)
+      (should (eq agent-shell-test-displayed-buffer alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-falls-back-to-the-sidebar ()
+  "With no session left to show, the reader lands on the sidebar row."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-test-statuses (list (cons alpha 'ready)))
+          (agent-shell-test-displayed-buffer nil)
+          (inhibit-message t))
+      (agent-shell-vertico-tests--with-jump-history
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-tests--look-at alpha)
+          (agent-shell-vertico-tests--settle alpha)
+          (should-not agent-shell-test-displayed-buffer)
+          (should (eq (window-buffer (selected-window)) sidebar)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-stays-with-a-prefix ()
+  "A prefix argument settles the session and leaves the reader in it."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-jump-history
+      (agent-shell-vertico-tests--look-at beta)
+      (agent-shell-vertico-tests--settle beta t)
+      (should-not agent-shell-test-displayed-buffer)
+      (should (agent-shell-vertico-sidebar--get beta 'settled)))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-from-a-row ()
+  "Settled from its row, point moves to the row drawn after it.
+No window changes."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session beta)))
+      (agent-shell-vertico-sidebar-settle)
+      (should (agent-shell-vertico-sidebar--get beta 'settled))
+      (should (eq (agent-shell-vertico-sidebar--session-at-point) gamma))
+      (should-not agent-shell-test-displayed-buffer)
+      ;; The last row of the list hands point to the row above it.
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session gamma)))
+      (agent-shell-vertico-sidebar-settle)
+      (should (eq (agent-shell-vertico-sidebar--session-at-point) alpha)))))
+
+(ert-deftest agent-shell-vertico-sidebar-unsettle ()
+  "Running it again un-settles the session where it is."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-jump-history
+      (agent-shell-vertico-tests--settle beta t)
+      (agent-shell-vertico-tests--look-at beta)
+      (agent-shell-vertico-tests--settle beta)
+      (should-not (agent-shell-vertico-sidebar--get beta 'settled))
+      (should-not agent-shell-test-displayed-buffer))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-settle ()
+  "Undo takes a settle back, and an un-settle."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-vertico-sidebar--undo-stack nil)
+          (inhibit-message t))
+      (agent-shell-vertico-sidebar--set alpha 'pinned 1.0)
+      (agent-shell-vertico-tests--settle alpha t)
+      (agent-shell-vertico-sidebar-undo)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+      (should (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (agent-shell-vertico-tests--settle beta t)
+      (agent-shell-vertico-tests--settle beta t)
+      (agent-shell-vertico-sidebar-undo)
+      (should (agent-shell-vertico-sidebar--get beta 'settled)))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-refuses-a-working-session ()
+  "A turn still running is not finished work."
+  (agent-shell-vertico-tests--with-two-sessions
+    (setf (alist-get alpha agent-shell-test-statuses) 'busy)
+    (should-error (agent-shell-vertico-tests--settle alpha t)
+                  :type 'user-error)
+    (should-not (agent-shell-vertico-sidebar--get alpha 'settled))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-project-view ()
+  "The project view draws settled sessions under Settled, at the bottom."
+  (agent-shell-vertico-tests--with-three-sessions
+    (let ((agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-folded-sections nil))
+      (agent-shell-vertico-tests--settle alpha t)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (string-prefix-p
+                 "Settled · 1"
+                 (car (last (agent-shell-vertico-tests--header-lines)))))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list beta gamma alpha)))
+        (should (equal (agent-shell-vertico-sidebar--display-order)
+                       (list beta gamma alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-auto-settle ()
+  "With the option set, a session idle long enough is settled at render.
+Unread output, a pin and background work keep it awake, and so does an
+un-settle by hand until its next turn."
+  (agent-shell-vertico-tests--with-three-sessions
+    (let ((agent-shell-vertico-sidebar-auto-settle-after 60)
+          (long-ago (- (float-time) 3600)))
+      (dolist (buffer (list alpha beta gamma))
+        (agent-shell-vertico-sidebar--set buffer 'last-terminal-at long-ago))
+      (agent-shell-vertico-sidebar--mark-unread-at beta 10.0)
+      (agent-shell-vertico-sidebar--set gamma 'pinned 1.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should-not (agent-shell-vertico-sidebar--get beta 'settled))
+        (should-not (agent-shell-vertico-sidebar--get gamma 'settled))
+        ;; Un-settled by hand, it stays awake until its next turn.
+        (agent-shell-vertico-tests--settle alpha t)
+        (agent-shell-vertico-sidebar--render)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+        (agent-shell-vertico-sidebar--handle-event
+         alpha '((:event . input-submitted) (:data . ((:prompt . "go")))))
+        (agent-shell-vertico-sidebar--set alpha 'last-terminal-at long-ago)
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))))))
+
+(ert-deftest agent-shell-vertico-sidebar-auto-settle-off-and-recent ()
+  "Off by default, and never before the idle time has passed."
+  (should-not (default-value 'agent-shell-vertico-sidebar-auto-settle-after))
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-sidebar--set alpha 'last-terminal-at
+                                      (- (float-time) 3600))
+    (agent-shell-vertico-sidebar--set beta 'last-terminal-at (float-time))
+    (with-temp-buffer
+      (agent-shell-vertico-sidebar-mode)
+      (agent-shell-vertico-sidebar--render)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+      (let ((agent-shell-vertico-sidebar-auto-settle-after 60))
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should-not (agent-shell-vertico-sidebar--get beta 'settled))))))
+
+(ert-deftest agent-shell-vertico-sidebar-settle-is-bound ()
+  "`e' settles in both maps, `ge' under Evil, and the help names it."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "e"))
+                #'agent-shell-vertico-sidebar-settle)))
+  (should (eq (cdr (assoc "ge" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-settle))
+  (should-not (assoc "e" agent-shell-vertico-sidebar--evil-bindings))
+  (should (eq (lookup-key agent-shell-vertico-sidebar--evil-g-map (kbd "e"))
+              #'agent-shell-vertico-sidebar-settle))
+  (let (bindings)
+    (cl-letf (((symbol-function 'evil-local-set-key)
+               (lambda (_state key definition)
+                 (push (cons (key-description key) definition) bindings)))
+              ((symbol-function 'evil-get-auxiliary-keymap)
+               (lambda (&rest _args) nil)))
+      (agent-shell-vertico-sidebar--bind-evil-keys))
+    (should-not (assoc "e" bindings))
+    (should (eq (cdr (assoc "C-c e" bindings))
+                #'agent-shell-vertico-sidebar-settle)))
+  (should (string-match-p "^  e (ge) "
+                          (agent-shell-vertico-sidebar--help-text))))
 
 (provide 'agent-shell-vertico-tests)
 

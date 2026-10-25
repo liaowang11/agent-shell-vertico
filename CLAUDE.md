@@ -337,7 +337,8 @@ slot. `:no-display` does not stop an agent that has to authenticate from
 asking, so "out of sight" is not guaranteed there. Like every sidebar key,
 `d` is bound in four places plus the help text: the mode map, the `C-c` action
 map, the Evil bindings (as `gc` in `--evil-g-map`, listed in
-`--evil-bindings` and skipped by the direct install as `gr`, `gh` and `gw` are,
+`--evil-bindings` and skipped by the direct install as `gr`, `gh`, `gw` and
+`ge` are,
 since Evil's `d` is its delete operator) and the `C-c` key list in
 `--bind-evil-keys`.
 
@@ -568,8 +569,9 @@ them nothing, though, so `--waits-p` leaves it out of the mode-line count and
 a project header's count, `--needs-attention-p` leaves it out of the jump, and
 `--notify` never reports it.
 `--band-for` files a snapshot into a band, first match wins as in Claude
-Code: snoozed and not active is `snoozed`; active is `working`; blocked is
-`attention`; in flight (`background`) is `working`; anything else is `idle`.
+Code: settled and not active is `settled`; snoozed and not active is
+`snoozed`; active is `working`; blocked is `attention`; in flight
+(`background`) is `working`; anything else is `idle`.
 Unread output does not change the band, so a finished turn nobody has read is
 idle, as in the agent view, and says so with a bold title (`-unread-title`)
 rather than a colour. `--section-for` is the band, unless the session is
@@ -589,7 +591,8 @@ asks `--family-section`: Pinned when the root is pinned, else the most urgent
 list with headers is the state view. `=` toggles the two. `--render` draws
 `--group-by-section` over the roots: a header for each non-empty section in
 `--sections` order, sessions in the user's sort within it. The sections are
-Claude Code's: Pinned, Needs input, Working, Completed and Snoozed. Their
+Pinned, Needs input, Working, Completed, Snoozed and Settled: Claude Code's,
+but Settled, which is T3 Code's (see "Settling a session"). Their
 symbols are the bands `--band-for` answers, so Completed is the `idle`
 band and Needs input the `attention` one. A child is drawn under its
 parent, so a root's section is its whole family's (`--family-section`):
@@ -620,7 +623,9 @@ has no header to unfold, so a session arriving in Needs input found it
 folded behind a fold nobody could see.
 The header counts, folded or open, which `--header-counts` says (see the
 header paragraph below). The project view puts a Pinned section above the
-projects (`--split-pinned`), and its projects start open
+projects (`--split-pinned`) and a Settled one below them, holding the
+families whose every member is settled (`--project-view-parts`); both fold
+with the projects at the header level. Its projects start open
 (`agent-shell-vertico-sidebar-expand-by-default`). `--display-order`,
 `--reveal-session`, `--view-level` and `--set-view-level` each have a state
 arm, and each asks `--family-section` of a root, so stepping, revealing and
@@ -941,15 +946,61 @@ reader: the record's presence is the whole answer, and a timer would only add a
 way to end it. The one timer is a usage limit's, which wakes the snooze it set
 at the reset (see "A turn stopped by a usage limit").
 
+**Settling a session.** T3 Code's settle, for the reader who is done with a
+session but not ready to kill it. `agent-shell-vertico-sidebar-settle` (`e`,
+`ge` under Evil, whose `e` is a word motion; bound in the four places and
+the help like `gh`) writes the `settled` slot, the time, whose presence is
+the record as with `snoozed`. Settle, pin and snooze cancel each other.
+`--band-for` files a settled session `settled` before anything but an active
+tempo, so it sits in the Settled section, last in `--sections` and folded by
+default (`agent-shell-vertico-sidebar-folded-sections`), out of `--waits-p`,
+the mode line and a project's `✻`; `--needs-attention-p` and `--notify` ask
+about it as they ask about a snooze. A family is Settled only when every
+live member is, which falls out of `--family-section` taking the earliest
+band. Settling does not read the session: the Settled header's `• N` still
+counts output nobody read. What ends it is a new ask or dealing with it:
+`input-submitted` (T3: a new turn un-settles), a `permission-request`, an
+`elicitation-request`, an `error`, an agent exit that fails the session,
+`mark-unread`, pin, snooze, or the command again. A finished turn and
+out-of-turn output leave it settled and mark it unread with no
+notification; `mark-read` and looking at it leave it too. A working session
+is refused, and one that starts working is drawn as working until it goes
+quiet (`--settled-for`). In the sort the settled sessions are a third party,
+after the snoozed ones (`--compare-buffers` asks about settled first), with
+rank 5 (`--status-rank-for`), newest-settled first; the ranks after it moved
+up one, and `--statistics-slots` gained a settled slot at the end. Its
+title recedes like a
+snoozed one's (`-snoozed-title`); its mark keeps its state's colour. `s:`
+matches it as Settled alone. Undo covers it: `--undo-slots` holds `settled`
+and `unsettled`.
+
+Settling the session the selected window shows moves the reader on:
+`--settle-next`, computed before the slot is written since settling moves
+the row, takes the first session after it in `--display-order`, wrapping,
+that is neither settled nor snoozed, shown through `--jump-display`; with
+none the sidebar is focused, as `--leave-unread` ends. A prefix argument
+stays. From a sidebar row, point moves to the row drawn after it, else the
+one before (`--row-neighbour`), and no window changes.
+
+`agent-shell-vertico-sidebar-auto-settle-after`, nil by default, settles a
+session idle that many seconds, at the top of every render after
+`--note-exits` (so also from the minute age refresh), recording no undo.
+Idle is band `idle` with nothing unread, not pinned, snoozed or settled, no
+background work and not failed by its agent exiting, measured from
+`--state-since`. Un-settling by hand sets `unsettled`, which keeps
+auto-settle off the session until `input-submitted` clears it, T3's
+"prevents automatic settlement until new activity".
+
 **Undoing a parking action.** `agent-shell-vertico-sidebar-undo` (`U`, and
 `undo` remapped, so `C-/` and `C-x u` unless a minor mode such as
 undo-fu remaps `undo` first; `evil-undo` remapped too, since Evil's `u`
 is mark-unread here) takes back the reader's latest pin, unpin,
-snooze, wake, mark unread or mark read, as T3 Code undoes a stray unpin or
-snooze. Each of those commands runs its writes inside `--recording-undo`,
-which snapshots all three parking slots, `unread`, `snoozed` and `pinned`,
-before and after, because pin and snooze cancel each other and marking
-unread ends a snooze; undo writes the before values back exactly, so a
+snooze, wake, settle, un-settle, mark unread or mark read, as T3 Code
+undoes a stray unpin or snooze. Each of those commands runs its writes
+inside `--recording-undo`, which snapshots every parking slot, `unread`,
+`snoozed`, `pinned`, `settled` and `unsettled`, before and after, because
+pin, snooze and settle cancel each other and marking unread ends a snooze
+or a settle; undo writes the before values back exactly, so a
 session marked unread by mistake returns to its old place in the queue
 rather than being toggled. An action that changed nothing (mark read on a
 read session, a refused busy session) records nothing, and events never
