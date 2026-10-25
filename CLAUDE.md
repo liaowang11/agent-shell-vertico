@@ -352,6 +352,72 @@ nothing behind. The record used to be one hash table per fact; where the text
 below names `unread`, `snoozed`, `pinned`, `state` and the like, it means a
 slot.
 
+**Surviving a restart.** The records are saved to
+`agent-shell-vertico-sidebar-state-file` (under `user-emacs-directory`, nil
+keeps them in memory) and given back to a session resumed in a later Emacs,
+however it was resumed, keyed by `(AGENT-IDENTIFIER . SESSION-ID)`: the
+`:identifier` of the session's `:agent-config` and its ACP id, which is what
+Bill's workspace bookmarks key a session by too. A fork has a new id and
+starts clean. The file is local, a list of `(KEY . PLIST)` read with `read`
+and written with `prin1` to a temporary file renamed over it; one that does
+not read is reported and treated as empty. `--saved-slots` lists what is
+saved as it is: `pinned`, `snoozed`, `settled`, `unsettled`, `unread`, and the
+last turn, `state`, `result`, `error`, `needs`, `limit`, `detail` (a string
+only: the symbol `message` names the streamed message, which is not kept) and
+`last-terminal-at`, since `--state-since` ages a finished row from it and
+without it a turn that ended yesterday would read as just now. The two slots
+holding timers are saved as times by `--entry`: the limit's snooze as its
+value and reset, a continuation as when it fires. Everything else is the live
+process or this Emacs (the message, tool calls, a burst, a pending request,
+background work, a dispatched prompt, `exited-at`), or written and never read
+(`stop-reason`, `first-terminal-at`). Strings are stripped of properties, which
+can hold what `read` cannot read back.
+
+The store (`--store`) is the file read once, lazily, into a table, not a
+projection of `--sessions`: a save puts every live keyed record's `--entry` in
+it, stamped `:saved-at`, drops entries older than
+`agent-shell-vertico-sidebar-state-max-age` days, and writes it whole, so a
+session not yet resumed in this Emacs keeps its entry. `--set` of a saved slot
+on a keyed record marks the store dirty and arms one idle timer
+(`--store-delay`, 3 s); `kill-emacs-hook` saves as well, at depth -50.
+
+A record takes its key in `--restore`, the first time it is offered one: at
+`prompt-ready`, which agent-shell emits once initialisation is done and the id
+is set; at `session-restored`, which it emits only after replaying buffered
+turns (verbosity `last`, `first-last` or `full` over `session/load`, so not for
+`minimal` or `session/resume`); and when `--watch-buffer` first subscribes a
+buffer whose id is already known, a sidebar loaded after the resume. The
+replay runs before both events with the id already set, and through
+`--record-message-chunk` and `--record-tool-call` it redraws `detail`, so
+`session-restored` writes the saved slots again; the timers are re-armed once,
+on the first. Only saved values are written, so a slot the record lacks keeps
+what the replay drew. Restoring is not news: it sets no unread mark beyond the
+saved one (and drops that one when the reader is in the session), clears
+`fresh`, and reports nothing, with one exception: a limit whose reset passed
+while Emacs was closed wakes now through `--limit-wake`, unread and one
+notification, as its timer would have. A reset still ahead arms the timer
+again. A continuation whose time passed is not sent, because nobody saw it
+coming; a message names the session. One still ahead is scheduled again
+through `--schedule-continuation`. An `input-submitted` before either event
+(a shell started with a prompt) restores quietly, slots only, and then clears
+what a prompt clears, so the pin survives and the stale turn does not.
+
+The replay itself is not news, and a test drives it as agent-shell does
+(`agent-shell-test--replay-restore`): agent-shell pushes a `session/load`
+request onto `:active-requests` around the replay, so `--outside-turn-p` sees a
+request in flight and no burst starts, no mark, no notification. That held
+before persistence and needed no change.
+
+A reader killing a session (`--forget`: the kill-buffer hook, `clean-up`, the
+dead-buffer sweep) drops its entry, by the key kept on the record since the
+buffer's state may be gone. Emacs exiting does not: `--save-on-exit` sets
+`--exiting` before it saves, and runs early in `kill-emacs-hook`, so a
+package killing session buffers on exit is not taken for the reader. Emacs
+itself runs no kill-buffer hook on exit. `agent-shell-restart` kills the
+buffer before resuming the same id, so it counts as a reader kill and the
+record is dropped. Two Emacs processes sharing the file overwrite each
+other's entries; the last to save wins.
+
 **Status and unread are two axes.** What a session *is* and what it owes the
 *reader* are separate questions, and conflating them was a bug: a finished
 turn used to report a status that was really a read state, so a failure could
@@ -546,8 +612,8 @@ and a hook in `agent-shell-vertico-interrupt-session` ran before
 agent-shell's confirmation and missed an interrupt typed in the shell.
 The continuation is independent of the snooze: the snooze wakes without
 sending, the continuation sends 30 seconds later, and either may be set
-alone. A continuation does not survive an Emacs restart, and neither
-does the snooze's wake.
+alone. Both survive an Emacs restart as times, not timers (see
+"Surviving a restart").
 
 **Claude Code's job fields and bands.** `--job-state` restates the status as
 the three fields Claude Code keeps for every job: STATE (`working`,

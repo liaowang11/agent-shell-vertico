@@ -397,7 +397,19 @@ the reset it sends `agent-shell-vertico-sidebar-continue-prompt`
 then` or `· continues then` while either is pending.  Set
 `agent-shell-vertico-sidebar-auto-continue` to schedule every limit stop
 with a known reset.  A prompt, a new error or killing the session cancels
-the continuation, and neither it nor the wake survives an Emacs restart.
+the continuation.
+
+The sidebar keeps what it knows of each session in
+`agent-shell-vertico-sidebar-state-file` (under `user-emacs-directory`; nil
+turns this off), so a session you resume after restarting Emacs, from a
+workspace, a bookmark or the session picker, comes back pinned, snoozed,
+settled or unread as you left it, with how its last turn ended.  A limit
+snooze or a continuation still ahead is scheduled again; a limit that reset
+while Emacs was closed wakes its session, and a continuation whose time
+passed is skipped with a message rather than sent late.  Restoring a session
+neither marks it unread nor notifies.  Killing a session forgets its record;
+records of sessions not resumed for
+`agent-shell-vertico-sidebar-state-max-age` days (30) are dropped.
 
 A session whose turn has ended but which still has a subagent or an async task
 running is shown as `Background`: a blue star that does not spin, in the
@@ -592,6 +604,9 @@ built-in `help-at-pt` support:
   (agent-shell-vertico-sidebar-snooze-limited t)
   (agent-shell-vertico-sidebar-auto-continue nil)
   (agent-shell-vertico-sidebar-continue-prompt "Continue.")
+  (agent-shell-vertico-sidebar-state-file
+   (locate-user-emacs-file "agent-shell-vertico-sidebar.eld"))
+  (agent-shell-vertico-sidebar-state-max-age 30)
   (agent-shell-vertico-sidebar-expand-by-default t)
   (agent-shell-vertico-sidebar-show-details nil)
   (agent-shell-vertico-sidebar-extra-info

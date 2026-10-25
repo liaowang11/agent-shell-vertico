@@ -357,6 +357,24 @@ put it.  This only moves the row; continuing the session is
   :type 'boolean
   :group 'agent-shell-vertico-sidebar)
 
+(defcustom agent-shell-vertico-sidebar-state-file
+  (locate-user-emacs-file "agent-shell-vertico-sidebar.eld")
+  "File the sidebar keeps its session records in across Emacs restarts.
+
+A session resumed in a later Emacs, by any means that brings back the
+same ACP session, gets back what the sidebar knew of it: pinned,
+snoozed, settled, unread, a usage limit and its snooze and continuation,
+and how its last turn ended.  Records are keyed by agent and session id.
+Nil keeps them in memory only."
+  :type '(choice (const :tag "Do not keep records" nil) file)
+  :group 'agent-shell-vertico-sidebar)
+
+(defcustom agent-shell-vertico-sidebar-state-max-age 30
+  "Days a saved record outlives its session's last save.
+The record of a session nobody resumes that long is dropped."
+  :type 'number
+  :group 'agent-shell-vertico-sidebar)
+
 (defcustom agent-shell-vertico-sidebar-jump-keys
   '(?1 ?2 ?3 ?4 ?5 ?6 ?7 ?8 ?9 ?a ?s ?d ?f ?g ?h ?j ?k ?l)
   "Keys `agent-shell-vertico-sidebar-jump-by-key' offers, top row first.
@@ -503,6 +521,13 @@ the exit has been seen, so it is reported once; it goes when the
 process is seen alive again or a prompt is submitted.")
   (created-at nil :documentation "\
 When the sidebar first saw the session.")
+  (persist-key nil :documentation "\
+The key the record is saved under, (AGENT-IDENTIFIER . SESSION-ID).
+
+Set the first time the record is offered its saved copy, which is once
+the session id is known, and kept so that a dead buffer, whose state can
+no longer be read, still says which saved record to drop.  A record with
+no key is not saved.  See `agent-shell-vertico-sidebar-state-file'.")
   (first-terminal-at nil :documentation "\
 When a turn of the session first ended.  Set once.")
   (last-terminal-at nil :documentation "\
@@ -546,6 +571,31 @@ one."))
 (defvar agent-shell-vertico-sidebar--sessions (make-hash-table :test #'eq)
   "Session buffer to its `agent-shell-vertico-sidebar--session' record.")
 
+(defconst agent-shell-vertico-sidebar--saved-slots
+  '(pinned snoozed settled unsettled unread state result error needs limit
+           detail last-terminal-at)
+  "Record slots saved across Emacs restarts as they are.
+`limit-snooze' and `continuation' hold timers, so they are saved as
+times instead, by `agent-shell-vertico-sidebar--entry'.")
+
+(defvar agent-shell-vertico-sidebar--store nil
+  "Saved records, keyed (AGENT-IDENTIFIER . SESSION-ID), or nil.
+Nil until `agent-shell-vertico-sidebar--store' first reads the file.
+Each value is a plist of what `agent-shell-vertico-sidebar--entry'
+saved, and `:saved-at'.")
+
+(defvar agent-shell-vertico-sidebar--store-dirty nil
+  "Non-nil when the store has changes the file does not have.")
+
+(defvar agent-shell-vertico-sidebar--store-timer nil
+  "The idle timer that writes the store, or nil.")
+
+(defvar agent-shell-vertico-sidebar--exiting nil
+  "Non-nil once Emacs is exiting, when a killed session keeps its record.")
+
+(defconst agent-shell-vertico-sidebar--store-delay 3
+  "Idle seconds before a changed record is written.")
+
 (defun agent-shell-vertico-sidebar--record (buffer)
   "Return BUFFER's session record, creating it on first use."
   (or (gethash buffer agent-shell-vertico-sidebar--sessions)
@@ -567,15 +617,26 @@ that tidy up after a killed buffer leave nothing behind."
                        (gethash buffer agent-shell-vertico-sidebar--sessions))))
     (setf (cl-struct-slot-value 'agent-shell-vertico-sidebar--session slot
                                 record)
-          value))
+          value)
+    (when (and (or (memq slot agent-shell-vertico-sidebar--saved-slots)
+                   (memq slot '(limit-snooze continuation)))
+               (agent-shell-vertico-sidebar--session-persist-key record))
+      (agent-shell-vertico-sidebar--note-store-change)))
   value)
 
 (defun agent-shell-vertico-sidebar--forget (buffer)
   "Drop everything the sidebar recorded about BUFFER.
 A continuation it had scheduled is cancelled with it, and so is the
-wake at its limit's reset."
+wake at its limit's reset.  So is its saved record, since the reader
+killed the session, unless Emacs is exiting, when the record is what
+the next Emacs restores it from."
   (agent-shell-vertico-sidebar--cancel-continuation buffer)
   (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+  (when-let* (((not agent-shell-vertico-sidebar--exiting))
+              (agent-shell-vertico-sidebar-state-file)
+              (key (agent-shell-vertico-sidebar--get buffer 'persist-key)))
+    (remhash key (agent-shell-vertico-sidebar--store))
+    (agent-shell-vertico-sidebar--note-store-change))
   (remhash buffer agent-shell-vertico-sidebar--sessions))
 
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
@@ -4615,7 +4676,8 @@ session to continue once the limit resets."
   "Cancel the wake at BUFFER's limit reset, and forget the limit's snooze.
 The snooze itself, when it still holds, is left as it is."
   (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
-    (cancel-timer (plist-get wake :timer))
+    (when-let* ((timer (plist-get wake :timer)))
+      (cancel-timer timer))
     (agent-shell-vertico-sidebar--set buffer 'limit-snooze nil)))
 
 (defun agent-shell-vertico-sidebar--limit-snoozed-p (buffer)
@@ -4705,6 +4767,208 @@ is left alone: the continuation was for the turn the limit stopped."
     (message "Continuing %s after its usage limit" (buffer-name buffer)))
   (agent-shell-vertico-sidebar--schedule-refresh))
 
+;;; Surviving a restart
+
+(defun agent-shell-vertico-sidebar--read-store ()
+  "Return the records saved in `agent-shell-vertico-sidebar-state-file'.
+A table keyed (AGENT-IDENTIFIER . SESSION-ID).  A file that cannot be
+read is reported and read as empty, so the next save replaces it."
+  (let ((table (make-hash-table :test #'equal))
+        (file agent-shell-vertico-sidebar-state-file))
+    (when (and file (file-exists-p file))
+      (condition-case err
+          (dolist (entry (with-temp-buffer
+                           (insert-file-contents file)
+                           (read (current-buffer))))
+            (when (and (consp (car-safe entry)) (listp (cdr entry)))
+              (puthash (car entry) (cdr entry) table)))
+        (error
+         (clrhash table)
+         (message "agent-shell-vertico: ignoring unreadable %s (%s)"
+                  file (error-message-string err)))))
+    table))
+
+(defun agent-shell-vertico-sidebar--store ()
+  "Return the saved records, reading the file the first time."
+  (or agent-shell-vertico-sidebar--store
+      (setq agent-shell-vertico-sidebar--store
+            (agent-shell-vertico-sidebar--read-store))))
+
+(defun agent-shell-vertico-sidebar--note-store-change ()
+  "Note that the saved records changed, and write them once Emacs idles."
+  (when agent-shell-vertico-sidebar-state-file
+    (setq agent-shell-vertico-sidebar--store-dirty t)
+    (unless (timerp agent-shell-vertico-sidebar--store-timer)
+      (setq agent-shell-vertico-sidebar--store-timer
+            (run-with-idle-timer agent-shell-vertico-sidebar--store-delay nil
+                                 #'agent-shell-vertico-sidebar--save-store)))))
+
+(defun agent-shell-vertico-sidebar--strip-properties (value)
+  "Return VALUE with every string in it stripped of text properties.
+A property can hold an object `read' cannot read back."
+  (cond ((stringp value) (substring-no-properties value))
+        ((consp value)
+         (cons (agent-shell-vertico-sidebar--strip-properties (car value))
+               (agent-shell-vertico-sidebar--strip-properties (cdr value))))
+        (t value)))
+
+(defun agent-shell-vertico-sidebar--entry (buffer)
+  "Return what to save of BUFFER's record, a plist, or nil for nothing.
+
+The slots in `agent-shell-vertico-sidebar--saved-slots' are saved as
+they are, but `detail' only when it is a string: the symbol `message'
+names the streamed message, which is not saved.  A limit's snooze is
+saved as `:limit-snooze', its value and reset time, and a scheduled
+continuation as `:continue-at', when it fires, since a timer cannot be
+saved.  Everything else is about the live process or this Emacs: the
+agent's message, its tool calls, a burst, a pending request, background
+work, a dispatched prompt."
+  (let (entry)
+    (dolist (slot agent-shell-vertico-sidebar--saved-slots)
+      (let ((value (agent-shell-vertico-sidebar--get buffer slot)))
+        (when (and value (or (not (eq slot 'detail)) (stringp value)))
+          (setq entry (plist-put entry (intern (format ":%s" slot))
+                                 (agent-shell-vertico-sidebar--strip-properties
+                                  value))))))
+    (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
+      (setq entry (plist-put entry :limit-snooze
+                             (list :snoozed (plist-get wake :snoozed)
+                                   :until (plist-get wake :until)))))
+    (when-let* (((agent-shell-vertico-sidebar--get buffer 'continuation))
+                (resets-at (plist-get (agent-shell-vertico-sidebar--get
+                                       buffer 'limit)
+                                      :resets-at)))
+      (setq entry (plist-put entry :continue-at
+                             (+ resets-at
+                                agent-shell-vertico-sidebar--continue-grace))))
+    entry))
+
+(defun agent-shell-vertico-sidebar--write-store (store)
+  "Write STORE to `agent-shell-vertico-sidebar-state-file'.
+Through a temporary file renamed over it, so a crash mid-write leaves
+the old file whole."
+  (let* ((file (expand-file-name agent-shell-vertico-sidebar-state-file))
+         (entries nil))
+    (maphash (lambda (key entry) (push (cons key entry) entries)) store)
+    (condition-case err
+        (progn
+          (make-directory (file-name-directory file) t)
+          (let ((temp (make-temp-file (concat file ".")))
+                (coding-system-for-write 'utf-8-unix))
+            (with-temp-file temp
+              (let ((print-length nil)
+                    (print-level nil)
+                    (print-circle nil))
+                (insert ";; agent-shell-vertico sidebar records -*- "
+                        "lisp-data -*-\n")
+                (prin1 entries (current-buffer))
+                (insert "\n")))
+            (rename-file temp file t)))
+      (error
+       (message "agent-shell-vertico: could not save %s (%s)"
+                file (error-message-string err))))))
+
+(defun agent-shell-vertico-sidebar--save-store ()
+  "Write the saved records, with every live session's record brought up to date.
+Records of sessions not resumed in this Emacs are kept, until they are
+older than `agent-shell-vertico-sidebar-state-max-age'.  Nothing is
+written unless something changed."
+  (when (timerp agent-shell-vertico-sidebar--store-timer)
+    (cancel-timer agent-shell-vertico-sidebar--store-timer))
+  (setq agent-shell-vertico-sidebar--store-timer nil)
+  (when (and agent-shell-vertico-sidebar-state-file
+             agent-shell-vertico-sidebar--store-dirty)
+    (let ((store (agent-shell-vertico-sidebar--store))
+          (now (float-time))
+          (oldest (- (float-time)
+                     (* agent-shell-vertico-sidebar-state-max-age 86400))))
+      (maphash
+       (lambda (buffer record)
+         (when-let* (((buffer-live-p buffer))
+                     (key (agent-shell-vertico-sidebar--session-persist-key
+                           record)))
+           (if-let* ((entry (agent-shell-vertico-sidebar--entry buffer)))
+               (puthash key (plist-put entry :saved-at now) store)
+             (remhash key store))))
+       agent-shell-vertico-sidebar--sessions)
+      (maphash (lambda (key entry)
+                 (unless (and (numberp (plist-get entry :saved-at))
+                              (>= (plist-get entry :saved-at) oldest))
+                   (remhash key store)))
+               store)
+      (agent-shell-vertico-sidebar--write-store store)
+      (setq agent-shell-vertico-sidebar--store-dirty nil))))
+
+(defun agent-shell-vertico-sidebar--save-on-exit ()
+  "Save the records as Emacs exits, and keep them through its exit.
+Runs from `kill-emacs-hook', before any buffer a package kills on exit,
+so those kills are not taken for the reader's."
+  (setq agent-shell-vertico-sidebar--exiting t)
+  (agent-shell-vertico-sidebar--save-store))
+
+(defun agent-shell-vertico-sidebar--persist-key-of (buffer)
+  "Return the key BUFFER's record is saved under, or nil without a session id."
+  (when-let* ((id (agent-shell-vertico--session-field buffer :id)))
+    (cons (map-nested-elt (agent-shell-vertico--state buffer)
+                          '(:agent-config :identifier))
+          id)))
+
+(defun agent-shell-vertico-sidebar--restore (buffer &optional again quiet)
+  "Give BUFFER back the record saved for its session.
+
+Only once the session id is known, and the first time for that id: the
+record then takes the id as its key, and from then on is saved under
+it.  AGAIN writes the saved slots back once more, for the
+`session-restored' that follows a replay whose events redrew them.
+QUIET writes the slots and nothing else, for a prompt that reaches the
+session before it was restored and makes the rest stale.
+
+Restoring is not news: no unread mark is set beyond the saved one, and
+nothing is reported, except a usage limit that reset while Emacs was
+closed, which wakes its session now as its timer would have.  A
+continuation whose time passed then is not sent, since the reader did
+not see it coming; a message says so."
+  (when-let* ((key (agent-shell-vertico-sidebar--persist-key-of buffer)))
+    (let ((first (not (equal key (agent-shell-vertico-sidebar--get
+                                   buffer 'persist-key)))))
+      (when first
+        (agent-shell-vertico-sidebar--set buffer 'persist-key key))
+      (when-let* (((or first again))
+                  (agent-shell-vertico-sidebar-state-file)
+                  (entry (gethash key (agent-shell-vertico-sidebar--store))))
+        (dolist (slot agent-shell-vertico-sidebar--saved-slots)
+          (when-let* ((value (plist-get entry (intern (format ":%s" slot)))))
+            (agent-shell-vertico-sidebar--set buffer slot value)))
+        (agent-shell-vertico-sidebar--set buffer 'fresh nil)
+        (when (agent-shell-vertico-sidebar--session-focused-p buffer)
+          (agent-shell-vertico-sidebar--set buffer 'unread nil))
+        (when (and first (not quiet))
+          (agent-shell-vertico-sidebar--restore-timers buffer entry))
+        (agent-shell-vertico-sidebar--schedule-refresh)))))
+
+(defun agent-shell-vertico-sidebar--restore-timers (buffer entry)
+  "Schedule again what ENTRY, BUFFER's saved record, had scheduled."
+  (let ((now (float-time)))
+    (when-let* ((wake (plist-get entry :limit-snooze))
+                (until (plist-get wake :until)))
+      (agent-shell-vertico-sidebar--set
+       buffer 'limit-snooze
+       (list :snoozed (plist-get wake :snoozed) :until until
+             :timer (and (> until now)
+                         (run-at-time (- until now) nil
+                                      #'agent-shell-vertico-sidebar--limit-wake
+                                      buffer))))
+      (unless (> until now)
+        (agent-shell-vertico-sidebar--limit-wake buffer)))
+    (when-let* ((continue-at (plist-get entry :continue-at)))
+      (if (and (> continue-at now)
+               (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
+                          :resets-at))
+          (agent-shell-vertico-sidebar--schedule-continuation buffer)
+        (message "agent-shell-vertico: did not continue %s at its usage \
+limit's reset: Emacs was closed at the reset"
+                 (agent-shell-vertico-sidebar--title buffer))))))
+
 (defun agent-shell-vertico-sidebar--notify (buffer &optional status)
   "Report that BUFFER now needs attention.
 
@@ -4784,6 +5048,14 @@ dispatched prompt the dead agent never sent is given back."
   "Update sidebar metadata for BUFFER after agent EVENT."
   (let ((kind (map-elt event :event))
         (now (float-time)))
+    ;; The session id is known by these, and a restored session's record
+    ;; comes back with it.  `session-restored' follows the replay, whose
+    ;; events redraw the slots, so it writes them again.  A prompt before
+    ;; either is newer than anything saved, which it then clears below.
+    (pcase kind
+      ('session-restored (agent-shell-vertico-sidebar--restore buffer t))
+      ('prompt-ready (agent-shell-vertico-sidebar--restore buffer))
+      ('input-submitted (agent-shell-vertico-sidebar--restore buffer nil t)))
     (agent-shell-vertico-sidebar--record-message-chunk buffer event)
     (agent-shell-vertico-sidebar--set buffer 'updated-at now)
     (pcase kind
@@ -5005,7 +5277,10 @@ renders neither retry it nor report it again."
         ;; Only a session seen before its ACP session exists is known to
         ;; have had no prompt yet.
         (unless (agent-shell-vertico--session-field buffer :id)
-          (agent-shell-vertico-sidebar--set buffer 'fresh t))))
+          (agent-shell-vertico-sidebar--set buffer 'fresh t)))
+      ;; A session met with its id already known, as by a sidebar loaded
+      ;; after it was resumed, will hear no event saying so.
+      (agent-shell-vertico-sidebar--restore buffer))
     (with-current-buffer buffer
       (add-hook 'kill-buffer-hook
                 #'agent-shell-vertico-sidebar--unwatch-buffer nil t))
@@ -8121,6 +8396,8 @@ SCOPE is persp-mode's activation scope, as for
 
 (add-hook 'agent-shell-mode-hook
           #'agent-shell-vertico-sidebar--watch-buffer-on-mode-hook)
+;; Early, before any function on the hook that kills session buffers.
+(add-hook 'kill-emacs-hook #'agent-shell-vertico-sidebar--save-on-exit -50)
 (add-hook 'window-selection-change-functions
           #'agent-shell-vertico-sidebar--window-selection-change)
 (add-hook 'window-buffer-change-functions
