@@ -5603,6 +5603,7 @@ count leaves them out.  Nothing is shown when none waits."
    "  u / !       Mark the session unread again / read\n"
    "  z           Snooze the session until it asks again, or wake it\n"
    "  P           Pin the session to the top, or unpin it\n"
+   "  U           Undo the last pin, snooze or read mark\n"
    "  p           Peek: read the session's question and message, reply\n"
    "  S           List the session's subagents and background tasks\n"
    "  D / R / I   Kill / restart / interrupt (Evil state)\n"
@@ -5647,6 +5648,7 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
+    (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
     (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
@@ -5692,6 +5694,8 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
     (define-key map (kbd "z") #'agent-shell-vertico-sidebar-snooze)
     (define-key map (kbd "P") #'agent-shell-vertico-sidebar-pin)
+    (define-key map (kbd "U") #'agent-shell-vertico-sidebar-undo)
+    (define-key map [remap undo] #'agent-shell-vertico-sidebar-undo)
     (define-key map (kbd "p") #'agent-shell-vertico-sidebar-peek)
     (define-key map (kbd "S") #'agent-shell-vertico-sidebar-subagents)
     (define-key map (kbd "?") #'agent-shell-vertico-sidebar-help)
@@ -5747,6 +5751,7 @@ count leaves them out.  Nothing is shown when none waits."
     ("!" . agent-shell-vertico-sidebar-mark-read)
     ("z" . agent-shell-vertico-sidebar-snooze)
     ("P" . agent-shell-vertico-sidebar-pin)
+    ("U" . agent-shell-vertico-sidebar-undo)
     ("p" . agent-shell-vertico-sidebar-peek)
     ("S" . agent-shell-vertico-sidebar-subagents)
     ("?" . agent-shell-vertico-sidebar-help)
@@ -5780,12 +5785,14 @@ while normal and motion states get the same direct mnemonic commands."
       (evil-local-set-key state (kbd "C-c v") nil)
       (evil-local-set-key state (kbd "g")
                           agent-shell-vertico-sidebar--evil-g-map)
+      (evil-local-set-key state [remap evil-undo]
+                          #'agent-shell-vertico-sidebar-undo)
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (member (car binding) '("gr" "gh" "gc"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
-                     "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "p" "S"
-                     "?" "q"))
+                     "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "U" "p"
+                     "S" "?" "q"))
         (when-let* ((command (lookup-key
                               agent-shell-vertico-sidebar-action-map
                               (kbd key))))
@@ -5901,6 +5908,73 @@ one, so the command works from the session the reader walked into."
     (or (agent-shell-vertico-sidebar--session-for-buffer (current-buffer))
         (user-error "No agent-shell session here"))))
 
+(defconst agent-shell-vertico-sidebar--undo-slots '(unread snoozed pinned)
+  "The session slots the reader's parking commands write.
+Pin and snooze cancel each other and marking unread ends a snooze, so
+every one of them may write more than its own slot.")
+
+(defconst agent-shell-vertico-sidebar--undo-limit 20
+  "How many parking actions `agent-shell-vertico-sidebar-undo' keeps.")
+
+(defvar agent-shell-vertico-sidebar--undo-stack nil
+  "The reader's parking actions, newest first.
+Each is (BUFFER LABEL TITLE BEFORE AFTER): the session, what the action
+was, the session's title then, and its parking slots before and after.")
+
+(defun agent-shell-vertico-sidebar--parking-slots (buffer)
+  "Return BUFFER's parking slots as an alist."
+  (mapcar (lambda (slot)
+            (cons slot (agent-shell-vertico-sidebar--get buffer slot)))
+          agent-shell-vertico-sidebar--undo-slots))
+
+(defun agent-shell-vertico-sidebar--recording-undo (buffer label function)
+  "Call FUNCTION, recording what it did to BUFFER as LABEL for undo.
+Nothing is recorded when the slots did not change, so a refused or
+empty action is never what undo takes back."
+  (let ((before (agent-shell-vertico-sidebar--parking-slots buffer)))
+    (funcall function)
+    (let ((after (agent-shell-vertico-sidebar--parking-slots buffer)))
+      (unless (equal before after)
+        (push (list buffer label (agent-shell-vertico-sidebar--title buffer)
+                    before after)
+              agent-shell-vertico-sidebar--undo-stack)
+        (setq agent-shell-vertico-sidebar--undo-stack
+              (seq-take agent-shell-vertico-sidebar--undo-stack
+                        agent-shell-vertico-sidebar--undo-limit))))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-undo ()
+  "Undo the reader's latest pin, snooze, mark unread or mark read.
+
+The session's pinned, snoozed and unread records go back to exactly
+what they were, the unread time included, so a session marked unread
+by mistake returns to its old place in the queue.  Repeating walks
+further back.  An action on a session since killed is skipped.  An
+action whose session has changed since, by an event such as a
+permission request ending a snooze or by the reader reading it, is
+refused and dropped: putting it back would hide what changed it."
+  (interactive)
+  (let ((skipped 0) entry)
+    (while (and agent-shell-vertico-sidebar--undo-stack (not entry))
+      (let ((head (pop agent-shell-vertico-sidebar--undo-stack)))
+        (if (buffer-live-p (car head))
+            (setq entry head)
+          (cl-incf skipped))))
+    (let ((note (if (> skipped 0)
+                    (format " (skipped %d on a killed session)" skipped)
+                  "")))
+      (pcase entry
+        ('nil (message "Nothing to undo%s" note))
+        (`(,buffer ,label ,title ,before ,after)
+         (if (not (equal (agent-shell-vertico-sidebar--parking-slots buffer)
+                         after))
+             (message "Cannot undo %s of %s: the session changed since%s"
+                      label title note)
+           (pcase-dolist (`(,slot . ,value) before)
+             (agent-shell-vertico-sidebar--set buffer slot value))
+           (agent-shell-vertico-sidebar-refresh)
+           (message "Undid %s of %s%s" label title note)))))))
+
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-mark-unread (&optional stay)
   "Mark the session at point, or the current session, as unread.
@@ -5929,8 +6003,11 @@ then holds only until the window is next selected."
          (status (agent-shell-vertico-sidebar--raw-status buffer)))
     (when (eq status 'busy)
       (user-error "Session %s is still working" (buffer-name buffer)))
-    (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-    (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))
+    (agent-shell-vertico-sidebar--recording-undo
+     buffer "mark unread"
+     (lambda ()
+       (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+       (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))))
     (agent-shell-vertico-sidebar-refresh)
     (message "Session %s marked unread" (buffer-name buffer))
     (when (and (not stay)
@@ -5980,7 +6057,9 @@ cleared it, and marks the session again when it settles."
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
     (if (not (agent-shell-vertico-sidebar--get buffer 'unread))
         (message "Session %s has nothing unread" (buffer-name buffer))
-      (agent-shell-vertico-sidebar--set buffer 'unread nil)
+      (agent-shell-vertico-sidebar--recording-undo
+       buffer "mark read"
+       (lambda () (agent-shell-vertico-sidebar--set buffer 'unread nil)))
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s marked read" (buffer-name buffer)))))
 
@@ -6027,14 +6106,19 @@ put off."
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
     (cond
      ((agent-shell-vertico-sidebar--get buffer 'snoozed)
-      (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+      (agent-shell-vertico-sidebar--recording-undo
+       buffer "wake"
+       (lambda () (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s woken" (buffer-name buffer)))
      ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
       (user-error "Session %s is still working" (buffer-name buffer)))
      (t
-      (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
-      (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+      (agent-shell-vertico-sidebar--recording-undo
+       buffer "snooze"
+       (lambda ()
+         (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
+         (agent-shell-vertico-sidebar--set buffer 'pinned nil)))
       (agent-shell-vertico-sidebar-refresh)
       (message "Session %s snoozed" (buffer-name buffer))))))
 
@@ -6050,10 +6134,15 @@ Pinning wakes a snoozed session, and snoozing unpins one."
   (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
     (if (agent-shell-vertico-sidebar--get buffer 'pinned)
         (progn
-          (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+          (agent-shell-vertico-sidebar--recording-undo
+           buffer "unpin"
+           (lambda () (agent-shell-vertico-sidebar--set buffer 'pinned nil)))
           (message "Session %s unpinned" (buffer-name buffer)))
-      (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
-      (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+      (agent-shell-vertico-sidebar--recording-undo
+       buffer "pin"
+       (lambda ()
+         (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
+         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
       (message "Session %s pinned" (buffer-name buffer)))
     (agent-shell-vertico-sidebar-refresh)))
 

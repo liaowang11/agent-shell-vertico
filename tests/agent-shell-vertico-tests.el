@@ -178,6 +178,8 @@ Each element in BINDINGS is of the form:
                     ((symbol-value 'agent-shell-test-subscriptions) nil)
                     ((symbol-value 'agent-shell-vertico-sidebar--sessions)
                      (make-hash-table :test #'eq))
+                    ((symbol-value 'agent-shell-vertico-sidebar--undo-stack)
+                     nil)
                     ((symbol-value 'agent-shell-vertico-sidebar--subscriptions)
                      (make-hash-table :test #'eq))
                     ((symbol-value 'agent-shell-test-displayed-buffer) nil)
@@ -19220,6 +19222,158 @@ first of them needing attention, never one the filter hides."
               #'agent-shell-vertico-sidebar-filter))
   (should-not (assoc "/" agent-shell-vertico-sidebar--evil-bindings))
   (should (string-match-p "^  f "
+                          (agent-shell-vertico-sidebar--help-text))))
+
+;;; Undoing the reader's parking actions
+
+(defun agent-shell-vertico-tests--parking (buffer)
+  "Return BUFFER's (UNREAD SNOOZED PINNED) slots."
+  (mapcar (lambda (slot) (agent-shell-vertico-sidebar--get buffer slot))
+          '(unread snoozed pinned)))
+
+(defmacro agent-shell-vertico-tests--with-undo-messages (&rest body)
+  "Evaluate BODY with `message' recording into MESSAGES, newest first."
+  (declare (indent 0) (debug t))
+  `(let (messages)
+     (cl-letf (((symbol-function 'message)
+                (lambda (format &rest args)
+                  (when format
+                    (push (apply #'format format args) messages)))))
+       ,@body)))
+
+(defun agent-shell-vertico-tests--in (buffer command)
+  "Run COMMAND with BUFFER as the current session."
+  (with-current-buffer buffer
+    (funcall command)))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-pin-restores-the-snooze ()
+  "Undoing a pin unpins and hands back the snooze it ended, time and all."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-sidebar--set alpha 'snoozed 10.0)
+      (agent-shell-vertico-sidebar--set alpha 'unread 7.0)
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-pin)
+      (should (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(7.0 10.0 nil)))
+      (should (equal (car messages) "Undid pin of Review alpha")))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-unpin-and-snooze ()
+  "Undoing a snooze gives back the pin it ended; undoing a wake, the snooze."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-sidebar--set alpha 'pinned 20.0)
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-snooze)
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(nil nil 20.0)))
+      (should (equal (car messages) "Undid snooze of Review alpha"))
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-pin)
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(nil nil 20.0)))
+      (should (equal (car messages) "Undid unpin of Review alpha"))
+      (agent-shell-vertico-sidebar--set alpha 'pinned nil)
+      (agent-shell-vertico-sidebar--set alpha 'snoozed 30.0)
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-snooze)
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(nil 30.0 nil)))
+      (should (equal (car messages) "Undid wake of Review alpha")))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-mark-unread-restores-the-time ()
+  "Undoing mark-unread puts the session back at its old place in the queue.
+The command stamps the current time and ends a snooze; undo restores
+the exact earlier time and the snooze."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
+      (agent-shell-vertico-sidebar--set alpha 'snoozed 5.0)
+      (agent-shell-vertico-tests--in
+       alpha #'agent-shell-vertico-sidebar-mark-unread)
+      (should (> (agent-shell-vertico-sidebar--get alpha 'unread) 10.0))
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(10.0 5.0 nil)))
+      (should (equal (car messages) "Undid mark unread of Review alpha")))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-mark-read-restores-the-mark ()
+  "Undoing mark-read hands the unread mark back at its old time."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-sidebar--set alpha 'unread 10.0)
+      (agent-shell-vertico-tests--in
+       alpha #'agent-shell-vertico-sidebar-mark-read)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+      ;; Marking a session with nothing unread changes nothing, so
+      ;; there is nothing for undo to take back.
+      (agent-shell-vertico-tests--in
+       alpha #'agent-shell-vertico-sidebar-mark-read)
+      (should (= (length agent-shell-vertico-sidebar--undo-stack) 1))
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (agent-shell-vertico-tests--parking alpha)
+                     '(10.0 nil nil)))
+      (should (equal (car messages) "Undid mark read of Review alpha")))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-walks-back-newest-first ()
+  "Repeated undo takes back the actions newest first, then says it is done."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-pin)
+      (agent-shell-vertico-tests--in beta #'agent-shell-vertico-sidebar-snooze)
+      (agent-shell-vertico-sidebar-undo)
+      (should-not (agent-shell-vertico-sidebar--get beta 'snoozed))
+      (should (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (agent-shell-vertico-sidebar-undo)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (agent-shell-vertico-sidebar-undo)
+      (should (equal (car messages) "Nothing to undo")))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-skips-a-killed-session ()
+  "An action on a session since killed is skipped, and undo says so."
+  (agent-shell-vertico-tests--with-two-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-pin)
+      (agent-shell-vertico-tests--in beta #'agent-shell-vertico-sidebar-pin)
+      (setq agent-shell-test-buffers (list alpha))
+      (kill-buffer beta)
+      (agent-shell-vertico-sidebar-undo)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (should (equal (car messages)
+                     (concat "Undid pin of Alpha"
+                             " (skipped 1 on a killed session)")))
+      (should-not agent-shell-vertico-sidebar--undo-stack))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-refuses-what-an-event-changed ()
+  "A snooze a permission request has since ended is not put back.
+The request is a new ask; restoring the snooze would hide it.  The
+entry is dropped so the next undo reaches the one before it."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-pin)
+      (agent-shell-vertico-tests--in alpha #'agent-shell-vertico-sidebar-snooze)
+      (agent-shell-vertico-sidebar--handle-event
+       alpha '((:event . permission-request)))
+      (let ((after (agent-shell-vertico-tests--parking alpha)))
+        (agent-shell-vertico-sidebar-undo)
+        (should (equal (agent-shell-vertico-tests--parking alpha) after)))
+      (should (equal (car messages)
+                     (concat "Cannot undo snooze of Review alpha:"
+                             " the session changed since")))
+      (should (= (length agent-shell-vertico-sidebar--undo-stack) 1)))))
+
+(ert-deftest agent-shell-vertico-sidebar-undo-is-bound ()
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "U"))
+              #'agent-shell-vertico-sidebar-undo))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map [remap undo])
+              #'agent-shell-vertico-sidebar-undo))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-action-map (kbd "U"))
+              #'agent-shell-vertico-sidebar-undo))
+  (should (eq (cdr (assoc "U" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-undo))
+  (should (string-match-p "^  U +"
                           (agent-shell-vertico-sidebar--help-text))))
 
 (provide 'agent-shell-vertico-tests)

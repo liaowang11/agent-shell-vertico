@@ -840,6 +840,30 @@ the same reason `mark-unread` does. A timed snooze was left for later: the
 record's presence is the whole answer today, and a timer would only add a way to
 end it.
 
+**Undoing a parking action.** `agent-shell-vertico-sidebar-undo` (`U`, and
+`undo` remapped, so `C-/` and `C-x u` unless a minor mode such as
+undo-fu remaps `undo` first; `evil-undo` remapped too, since Evil's `u`
+is mark-unread here) takes back the reader's latest pin, unpin,
+snooze, wake, mark unread or mark read, as T3 Code undoes a stray unpin or
+snooze. Each of those commands runs its writes inside `--recording-undo`,
+which snapshots all three parking slots, `unread`, `snoozed` and `pinned`,
+before and after, because pin and snooze cancel each other and marking
+unread ends a snooze; undo writes the before values back exactly, so a
+session marked unread by mistake returns to its old place in the queue
+rather than being toggled. An action that changed nothing (mark read on a
+read session, a refused busy session) records nothing, and events never
+record, since they write through `--set` directly. `--undo-stack` keeps
+the last 20, newest first, more than any run of stray keys, and the
+dead and changed rules below prune it long before it fills; repeating
+undo walks back; there is no
+redo, because the action itself is one key away. An entry whose buffer
+is dead is skipped and counted in the message. An entry whose slots no
+longer match its after values is refused and dropped: something wrote
+since, a permission request ending the snooze, a turn marking the session
+unread, or the reader reading it, and putting the old values back would
+hide what that change says. Undo restores the record only; a reader that
+mark unread moved out of a session stays where they landed.
+
 **Work behind a prompt.** `background` is an idle session with a subagent or an
 async task still running: `agent-shell-status` calls it ready, because no turn
 is in flight, and it does take a prompt, which is what separates it from `busy`.
