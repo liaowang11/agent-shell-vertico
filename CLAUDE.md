@@ -451,6 +451,28 @@ fence is code, and a marker after it stays hidden.
 Claude Code's prose rules for a turn with no marker,
 such as a trailing question, are not ported.
 
+A last line `waiting: ID, ID` is not how the turn ended but what it left
+running (`--message-waiting`, `--waiting-regexp`): it names the async tasks
+the agent will act on when they wake it, which then keep the session in
+`background` (see "Work behind a prompt"). Since it is last, the line before
+it is classified instead, so `Started the build.` then `waiting: b1x2` is
+`done` with that result, and an earlier `result:` or `needs input:` line
+still counts. It takes the same separators and fence rules, but no
+three-character minimum, since an id can be short; a last line such as
+`Waiting: for CI` names ids that run nowhere, holds nothing, and costs that
+line its place as the result. Nothing tells an agent about any of these
+markers on its own: Claude Code gives its background jobs a system prompt
+for them (m0436.js:15-25), and `agent-shell-vertico-sidebar-marker-instructions`
+is that prompt, with T3 Code's advice for `waiting:`. Its docstring shows
+how to append it for claude-agent-acp, which reads `_meta.systemPrompt` on
+every session-creating request (acp-agent.ts:11374-11390): an object is
+spread over Claude Code's preset, so `{append: TEXT}` adds to it, while a
+string replaces the whole prompt. The markers work in any agent's text;
+`waiting:` needs an agent that reports `async_task_*` updates, since its ids
+are looked up in `:async-tasks`. The id the agent sees is the one
+agent-shell records: Claude Code's `Command running in background with ID:`
+is the `asyncTaskId` claude-agent-acp forwards.
+
 **A turn stopped by a usage limit.** T3 Code shows a turn a subscription
 limit stopped as Limited rather than Failed, says when the limit resets,
 and offers to continue then; this ports that. The evidence for how such a
@@ -938,16 +960,33 @@ agent-shell emits no event when either kind starts or ends, and agent-shell is
 not to be changed for it, so `--background-work` reads the session's state
 directly — a subagent in `:native-subagents` runs until its record gains
 `:ended-at`, an async task in `:async-tasks` until its `:state` is terminal —
-and answers `(SUBAGENTS . TASKS)` or nil. Every kind counts alike, a dev server
-with a subagent, because nothing in a task says whether it will end; that is
-also why the unread mark is not held back by it: holding a mark back until the
-work ends would hold it forever behind a server. What it does add is one
-notification. A turn that ends with work running (`--background-at-turn-end`)
-usually says only that the work started, and its mark would silence the report
-that follows, since a burst that clears an unread mark announces nothing; so
-the first burst to settle once nothing runs is announced anyway, once, and the
-mark takes its time. A server that never ends never releases it, which leaves
-the report silent as it would be without this, and blocks nothing.
+and answers `(SUBAGENTS . TASKS)` or nil. That is everything that runs, which
+the row lists, but not all of it is work in flight: `--in-flight-work` keeps
+what holds the session in `background`, by kind, as T3 Code does
+(orchestrationV2PendingBackgroundWork.ts:89-108). Subagents and every async
+task hold except a shell command or a monitor (`--idle-task-types`:
+claude-agent-acp's `shell` and `monitor`, and the raw Claude Code names),
+which is what an agent leaves running, a dev server or a watcher; the row
+still lists it, so the reader sees the server, but the session reads `done`
+behind it rather than Working forever. A task with no type, or a type not
+listed, holds, so an agent that reports no types reads as it did before
+this rule. A shell or monitor task holds after all while the agent's last
+`waiting:` line names it (see "How a turn ended"): T3 Code's
+`t3_background_wait` without the tool. The ids sit in the `awaited` slot; a
+newer `waiting:` line replaces them, a message without one leaves them, as
+T3's mark lasts until its task ends, and a prompt clears them. A named id
+that is not running holds nothing, so a task ending releases the session
+without the slot changing, the way an exit is derived rather than recorded.
+The unread mark is not held back by work in flight: holding a mark back until
+the work ends would hold it forever behind a subagent that never ends. What it
+does add is one notification. A turn that ends with work in flight
+(`--background-at-turn-end`) usually says only that the work started, and its
+mark would silence the report that follows, since a burst that clears an
+unread mark announces nothing; so the first burst to settle once no work in
+flight runs is announced anyway, once, and the mark takes its time. A dev
+server left running is not in flight, so it neither arms this nor delays it.
+Work that never ends never releases it, which leaves the report silent as it
+would be without this, and blocks nothing.
 `--raw-status` overlays it after every other idle overlay, in the order its
 docstring gives:
 a pending permission, an out-of-turn burst, `failed` (a failure says more),

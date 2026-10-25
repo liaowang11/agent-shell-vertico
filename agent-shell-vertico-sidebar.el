@@ -393,6 +393,18 @@ session unread; the result comes later, as out-of-turn output that
 clears the mark and would announce nothing when it sets it again.
 Presence says the next burst to settle once the work has ended is that
 result, so `agent-shell-vertico-sidebar--out-of-turn-settled' announces
+it.  Only work in flight counts, as
+`agent-shell-vertico-sidebar--in-flight-work' says, so a dev server left
+running sets nothing.")
+  (awaited nil :documentation "\
+The async task ids the agent's last `waiting:' line named, or nil.
+
+A task named here holds the session in the background while it runs,
+whatever its kind; see `agent-shell-vertico-sidebar--in-flight-work'.
+A newer `waiting:' line replaces the list and a message without one
+leaves it, since the mark lasts until its task ends, as T3 Code's
+does.  An id that names no running task holds nothing, so a task that
+ends releases the session without the list changing.  A prompt clears
 it.")
   (state nil :documentation "\
 How the session's last turn ended, in Claude Code's words.
@@ -1030,6 +1042,17 @@ pass over every buffer."
   "Async task states after which a task no longer runs.
 The same list as `agent-shell-subagents--async-task-terminal-states'.")
 
+(defconst agent-shell-vertico-sidebar--idle-task-types
+  '("shell" "monitor" "local_bash" "local_monitor" "mcp")
+  "Async task types that are not work in flight unless awaited.
+
+claude-agent-acp names a background Bash command `shell' and a monitor
+`monitor' (async-tasks.ts, `friendlyTaskType'); the raw Claude Code
+names are listed too, for an adapter that passes them through.  These
+are what an agent leaves running, a dev server or a watcher, and T3
+Code never holds a thread in Working for them unless the agent says it
+waits on one.  See `agent-shell-vertico-sidebar--in-flight-work'.")
+
 (defun agent-shell-vertico-sidebar--background-work (buffer)
   "Return BUFFER's running subagents and async tasks as a count cons.
 
@@ -1039,7 +1062,10 @@ either, so this reads the state: a subagent runs until its record gains
 `:ended-at', and an async task until its `:state' is terminal.  Both
 are agent-shell's internals; a state without them answers nil, which is
 a session with nothing in the background.  Nothing runs once the agent
-process is gone, though the records never reach an end."
+process is gone, though the records never reach an end.
+
+This is everything that runs, which the row lists; whether it keeps the
+session working is `agent-shell-vertico-sidebar--in-flight-work'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :background)
       (let* ((state (agent-shell-vertico--state buffer))
              (subagents
@@ -1054,6 +1080,35 @@ process is gone, though the records never reach an end."
         (unless (or (and (zerop subagents) (zerop tasks))
                     (not (agent-shell-vertico-sidebar--live-p buffer)))
           (cons subagents tasks)))))
+
+(defun agent-shell-vertico-sidebar--in-flight-work (buffer)
+  "Return the part of BUFFER's background work that keeps it working.
+
+The answer has the shape of `agent-shell-vertico-sidebar--background-work',
+whose running work it filters by kind, as T3 Code does: a subagent and
+an async task hold the session in the background, a shell or monitor
+task \(`agent-shell-vertico-sidebar--idle-task-types') does not, unless
+the agent's last `waiting:' line named it (the `awaited' slot).  A task
+with no type, or one this does not know, holds, so an agent that reports
+no types reads as before."
+  (when (agent-shell-vertico-sidebar--background-work buffer)
+    (let* ((state (agent-shell-vertico--state buffer))
+           (awaited (agent-shell-vertico-sidebar--get buffer 'awaited))
+           (terminal agent-shell-vertico-sidebar--async-task-terminal-states)
+           (subagents
+            (seq-count (lambda (entry) (not (map-elt (cdr entry) :ended-at)))
+                       (map-elt state :native-subagents)))
+           (idle agent-shell-vertico-sidebar--idle-task-types)
+           (tasks
+            (seq-count
+             (lambda (entry)
+               (let ((task (cdr entry)))
+                 (and (not (member (plist-get task :state) terminal))
+                      (or (member (car entry) awaited)
+                          (not (member (plist-get task :task-type) idle))))))
+             (map-elt state :async-tasks))))
+      (unless (and (zerop subagents) (zerop tasks))
+        (cons subagents tasks)))))
 
 (defun agent-shell-vertico-sidebar--track-background (buffer status)
   "Record when BUFFER entered the background, given its STATUS.
@@ -1149,7 +1204,7 @@ the `error' event can report a turn as over before agent-shell says so."
           ((eq state 'stopped) 'stopped)
           ((eq state 'blocked) 'blocked)
           ((agent-shell-vertico-sidebar--get buffer 'fresh) 'new)
-          ((agent-shell-vertico-sidebar--background-work buffer) 'background)
+          ((agent-shell-vertico-sidebar--in-flight-work buffer) 'background)
           (t 'done))))
 
 (defconst agent-shell-vertico-sidebar--new-needs "Send a prompt to start"
@@ -2017,11 +2072,13 @@ A state-view row draws it, since no header above it names the project."
 (defun agent-shell-vertico-sidebar--background-line (buffer width)
   "Return the line saying what runs in BUFFER's background, at WIDTH.
 
-It is drawn whenever something runs, details shown or not, because the
-mark alone, a blue star that does not spin, cannot say what the session
-is waiting on.  Each kind gets its own icon, so a subagent reads apart
-from a shell at a glance.  Activating the line lists them, the
-subagents list `S' opens."
+It is drawn whenever something runs, details shown or not, whether or
+not the work holds the session in the background (see
+`agent-shell-vertico-sidebar--in-flight-work').  The mark alone, a blue
+star that does not spin, cannot say what the session is waiting on, and
+a finished session's green one cannot say a dev server still runs.  Each
+kind gets its own icon, so a subagent reads apart from a shell at a
+glance.  Activating the line lists them, the subagents list `S' opens."
   (when-let* ((work (agent-shell-vertico-sidebar--background-work buffer)))
     (let (parts)
       (pcase-dolist (`(,slot ,count ,noun)
@@ -4032,7 +4089,7 @@ stands on until the reader answers it."
       (let ((result (and (plist-get burst :message)
                          (agent-shell-vertico-sidebar--get
                           buffer 'background-at-turn-end)
-                         (not (agent-shell-vertico-sidebar--background-work
+                         (not (agent-shell-vertico-sidebar--in-flight-work
                                buffer)))))
         (when result
           (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
@@ -4183,6 +4240,62 @@ A subagent's tool calls are not the session's."
                        :chunks)))
     (apply #'concat (reverse chunks))))
 
+(defvar agent-shell-vertico-sidebar-marker-instructions
+  "Your message text is read to track this session's state in a job list.
+Only your own words are read, not tool output, so state results yourself
+even when a tool already printed them.  End a turn with one of these
+lines, as the last line of your message, on its own and outside any
+code block:
+
+result: a self-contained one-line headline of what you delivered.
+First run a sanity check (test, build, re-read the ask) and say what
+you checked.  This is the only completion signal; prose such as
+\"done\" is not detected.  Launching something that still has to settle
+is not a result.
+
+needs input: exactly what you need.  Only when one human action
+unblocks you (auth, a decision, access you cannot grant yourself) and
+guessing costs more than asking.  If a reasonable guess exists, make
+it, note the assumption and keep working.
+
+failed: the reason.  Only when the task is impossible as framed (wrong
+repo, missing binary, false premise).
+
+waiting: the ids of background tasks you started, separated by commas,
+as the tool that started them returned them.  Write it when you end
+your turn and will act on those tasks' results when they wake you.  Do
+not name work you leave running, such as a dev server or a watcher:
+unnamed shell commands and monitors never keep the session working,
+and the session stays working until every named task ends.  Put it
+after what you would otherwise end on.
+
+Everything else: keep working."
+  "Instructions that teach an agent the markers the sidebar reads.
+
+The sidebar reads how a turn ended from its message's last line (see
+`agent-shell-vertico-sidebar--classify-message' and
+`agent-shell-vertico-sidebar--message-waiting'), but nothing tells an
+agent to write one: Claude Code gives its background jobs a system
+prompt for that, which no agent run here receives.  This text is that
+prompt, after Claude Code's, with T3 Code's advice for `waiting:'.
+Nothing sends it on its own; append it to an agent's system prompt.
+
+For claude-agent-acp, an agent config's `:session-meta' is sent as
+`_meta' with `session/new', `session/load', `session/resume' and
+`session/fork', and claude-agent-acp appends `_meta.systemPrompt.append'
+to Claude Code's own system prompt (a string there would replace it
+whole instead):
+
+  (let ((config (agent-shell-anthropic-make-claude-code-config)))
+    (push \\=`(systemPrompt
+            . ((append . ,agent-shell-vertico-sidebar-marker-instructions)))
+          (alist-get :session-meta config))
+    config)
+
+The markers are read from any agent's text, but `waiting:' names async
+tasks, which only an agent that reports `async_task_*' updates, such as
+claude-agent-acp, records for the sidebar to find.")
+
 (defconst agent-shell-vertico-sidebar--marker-regexp
   (concat "^[ \t]*"
           "\\(result\\|needs input\\|blocked\\|failed\\|i['’]m blocked\\)"
@@ -4202,6 +4315,59 @@ that mentions one is text.")
   "A line opening or closing a code fence, its run of fence characters.
 Any indentation counts, since a fence inside a list item is indented.")
 
+(defconst agent-shell-vertico-sidebar--waiting-regexp
+  (concat "\\`waiting"
+          ;; The separators `agent-shell-vertico-sidebar--marker-regexp'
+          ;; takes.
+          "\\(?:[ \t]*[:—–]\\|[ \t]+-[ \t]\\)[ \t]*"
+          "\\(.*[^ \t]\\)")
+  "A last line naming the async tasks a turn waits on, read case-insensitively.
+It is matched against a trimmed line.  What follows the separator is a
+list of task ids, separated by commas or blanks.")
+
+(defun agent-shell-vertico-sidebar--unfenced-lines (text)
+  "Return the non-empty lines of message TEXT outside code fences.
+Each is trimmed, and the last comes first.
+
+A fence is three or more backticks or tildes.  It closes only on a run
+of its own character at least as long with nothing after it, since in
+Markdown a closing fence carries no info string."
+  (let (fence lines)
+    (dolist (line (split-string (or text "") "\n"))
+      (cond
+       ((string-match agent-shell-vertico-sidebar--fence-regexp line)
+        (let ((run (match-string 1 line)))
+          (cond ((null fence) (setq fence run))
+                ((and (eq (aref run 0) (aref fence 0))
+                      (>= (length run) (length fence))
+                      (string-blank-p (substring line (match-end 0))))
+                 (setq fence nil)))))
+       (fence nil)
+       (t (let ((trimmed (string-trim line)))
+            (unless (string-empty-p trimmed)
+              (push trimmed lines))))))
+    lines))
+
+(defun agent-shell-vertico-sidebar--waiting-ids (line)
+  "Return the task ids LINE names as a `waiting:' marker, or nil."
+  (let ((case-fold-search t))
+    (when (and line
+               (string-match agent-shell-vertico-sidebar--waiting-regexp line))
+      (delete ""
+              (mapcar (lambda (id) (string-trim id "[`'\"]+" "[`'\".;]+"))
+                      (split-string (match-string 1 line) "[ \t,]+" t))))))
+
+(defun agent-shell-vertico-sidebar--message-waiting (text)
+  "Return the async task ids message TEXT ends waiting on, or nil.
+
+T3 Code lets an agent mark the background tasks it will act on when
+they finish, and only those keep a shell or monitor task in the
+session's working state.  Here the mark is a `waiting:' line, read
+where `agent-shell-vertico-sidebar--classify-message' reads a marker:
+the message's last non-empty line outside code fences."
+  (agent-shell-vertico-sidebar--waiting-ids
+   (car (agent-shell-vertico-sidebar--unfenced-lines text))))
+
 (defun agent-shell-vertico-sidebar--classify-message (text)
   "Return (STATE . LINE) for agent message TEXT, read as Claude Code does.
 
@@ -4217,24 +4383,15 @@ what follows it, at least three characters.  When the last line is no
 marker the turn is done, and LINE is that line, or nil when there is no
 message.
 
-A fence is three or more backticks or tildes.  It closes only on a run
-of its own character at least as long with nothing after it, since in
-Markdown a closing fence carries no info string."
-  (let ((case-fold-search t)
-        fence last-line)
-    (dolist (line (split-string (or text "") "\n"))
-      (cond
-       ((string-match agent-shell-vertico-sidebar--fence-regexp line)
-        (let ((run (match-string 1 line)))
-          (cond ((null fence) (setq fence run))
-                ((and (eq (aref run 0) (aref fence 0))
-                      (>= (length run) (length fence))
-                      (string-blank-p (substring line (match-end 0))))
-                 (setq fence nil)))))
-       (fence nil)
-       (t (let ((trimmed (string-trim line)))
-            (unless (string-empty-p trimmed)
-              (setq last-line trimmed))))))
+A `waiting:' line is not how the turn ended but what it left running
+\(`agent-shell-vertico-sidebar--message-waiting'), so when it is the
+last line the line before it is read instead.  Fences are as
+`agent-shell-vertico-sidebar--unfenced-lines' reads them."
+  (let* ((case-fold-search t)
+         (lines (agent-shell-vertico-sidebar--unfenced-lines text))
+         (last-line (if (agent-shell-vertico-sidebar--waiting-ids (car lines))
+                        (cadr lines)
+                      (car lines))))
     (if (and last-line
              (string-match agent-shell-vertico-sidebar--marker-regexp
                            last-line))
@@ -4262,6 +4419,9 @@ row draws."
                (agent-shell-vertico-sidebar--classify-message
                 (agent-shell-vertico-sidebar--last-message buffer))))
     (agent-shell-vertico-sidebar--set buffer 'state state)
+    (when-let* ((ids (agent-shell-vertico-sidebar--message-waiting
+                      (agent-shell-vertico-sidebar--last-message buffer))))
+      (agent-shell-vertico-sidebar--set buffer 'awaited ids))
     (agent-shell-vertico-sidebar--set buffer 'result
                                       (and (eq state 'done) line))
     (agent-shell-vertico-sidebar--set buffer 'needs
@@ -4523,7 +4683,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
        (agent-shell-vertico-sidebar--end-turn
         buffer (map-nested-elt event '(:data :stop-reason)) now)
-       (if (agent-shell-vertico-sidebar--background-work buffer)
+       (if (agent-shell-vertico-sidebar--in-flight-work buffer)
            (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end t)
          (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
        (if (agent-shell-vertico-sidebar--session-focused-p buffer)
@@ -4559,6 +4719,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'detail-tool-call nil)
        (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
        (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil)
+       (agent-shell-vertico-sidebar--set buffer 'awaited nil)
        ;; A prompt to a dead session starts its agent again.
        (agent-shell-vertico-sidebar--set buffer 'exited-at nil))
       ('tool-call-update
