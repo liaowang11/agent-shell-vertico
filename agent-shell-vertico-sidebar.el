@@ -6967,12 +6967,14 @@ only the families it keeps count, as only they are drawn."
     (seq-mapcat #'agent-shell-vertico-sidebar--family members)))
 
 (defun agent-shell-vertico-sidebar--region-sessions ()
-  "Return the sessions with a line inside the region, top to bottom."
+  "Return the sessions with a line inside the region, top to bottom.
+The region's end is exclusive, as Emacs takes it: Evil's visual line
+selection ends at the start of the line after the last one selected."
   (let ((end (region-end))
         sessions)
     (save-excursion
       (goto-char (region-beginning))
-      (while (and (not (eobp)) (<= (line-beginning-position) end))
+      (while (and (not (eobp)) (< (line-beginning-position) end))
         (when (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'session)
           (let ((buffer (agent-shell-vertico-sidebar--node-at-point)))
             (unless (memq buffer sessions)
@@ -7120,12 +7122,17 @@ reported.  Declining keeps the marks."
       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
                 ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
         (dolist (buffer buffers)
-          (condition-case err
-              (progn
-                (funcall function (buffer-name buffer))
-                (cl-incf done))
-            (user-error
-             (push (format "(%s)" (error-message-string err)) skipped)))))
+          ;; An action on one session can end another, as a restart
+          ;; closes what hangs off it.
+          (if (not (buffer-live-p buffer))
+              (push "(killed)" skipped)
+            (condition-case err
+                (progn
+                  (funcall function (buffer-name buffer))
+                  (cl-incf done))
+              (user-error
+               (push (format "(%s)" (error-message-string err))
+                     skipped))))))
       (setq agent-shell-vertico-sidebar--marked nil)
       (agent-shell-vertico-sidebar-refresh)
       (message "%s %s" done-verb

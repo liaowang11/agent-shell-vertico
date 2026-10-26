@@ -21057,6 +21057,62 @@ un-settle by hand until its next turn."
       (should (equal (agent-shell-vertico-sidebar--marked-sessions)
                      (list alpha beta))))))
 
+(ert-deftest agent-shell-vertico-sidebar-mark-a-line-region ()
+  "A region ending at a row's first column leaves that row out.
+Evil's visual line selection ends at the start of the line after it."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (push-mark (line-beginning-position) t t)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session gamma)))
+      (goto-char (line-beginning-position))
+      (let ((transient-mark-mode t))
+        (activate-mark)
+        (agent-shell-vertico-sidebar-mark))
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-project-view-headers ()
+  "In the project view a project header marks its sessions, and the
+Pinned header its pinned ones."
+  (agent-shell-vertico-tests--with-three-sessions
+    (let ((agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t))
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--set gamma 'pinned 1.0)
+        (agent-shell-vertico-sidebar--render)
+        (should (agent-shell-vertico-sidebar--goto-node
+                 (cons 'project
+                       (agent-shell-vertico-sidebar--project-root beta))))
+        (agent-shell-vertico-sidebar-mark)
+        (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                       (list beta)))
+        (should (agent-shell-vertico-sidebar--goto-node
+                 (cons 'section 'pinned)))
+        (agent-shell-vertico-sidebar-mark)
+        (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                       (list gamma beta)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-skips-a-session-gone-meanwhile ()
+  "A marked session the batch itself ended is skipped, not an error."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                  ((symbol-function 'agent-shell-restart)
+                   (lambda (&rest _)
+                     (interactive)
+                     (when (eq (current-buffer) alpha)
+                       (setq agent-shell-test-buffers (list alpha gamma))
+                       (kill-buffer beta)))))
+          (agent-shell-vertico-sidebar-restart))
+        (should (equal (car messages)
+                       "Restarted 1 session, skipped 1 (killed)"))
+        (should-not (agent-shell-vertico-sidebar--marked-sessions))))))
+
 (ert-deftest agent-shell-vertico-sidebar-unmark-all ()
   "`M' drops every mark."
   (agent-shell-vertico-tests--with-three-sessions
