@@ -385,6 +385,24 @@ sidebar.  Repeating walks further back; there is no redo.  An action whose
 session changed since, such as a permission request ending a snooze, is
 refused and dropped.
 
+`m` marks the session at point and moves down, as Dired marks a file; on a
+section or project header it marks every session under it, folded or not,
+and with an active region (`V` under Evil) every session the region covers.
+`m` again unmarks, and `M` unmarks everything.  A marked title is drawn on
+the `agent-shell-vertico-sidebar-marked` background (`lazy-highlight` by
+default), and the header line counts the marks, saying how many are hidden
+by a fold or the filter.  While any session is marked, pin, snooze, settle,
+mark unread, mark read, kill, archive, interrupt and restart act on all of
+them instead of the row at point, and clear the marks.  The parking actions
+move every marked session the same way: pin pins the unpinned ones unless
+all are pinned, when it unpins them all, and likewise snooze and settle.  A
+session the single-row command would refuse, such as a working one for
+snooze, is skipped and counted in the message.  Kill, archive, interrupt and
+restart ask once, naming the sessions.  Undo takes a whole batch back at
+once.  Other actions, such as rename or peek, act on the row at point.  Set
+mode, set model, traffic and transcript have no sidebar key; their commands
+remain for `M-x`, and the Embark actions are unchanged.
+
 A turn a usage limit stopped is `Limited`, not Failed: a cyan star and a
 detail line such as `Limited: five-hour limit, resets 14:30`, read from
 agent-shell's rate-limit record or the CLI's own message.  It is idle, so it
@@ -515,8 +533,8 @@ such a session ready, because it has nothing in flight to report.  The
 sidebar shows it working while the output arrives, then marks it as
 holding unseen output once the stream has been quiet for a few seconds.
 No completion event is sent for this kind of work, so the quiet period is
-what ends it.  The sidebar's keys expose the same restart, kill, interrupt,
-model, mode, traffic, and transcript operations as the Vertico Embark map.
+what ends it.  The sidebar's keys expose the same restart, kill, interrupt
+and rename operations as the Vertico Embark map.
 
 Every mark is a plain character, so the sidebar needs no icon font and reads
 the same in a terminal.  A row's project line starts with `⌂` and a message
@@ -630,8 +648,8 @@ levels), `=` (switch between the state and project views), `s` (sort), `f`
 (filter the sessions; see below), `g` (refresh), `c` (new session), `d`
 (dispatch a prompt to a new session; see below), `k` (kill),
 `r` (restart), `i` (interrupt),
-`m`/`M` (mode/model), `C` (rename), `A` (archive), `a` (side conversation), `F`
-(fork), `Y` (copy the session ID), `t`/`T` (traffic/transcript), `H` (resume
+`m`/`M` (mark or unmark / unmark all), `C` (rename), `A` (archive), `a`
+(side conversation), `F` (fork), `Y` (copy the session ID), `H` (resume
 a past session of the project at point; with a prefix, of any project),
 `u`/`!` (mark unread/read), `z` (snooze), `e` (settle), `P` (pin), `U`
 (undo the last pin, snooze, settle or read mark), `w` (continue a limited
@@ -649,7 +667,7 @@ dispatches a prompt (Evil keeps `d` for its delete operator), `ge` settles
 and `gw` continues a limited session at its reset (Evil keeps `e` and `w`
 for its word motions), `U` undoes, `D`
 kills, `R` restarts, and `I` interrupts the current session;
-`t` opens its transcript, `T` shows traffic, `u`/`!` mark the session unread or
+`m` marks it and `M` unmarks all, `u`/`!` mark the session unread or
 read, `z` snoozes it, `P` pins it, `p` peeks at it, `S` lists its
 subagents, `C` renames it, `A` archives it, `a` starts a side conversation from
 it, `F` forks it, and `Y` copies its session ID; `!`, `z`, `S`, `C`, `A`, `a`,
@@ -659,7 +677,7 @@ it, `F` forks it, and `Y` copies its session ID; `!`, `z`, `S`, `C`, `A`, `a`,
 `evil-yank-line` in this read-only list, and `P` and `p` replace
 `evil-paste-before` and `evil-paste-after`.
 `q` closes the sidebar,
-while `=`, `s`, `c`, `m`/`M`, and the other mnemonic actions remain available.
+while `=`, `s`, `c`, and the other mnemonic actions remain available.
 `v` remains Evil's visual-state key.  `?` shows the same key reference.  The
 local `C-c` prefix remains available as a fallback (for example, `C-c k` kills).
 

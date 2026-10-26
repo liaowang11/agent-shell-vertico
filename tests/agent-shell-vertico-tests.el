@@ -1345,12 +1345,6 @@ the magenta of a row's dot, which wins over the section's colour."
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-refresh))
   (should-not (assoc "g" agent-shell-vertico-sidebar--evil-bindings))
-  (should (eq (cdr (assoc "t"
-                          agent-shell-vertico-sidebar--evil-bindings))
-              #'agent-shell-vertico-sidebar-open-transcript))
-  (should (eq (cdr (assoc "T"
-                          agent-shell-vertico-sidebar--evil-bindings))
-              #'agent-shell-vertico-sidebar-view-traffic))
   (should (eq (cdr (assoc "TAB"
                           agent-shell-vertico-sidebar--evil-bindings))
               #'agent-shell-vertico-sidebar-toggle-at-point))
@@ -20991,6 +20985,341 @@ un-settle by hand until its next turn."
                 #'agent-shell-vertico-sidebar-settle)))
   (should (string-match-p "^  e (ge) "
                           (agent-shell-vertico-sidebar--help-text))))
+
+;;; Marking sessions
+
+(defun agent-shell-vertico-tests--mark-rows (&rest buffers)
+  "Mark BUFFERS from their rows in the current sidebar."
+  (dolist (buffer buffers)
+    (should (agent-shell-vertico-sidebar--goto-node (cons 'session buffer)))
+    (agent-shell-vertico-sidebar-mark)))
+
+(defun agent-shell-vertico-tests--title-faces (title)
+  "Return the faces on TITLE's first character in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (should (search-forward title nil t))
+    (ensure-list (get-text-property (match-beginning 0) 'face))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-toggles-a-row-and-moves ()
+  "`m' on a row toggles its mark and moves point to the next row."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (agent-shell-vertico-sidebar-mark)
+      (should (eq (agent-shell-vertico-sidebar--session-at-point) beta))
+      (agent-shell-vertico-sidebar-mark)
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta)))
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (agent-shell-vertico-sidebar-mark)
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-a-header-marks-its-rows ()
+  "`m' on a header marks every row under it, and unmarks them once all are."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'section 'idle)))
+      (agent-shell-vertico-sidebar-mark)
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta gamma)))
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'section 'idle)))
+      (agent-shell-vertico-sidebar-mark)
+      (should-not (agent-shell-vertico-sidebar--marked-sessions)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-a-folded-header ()
+  "A folded header still marks the sessions it holds."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--set-section-folded 'idle t)
+      (agent-shell-vertico-sidebar--render)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'section 'idle)))
+      (agent-shell-vertico-sidebar-mark)
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta gamma))))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-a-region ()
+  "With an active region, `m' toggles every row it covers."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session alpha)))
+      (push-mark (point) t t)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session beta)))
+      (let ((transient-mark-mode t))
+        (activate-mark)
+        (agent-shell-vertico-sidebar-mark)
+        (should-not (region-active-p)))
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unmark-all ()
+  "`M' drops every mark."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha gamma)
+      (agent-shell-vertico-sidebar-unmark-all)
+      (should-not (agent-shell-vertico-sidebar--marked-sessions)))))
+
+(ert-deftest agent-shell-vertico-sidebar-marks-survive-a-render ()
+  "Marks outlive a render, and a killed session's mark goes with it."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (setq agent-shell-test-buffers (list alpha gamma))
+      (kill-buffer beta)
+      (agent-shell-vertico-sidebar--render)
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-marked-title-has-a-background ()
+  "A marked title takes the marked face; its star and other faces stay."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--set beta 'unread 1.0)
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows beta)
+      (let ((faces (agent-shell-vertico-tests--title-faces "Beta")))
+        (should (memq 'agent-shell-vertico-sidebar-marked faces))
+        (should (memq 'agent-shell-vertico-sidebar-unread-title faces)))
+      (should-not (memq 'agent-shell-vertico-sidebar-marked
+                        (agent-shell-vertico-tests--title-faces "Alpha")))
+      (should (eq (face-attribute 'agent-shell-vertico-sidebar-marked :inherit)
+                  'lazy-highlight)))))
+
+(ert-deftest agent-shell-vertico-sidebar-header-line-counts-marks ()
+  "The header line says how many are marked and how many of them are hidden."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (should-not header-line-format)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (should (string-match-p "2 marked" (format "%s" header-line-format)))
+      (should-not (string-match-p "hidden" (format "%s" header-line-format)))
+      (agent-shell-vertico-sidebar--set-section-folded 'idle t)
+      (agent-shell-vertico-sidebar--render)
+      (should (string-match-p "2 marked (2 hidden)"
+                              (format "%s" header-line-format)))
+      (agent-shell-vertico-sidebar-unmark-all)
+      (should-not header-line-format))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-settle ()
+  "Settle acts on every marked session, then the marks clear.
+Run again on settled ones, it un-settles them all."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (agent-shell-vertico-sidebar-settle)
+        (should (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should (agent-shell-vertico-sidebar--get beta 'settled))
+        (should-not (agent-shell-vertico-sidebar--get gamma 'settled))
+        (should-not (agent-shell-vertico-sidebar--marked-sessions))
+        (should (equal (car messages) "Settled 2 sessions"))
+        (agent-shell-vertico-sidebar--set-section-folded 'settled nil)
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (agent-shell-vertico-sidebar-settle)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should-not (agent-shell-vertico-sidebar--get beta 'settled))
+        (should (agent-shell-vertico-sidebar--get alpha 'unsettled))
+        (should (equal (car messages) "Unsettled 2 sessions"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-skips-a-working-session ()
+  "A session the single command would refuse is skipped and counted."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (setf (alist-get beta agent-shell-test-statuses) 'busy)
+        (agent-shell-vertico-sidebar-snooze)
+        (should (agent-shell-vertico-sidebar--get alpha 'snoozed))
+        (should-not (agent-shell-vertico-sidebar--get beta 'snoozed))
+        (should (equal (car messages)
+                       "Snoozed 1 session, skipped 1 working"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-goes-one-way ()
+  "When any marked session lacks the state, all get it; else all lose it."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--set alpha 'pinned 5.0)
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (agent-shell-vertico-sidebar-pin)
+      (should (equal (agent-shell-vertico-sidebar--get alpha 'pinned) 5.0))
+      (should (agent-shell-vertico-sidebar--get beta 'pinned))
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (agent-shell-vertico-sidebar-pin)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'pinned))
+      (should-not (agent-shell-vertico-sidebar--get beta 'pinned)))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-mark-unread-and-read ()
+  "Marking unread queues the sessions in the order they are drawn;
+marking read drops every mark."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (agent-shell-vertico-sidebar-mark-unread)
+      (should (< (agent-shell-vertico-sidebar--get alpha 'unread)
+                 (agent-shell-vertico-sidebar--get beta 'unread)))
+      (should-not agent-shell-test-displayed-buffer)
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta gamma)
+      (agent-shell-vertico-sidebar-mark-read)
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+      (should-not (agent-shell-vertico-sidebar--get beta 'unread)))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-is-one-undo ()
+  "A batch is one undo entry, taking back every session at once."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (agent-shell-vertico-sidebar-settle)
+        (should (= (length agent-shell-vertico-sidebar--undo-stack) 1))
+        (agent-shell-vertico-sidebar-undo)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'settled))
+        (should-not (agent-shell-vertico-sidebar--get beta 'settled))
+        (should (equal (car messages) "Undid settle of 2 sessions"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-undo-leaves-what-changed ()
+  "Undoing a batch restores the sessions unchanged since and names the rest."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (agent-shell-vertico-sidebar-snooze)
+        (agent-shell-vertico-sidebar--handle-event
+         beta '((:event . permission-request)))
+        (agent-shell-vertico-sidebar-undo)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+        (should (equal (car messages)
+                       (concat "Undid snooze of 1 session;"
+                               " 1 changed since, left as it is")))
+        (should-not agent-shell-vertico-sidebar--undo-stack)))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-kill-asks-once ()
+  "Killing marked sessions asks once, naming them, and kills them all."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (let (prompts)
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (prompt) (push prompt prompts) t)))
+          (agent-shell-vertico-sidebar-kill))
+        (should (= (length prompts) 1))
+        (should (string-match-p "Kill 2 sessions" (car prompts)))
+        (should (string-match-p "Alpha" (car prompts)))
+        (should (string-match-p "Beta" (car prompts))))
+      (should-not (buffer-live-p alpha))
+      (should-not (buffer-live-p beta))
+      (should (buffer-live-p gamma))
+      (should-not (agent-shell-vertico-sidebar--marked-sessions)))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-kill-declined ()
+  "Declining keeps every session and every mark."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) nil)))
+        (agent-shell-vertico-sidebar-kill))
+      (should (buffer-live-p alpha))
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-interrupt-skips-refusals ()
+  "A session the action refuses is skipped and the rest go on."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-undo-messages
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                  ((symbol-function 'agent-shell-vertico--agent-live-p)
+                   (lambda (buffer) (eq buffer alpha))))
+          (agent-shell-vertico-sidebar-interrupt))
+        (should (equal (mapcar #'cadr
+                               (seq-filter
+                                (lambda (call)
+                                  (eq (car call) 'agent-shell-interrupt))
+                                agent-shell-test-calls))
+                       (list alpha)))
+        (should (string-match-p "Interrupted 1 session, skipped 1"
+                                (car messages)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-batch-archive-and-restart ()
+  "Archive and restart take the marks too."
+  (dolist (command '((agent-shell-vertico-sidebar-archive
+                      . agent-shell-archive-session)
+                     (agent-shell-vertico-sidebar-restart
+                      . agent-shell-restart)))
+    (agent-shell-vertico-tests--with-three-sessions
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-tests--mark-rows alpha beta)
+        (let (buffers)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                    ((symbol-function (cdr command))
+                     (lambda (&rest _)
+                       (interactive)
+                       (push (current-buffer) buffers))))
+            (funcall (car command)))
+          (should (equal (nreverse buffers) (list alpha beta))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-unmarked-commands-ignore-marks ()
+  "Rename acts on the row at point whatever is marked."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha)
+      (should (agent-shell-vertico-sidebar--goto-node (cons 'session gamma)))
+      (agent-shell-vertico-sidebar-rename)
+      (should (eq agent-shell-test-last-buffer gamma))
+      (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                     (list alpha))))))
+
+(ert-deftest agent-shell-vertico-sidebar-marks-stay-in-the-sidebar ()
+  "From a session buffer, a parking command acts on that session alone."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--with-sidebar
+      (agent-shell-vertico-sidebar--render)
+      (agent-shell-vertico-tests--mark-rows alpha beta)
+      (agent-shell-vertico-tests--in gamma #'agent-shell-vertico-sidebar-pin)
+      (should (agent-shell-vertico-sidebar--get gamma 'pinned))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'pinned)))))
+
+(ert-deftest agent-shell-vertico-sidebar-mark-keys ()
+  "`m' and `M' mark in every map; `t' and `T' are unbound."
+  (dolist (map (list agent-shell-vertico-sidebar-mode-map
+                     agent-shell-vertico-sidebar-action-map))
+    (should (eq (lookup-key map (kbd "m")) #'agent-shell-vertico-sidebar-mark))
+    (should (eq (lookup-key map (kbd "M"))
+                #'agent-shell-vertico-sidebar-unmark-all))
+    (should-not (lookup-key map (kbd "t")))
+    (should-not (lookup-key map (kbd "T"))))
+  (should (eq (cdr (assoc "m" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-mark))
+  (should (eq (cdr (assoc "M" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-unmark-all))
+  (should-not (assoc "t" agent-shell-vertico-sidebar--evil-bindings))
+  (should-not (assoc "T" agent-shell-vertico-sidebar--evil-bindings))
+  (let ((help (agent-shell-vertico-sidebar--help-text)))
+    (should (string-match-p "^  m +" help))
+    (should (string-match-p "^  M +" help))
+    (should-not (string-match-p "Traffic\\|Set mode" help))))
 
 (provide 'agent-shell-vertico-tests)
 

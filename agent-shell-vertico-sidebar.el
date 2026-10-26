@@ -791,6 +791,15 @@ An absent entry follows `agent-shell-vertico-sidebar-folded-sections'.")
 `agent-shell-vertico-sidebar--filter-parse' reads it.  The sidebar is
 one buffer, so the filter applies on every frame that shows it.")
 
+(defvar-local agent-shell-vertico-sidebar--marked nil
+  "The sessions the reader has marked in this sidebar, as buffers.
+
+`agent-shell-vertico-sidebar-mark' writes it and every render drops a
+session no longer live.  While it holds any, the commands that take
+marks act on all of them instead of the row at point.  Marks are a
+selection rather than a fact about a session, so they are not kept in
+the session's record and do not survive Emacs.")
+
 (defvar-local agent-shell-vertico-sidebar--expanded-sessions nil
   "Hash table of session detail overrides in the current sidebar buffer.
 
@@ -860,6 +869,15 @@ asking for input."
 (defface agent-shell-vertico-sidebar-unread-title
   '((t :inherit bold))
   "Face for the title of a session holding output nobody has read."
+  :group 'agent-shell-vertico-sidebar)
+
+(defface agent-shell-vertico-sidebar-marked
+  '((t :inherit lazy-highlight))
+  "Face for the title of a session the reader has marked.
+
+A background on the title alone, so the status mark keeps its place and
+colour.  Not `region', which is how a region of rows is marked, nor
+`highlight', which hl-line and mouse hover draw."
   :group 'agent-shell-vertico-sidebar)
 
 (defface agent-shell-vertico-sidebar-unread-dot
@@ -2934,7 +2952,9 @@ parent-child relationship."
                                   buffer)
                                  (agent-shell-vertico-sidebar--settled-p
                                   buffer))
-                             'agent-shell-vertico-sidebar-snoozed-title)))
+                             'agent-shell-vertico-sidebar-snoozed-title)
+                        (and (memq buffer agent-shell-vertico-sidebar--marked)
+                             'agent-shell-vertico-sidebar-marked)))
       (when face
         ;; Prepended, so it wins over whatever face the title carries.
         (dolist (line title-lines)
@@ -3521,6 +3541,30 @@ matching parent its children."
    (propertize (format " · %d/%d · f to change" shown total)
                'face 'agent-shell-vertico-sidebar-header-count)))
 
+(defun agent-shell-vertico-sidebar--marks-header-line ()
+  "Return the header line part counting the marks, or nil.
+The marks on rows not drawn, under a fold or hidden by the filter, are
+counted apart, since an action reaches them too."
+  (when-let* ((marked agent-shell-vertico-sidebar--marked))
+    (let* ((drawn (mapcar #'car (agent-shell-vertico-sidebar--session-rows)))
+           (hidden (seq-count (lambda (buffer) (not (memq buffer drawn)))
+                              marked)))
+      (propertize (format " %d marked%s · M to unmark" (length marked)
+                          (if (> hidden 0) (format " (%d hidden)" hidden) ""))
+                  'face 'agent-shell-vertico-sidebar-header-count))))
+
+(defun agent-shell-vertico-sidebar--header-line (filter shown total)
+  "Return the header line, or nil when there is nothing to say.
+It names FILTER, with SHOWN of TOTAL sessions drawn, and counts the
+marks; with neither there is no header line."
+  (let ((parts (delq nil
+                     (list (when filter
+                             (agent-shell-vertico-sidebar--filter-header-line
+                              shown total))
+                           (agent-shell-vertico-sidebar--marks-header-line)))))
+    (when parts
+      (string-join parts " |"))))
+
 (defun agent-shell-vertico-sidebar--refuse-folds-while-filtered ()
   "Signal a user error when this sidebar is filtered.
 Every header is drawn open while a filter is on, as Claude Code ignores
@@ -3697,12 +3741,9 @@ every session it holds."
           ;; filter hides still holds sessions, so its fold stands.
           (agent-shell-vertico-sidebar--forget-empty-section-folds roots)
           (setq roots (agent-shell-vertico-sidebar--filter-roots filter roots)
-                header-line-format
-                (when filter
-                  (agent-shell-vertico-sidebar--filter-header-line
-                   (length (seq-mapcat #'agent-shell-vertico-sidebar--family
-                                       roots))
-                   (length buffers))))
+                agent-shell-vertico-sidebar--marked
+                (seq-filter (lambda (buffer) (memq buffer buffers))
+                            agent-shell-vertico-sidebar--marked))
           (erase-buffer)
           (cond
            ((null buffers)
@@ -3772,6 +3813,13 @@ every session it holds."
             (dolist (anchor window-anchors)
               (agent-shell-vertico-sidebar--restore-window-anchor
                anchor node-positions)))
+          ;; After the rows, which say which marks are drawn.
+          (setq header-line-format
+                (agent-shell-vertico-sidebar--header-line
+                 filter
+                 (length (seq-mapcat #'agent-shell-vertico-sidebar--family
+                                     roots))
+                 (length buffers)))
           (agent-shell-vertico-sidebar--place-busy-overlays snapshots)
           (agent-shell-vertico-sidebar--ensure-busy-refresh)
           (agent-shell-vertico-sidebar--ensure-background-refresh)
@@ -5693,31 +5741,39 @@ With a mouse EVENT, move to the clicked position before dispatching."
           (agent-shell-vertico-sidebar--activate-at-point)))
     (agent-shell-vertico-sidebar--activate-at-point)))
 
-(defun agent-shell-vertico-sidebar--call-session-action (function)
-  "Call session action FUNCTION for the session at point."
-  (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
-    (funcall function (buffer-name buffer))
-    (agent-shell-vertico-sidebar-refresh)))
+(defun agent-shell-vertico-sidebar--call-session-action
+    (function &optional verb done-verb)
+  "Call session action FUNCTION for the session at point.
+With VERB and DONE-VERB, the action takes marks: while sessions are
+marked it runs on all of them after one question
+\(`--session-action-batch')."
+  (if-let* ((marked (and verb
+                         (agent-shell-vertico-sidebar--batch-targets))))
+      (agent-shell-vertico-sidebar--session-action-batch
+       marked function verb done-verb)
+    (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
+      (funcall function (buffer-name buffer))
+      (agent-shell-vertico-sidebar-refresh))))
 
 (defun agent-shell-vertico-sidebar-kill ()
-  "Kill the session at point."
+  "Kill the session at point, or every marked session."
   (interactive)
   (agent-shell-vertico-sidebar--call-session-action
-   #'agent-shell-vertico-kill-session))
+   #'agent-shell-vertico-kill-session "Kill" "Killed"))
 
 (defun agent-shell-vertico-sidebar-restart ()
-  "Restart the session at point."
+  "Restart the session at point, or every marked session."
   (interactive)
   (agent-shell-vertico-sidebar--call-session-action
-   #'agent-shell-vertico-restart-session))
+   #'agent-shell-vertico-restart-session "Restart" "Restarted"))
 
 (defun agent-shell-vertico-sidebar-interrupt ()
-  "Interrupt the session at point.
+  "Interrupt the session at point, or every marked session.
 A session whose agent process has exited is refused, as
 `agent-shell-vertico-interrupt-session' refuses it."
   (interactive)
   (agent-shell-vertico-sidebar--call-session-action
-   #'agent-shell-vertico-interrupt-session))
+   #'agent-shell-vertico-interrupt-session "Interrupt" "Interrupted"))
 
 (defun agent-shell-vertico-sidebar-set-mode ()
   "Set the session mode at point."
@@ -5738,10 +5794,10 @@ A session whose agent process has exited is refused, as
    #'agent-shell-vertico-rename-session))
 
 (defun agent-shell-vertico-sidebar-archive ()
-  "Archive the session at point."
+  "Archive the session at point, or every marked session."
   (interactive)
   (agent-shell-vertico-sidebar--call-session-action
-   #'agent-shell-vertico-archive-session))
+   #'agent-shell-vertico-archive-session "Archive" "Archived"))
 
 (defun agent-shell-vertico-sidebar-fork ()
   "Fork the session at point into a new shell."
@@ -6466,6 +6522,12 @@ count leaves them out.  Nothing is shown when none waits."
    "  mouse-1     Activate at the clicked position\n"
    "  TAB         Toggle a section, project or session details\n"
    "  S-TAB       Cycle all rows: headers, sessions, details\n\n"
+   "Marks\n"
+   "  m           Mark the row, every row under a header, or the rows\n"
+   "              in the region; again to unmark\n"
+   "  M           Unmark all\n"
+   "              While rows are marked, P z e u ! and kill, archive,\n"
+   "              interrupt and restart act on every marked session\n\n"
    "Actions\n"
    "  o           Jump to a session by key\n"
    "  O           Open the session in another window\n"
@@ -6476,12 +6538,10 @@ count leaves them out.  Nothing is shown when none waits."
    "  c           Create a new session\n"
    "  d (gc)      Dispatch a prompt to a new session out of sight\n"
    "              (in the prompt: C-RET or M-RET opens it, C-j newline)\n"
-   "  m / M       Set mode / model\n"
    "  C           Rename (change the title of) the session\n"
    "  A           Archive the session, stopping and closing it\n"
    "  a / F       Start a side conversation / fork the session\n"
    "  Y           Copy the session ID\n"
-   "  t / T       Traffic / transcript (regular); reverse in Evil\n"
    "  H (gh)      Resume a past session of the project at point\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
@@ -6522,15 +6582,13 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-restart)
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
-    (define-key map (kbd "m") #'agent-shell-vertico-sidebar-set-mode)
-    (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
+    (define-key map (kbd "m") #'agent-shell-vertico-sidebar-mark)
+    (define-key map (kbd "M") #'agent-shell-vertico-sidebar-unmark-all)
     (define-key map (kbd "C") #'agent-shell-vertico-sidebar-rename)
     (define-key map (kbd "A") #'agent-shell-vertico-sidebar-archive)
     (define-key map (kbd "a") #'agent-shell-vertico-sidebar-side)
     (define-key map (kbd "F") #'agent-shell-vertico-sidebar-fork)
     (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
-    (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
-    (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "H") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
@@ -6570,15 +6628,13 @@ count leaves them out.  Nothing is shown when none waits."
     (define-key map (kbd "k") #'agent-shell-vertico-sidebar-kill)
     (define-key map (kbd "r") #'agent-shell-vertico-sidebar-restart)
     (define-key map (kbd "i") #'agent-shell-vertico-sidebar-interrupt)
-    (define-key map (kbd "m") #'agent-shell-vertico-sidebar-set-mode)
-    (define-key map (kbd "M") #'agent-shell-vertico-sidebar-set-model)
+    (define-key map (kbd "m") #'agent-shell-vertico-sidebar-mark)
+    (define-key map (kbd "M") #'agent-shell-vertico-sidebar-unmark-all)
     (define-key map (kbd "C") #'agent-shell-vertico-sidebar-rename)
     (define-key map (kbd "A") #'agent-shell-vertico-sidebar-archive)
     (define-key map (kbd "a") #'agent-shell-vertico-sidebar-side)
     (define-key map (kbd "F") #'agent-shell-vertico-sidebar-fork)
     (define-key map (kbd "Y") #'agent-shell-vertico-sidebar-copy-session-id)
-    (define-key map (kbd "t") #'agent-shell-vertico-sidebar-view-traffic)
-    (define-key map (kbd "T") #'agent-shell-vertico-sidebar-open-transcript)
     (define-key map (kbd "H") #'agent-shell-vertico-sidebar-resume-past)
     (define-key map (kbd "u") #'agent-shell-vertico-sidebar-mark-unread)
     (define-key map (kbd "!") #'agent-shell-vertico-sidebar-mark-read)
@@ -6632,15 +6688,13 @@ continues a limited session at its reset and `ge' settles a session.")
     ("D" . agent-shell-vertico-sidebar-kill)
     ("R" . agent-shell-vertico-sidebar-restart)
     ("I" . agent-shell-vertico-sidebar-interrupt)
-    ("m" . agent-shell-vertico-sidebar-set-mode)
-    ("M" . agent-shell-vertico-sidebar-set-model)
+    ("m" . agent-shell-vertico-sidebar-mark)
+    ("M" . agent-shell-vertico-sidebar-unmark-all)
     ("C" . agent-shell-vertico-sidebar-rename)
     ("A" . agent-shell-vertico-sidebar-archive)
     ("a" . agent-shell-vertico-sidebar-side)
     ("F" . agent-shell-vertico-sidebar-fork)
     ("Y" . agent-shell-vertico-sidebar-copy-session-id)
-    ("t" . agent-shell-vertico-sidebar-open-transcript)
-    ("T" . agent-shell-vertico-sidebar-view-traffic)
     ("gh" . agent-shell-vertico-sidebar-resume-past)
     ("u" . agent-shell-vertico-sidebar-mark-unread)
     ("!" . agent-shell-vertico-sidebar-mark-read)
@@ -6690,7 +6744,7 @@ while normal and motion states get the same direct mnemonic commands."
         (unless (member (car binding) '("gr" "gh" "gc" "gw" "ge"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
       (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
-                     "A" "a" "F" "Y" "t" "T" "H" "u" "!" "z" "P" "U" "p"
+                     "A" "a" "F" "Y" "H" "u" "!" "z" "P" "U" "p"
                      "S" "w" "e" "?" "q"))
         (when-let* ((command (lookup-key
                               agent-shell-vertico-sidebar-action-map
@@ -6820,8 +6874,10 @@ slot.  `unsettled' is the guard an un-settle by hand leaves for
 
 (defvar agent-shell-vertico-sidebar--undo-stack nil
   "The reader's parking actions, newest first.
-Each is (BUFFER LABEL TITLE BEFORE AFTER): the session, what the action
-was, the session's title then, and its parking slots before and after.")
+Each is (LABEL RECORDS BATCH): what the action was, one (BUFFER TITLE
+BEFORE AFTER) per session it changed, with the session's title then and
+its parking slots before and after, and whether it was run on marked
+sessions, which undo then names by count rather than by title.")
 
 (defun agent-shell-vertico-sidebar--parking-slots (buffer)
   "Return BUFFER's parking slots as an alist."
@@ -6829,20 +6885,251 @@ was, the session's title then, and its parking slots before and after.")
             (cons slot (agent-shell-vertico-sidebar--get buffer slot)))
           agent-shell-vertico-sidebar--undo-slots))
 
-(defun agent-shell-vertico-sidebar--recording-undo (buffer label function)
-  "Call FUNCTION, recording what it did to BUFFER as LABEL for undo.
-Nothing is recorded when the slots did not change, so a refused or
-empty action is never what undo takes back."
-  (let ((before (agent-shell-vertico-sidebar--parking-slots buffer)))
+(defun agent-shell-vertico-sidebar--recording-undo-all
+    (buffers label function &optional batch)
+  "Call FUNCTION, recording what it did to BUFFERS as one LABEL for undo.
+BATCH says the action ran on marked sessions.  A session whose slots
+did not change is left out, and nothing is recorded when none did, so
+a refused or empty action is never what undo takes back."
+  (let ((befores (mapcar #'agent-shell-vertico-sidebar--parking-slots
+                         buffers)))
     (funcall function)
-    (let ((after (agent-shell-vertico-sidebar--parking-slots buffer)))
-      (unless (equal before after)
-        (push (list buffer label (agent-shell-vertico-sidebar--title buffer)
-                    before after)
-              agent-shell-vertico-sidebar--undo-stack)
-        (setq agent-shell-vertico-sidebar--undo-stack
-              (seq-take agent-shell-vertico-sidebar--undo-stack
-                        agent-shell-vertico-sidebar--undo-limit))))))
+    (when-let* ((records
+                 (delq nil
+                       (seq-mapn
+                        (lambda (buffer before)
+                          (let ((after
+                                 (agent-shell-vertico-sidebar--parking-slots
+                                  buffer)))
+                            (unless (equal before after)
+                              (list buffer
+                                    (agent-shell-vertico-sidebar--title buffer)
+                                    before after))))
+                        buffers befores))))
+      (push (list label records batch)
+            agent-shell-vertico-sidebar--undo-stack)
+      (setq agent-shell-vertico-sidebar--undo-stack
+            (seq-take agent-shell-vertico-sidebar--undo-stack
+                      agent-shell-vertico-sidebar--undo-limit)))))
+
+(defun agent-shell-vertico-sidebar--recording-undo (buffer label function)
+  "Call FUNCTION, recording what it did to BUFFER as LABEL for undo."
+  (agent-shell-vertico-sidebar--recording-undo-all
+   (list buffer) label function))
+
+(defun agent-shell-vertico-sidebar--sessions-text (count)
+  "Return COUNT sessions in words, \"1 session\" or \"2 sessions\"."
+  (format "%d session%s" count (if (= count 1) "" "s")))
+
+;;; Marking sessions
+
+(defun agent-shell-vertico-sidebar--marked-sessions ()
+  "Return the live marked sessions in the order the sidebar draws them.
+A session under a fold or hidden by the filter counts: an action reaches
+it too, and the header line says how many are out of sight."
+  (when agent-shell-vertico-sidebar--marked
+    (seq-filter (lambda (buffer)
+                  (memq buffer agent-shell-vertico-sidebar--marked))
+                (agent-shell-vertico-sidebar--display-order))))
+
+(defun agent-shell-vertico-sidebar--batch-targets ()
+  "Return the marked sessions a command acts on, or nil for the row at point.
+Marks belong to the sidebar, so a command run from a session's own
+buffer acts on that session alone."
+  (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+       (agent-shell-vertico-sidebar--marked-sessions)))
+
+(defun agent-shell-vertico-sidebar--header-sessions (kind node)
+  "Return the sessions drawn under the header NODE of KIND.
+A folded header holds the same sessions as an open one.  Under a filter
+only the families it keeps count, as only they are drawn."
+  (let* ((buffers (seq-filter #'buffer-live-p (agent-shell-buffers)))
+         (roots (agent-shell-vertico-sidebar--filter-roots
+                 (agent-shell-vertico-sidebar--filter-parse
+                  agent-shell-vertico-sidebar--filter)
+                 (seq-remove #'agent-shell-vertico-sidebar--parent-of
+                             buffers)))
+         (members
+          (pcase (agent-shell-vertico-sidebar--view)
+            ('state
+             (alist-get node (agent-shell-vertico-sidebar--group-by-section
+                              roots)))
+            ('project
+             (pcase-let ((`(,pinned ,rest ,settled)
+                          (agent-shell-vertico-sidebar--project-view-parts
+                           roots)))
+               (pcase (cons kind node)
+                 ('(section . pinned) pinned)
+                 ('(section . settled) settled)
+                 (`(project . ,root)
+                  (cdr (assoc root (agent-shell-vertico-sidebar--group-buffers
+                                    rest))))))))))
+    (seq-mapcat #'agent-shell-vertico-sidebar--family members)))
+
+(defun agent-shell-vertico-sidebar--region-sessions ()
+  "Return the sessions with a line inside the region, top to bottom."
+  (let ((end (region-end))
+        sessions)
+    (save-excursion
+      (goto-char (region-beginning))
+      (while (and (not (eobp)) (<= (line-beginning-position) end))
+        (when (eq (agent-shell-vertico-sidebar--node-kind-at-point) 'session)
+          (let ((buffer (agent-shell-vertico-sidebar--node-at-point)))
+            (unless (memq buffer sessions)
+              (push buffer sessions))))
+        (forward-line 1)))
+    (nreverse sessions)))
+
+(defun agent-shell-vertico-sidebar--toggle-marks (buffers)
+  "Mark all of BUFFERS, or unmark them when every one is marked already."
+  (if (seq-every-p (lambda (buffer)
+                     (memq buffer agent-shell-vertico-sidebar--marked))
+                   buffers)
+      (setq agent-shell-vertico-sidebar--marked
+            (seq-difference agent-shell-vertico-sidebar--marked buffers))
+    (setq agent-shell-vertico-sidebar--marked
+          (seq-union agent-shell-vertico-sidebar--marked buffers))))
+
+(defun agent-shell-vertico-sidebar-mark ()
+  "Mark the session at point, or unmark it, and move to the next row.
+
+On a section or project header, mark every session under it, folded or
+not, or unmark them when all are marked.  With an active region (`V'
+under Evil), do the same for every session the region covers.
+
+While any session is marked, pin, snooze, settle, mark unread, mark
+read, kill, archive, interrupt and restart act on all the marked
+sessions instead of the row at point, and the marks are cleared after.
+\\[agent-shell-vertico-sidebar-unmark-all] clears them by hand."
+  (interactive)
+  (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+    (user-error "Not in the agent-shell sidebar"))
+  (let ((kind (agent-shell-vertico-sidebar--node-kind-at-point))
+        (node (agent-shell-vertico-sidebar--node-at-point)))
+    (cond
+     ((use-region-p)
+      (let ((sessions (agent-shell-vertico-sidebar--region-sessions)))
+        (deactivate-mark)
+        (when (and (fboundp 'evil-visual-state-p)
+                   (fboundp 'evil-exit-visual-state)
+                   (evil-visual-state-p))
+          (evil-exit-visual-state))
+        (unless sessions
+          (user-error "No session in the region"))
+        (agent-shell-vertico-sidebar--toggle-marks sessions)
+        (agent-shell-vertico-sidebar--render)))
+     ((memq kind '(section project))
+      (let ((sessions (agent-shell-vertico-sidebar--header-sessions
+                       kind node)))
+        (unless sessions
+          (user-error "No session under this header"))
+        (agent-shell-vertico-sidebar--toggle-marks sessions)
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-sidebar--goto-node (cons kind node))))
+     (t
+      (let ((buffer (agent-shell-vertico-sidebar--session-at-point)))
+        (agent-shell-vertico-sidebar--toggle-marks (list buffer))
+        (agent-shell-vertico-sidebar--render)
+        (when (agent-shell-vertico-sidebar--goto-node (cons 'session buffer))
+          (agent-shell-vertico-sidebar--move-to-row nil)))))))
+
+(defun agent-shell-vertico-sidebar-unmark-all ()
+  "Unmark every session in the sidebar."
+  (interactive)
+  (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+    (user-error "Not in the agent-shell sidebar"))
+  (let ((count (length agent-shell-vertico-sidebar--marked)))
+    (setq agent-shell-vertico-sidebar--marked nil)
+    (agent-shell-vertico-sidebar--render)
+    (message "Unmarked %s" (agent-shell-vertico-sidebar--sessions-text
+                            count))))
+
+(defun agent-shell-vertico-sidebar--batch-message (done skipped)
+  "Return how many sessions were DONE and why the SKIPPED were not.
+SKIPPED is one reason per session, such as \"working\"; equal reasons
+are counted together."
+  (concat
+   (agent-shell-vertico-sidebar--sessions-text done)
+   (when skipped
+     (concat ", skipped "
+             (mapconcat (lambda (reason)
+                          (format "%d %s" (seq-count
+                                           (lambda (other)
+                                             (equal other reason))
+                                           skipped)
+                                  reason))
+                        (seq-uniq (reverse skipped))
+                        ", ")))))
+
+(defun agent-shell-vertico-sidebar--park-batch
+    (buffers label verb apply &optional refuse)
+  "Call APPLY on each of BUFFERS as one undoable action named LABEL.
+
+REFUSE, when given, is called with each session first and returns why
+it is skipped, a word such as \"working\", or nil to go on.  VERB is a
+format string the count of sessions done is put in for the message,
+such as \"Settled %s\".  The marks are cleared after."
+  (let ((done 0) skipped)
+    (agent-shell-vertico-sidebar--recording-undo-all
+     buffers label
+     (lambda ()
+       (dolist (buffer buffers)
+         (if-let* ((reason (and refuse (funcall refuse buffer))))
+             (push reason skipped)
+           (funcall apply buffer)
+           (cl-incf done))))
+     t)
+    (setq agent-shell-vertico-sidebar--marked nil)
+    (agent-shell-vertico-sidebar-refresh)
+    (message "%s" (format verb (agent-shell-vertico-sidebar--batch-message
+                                 done skipped)))))
+
+(defun agent-shell-vertico-sidebar--refuse-working (buffer)
+  "Return \"working\" when BUFFER is busy, the reason a park refuses it."
+  (and (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+       "working"))
+
+(defun agent-shell-vertico-sidebar--toggle-batch
+    (buffers slot on off)
+  "Run the parking action ON or OFF over BUFFERS, by SLOT.
+When any of BUFFERS lacks SLOT, ON runs over those; otherwise OFF runs
+over all, so a batch moves every session the same way.  ON and OFF are
+lists of arguments for `--park-batch' after BUFFERS."
+  (let ((without (seq-remove (lambda (buffer)
+                               (agent-shell-vertico-sidebar--get buffer slot))
+                             buffers)))
+    (if without
+        (apply #'agent-shell-vertico-sidebar--park-batch without on)
+      (apply #'agent-shell-vertico-sidebar--park-batch buffers off))))
+
+(defun agent-shell-vertico-sidebar--session-action-batch
+    (buffers function verb done-verb)
+  "Call FUNCTION on each of BUFFERS after asking the reader once.
+
+VERB and DONE-VERB name the action for the question and the message,
+such as \"Kill\" and \"Killed\".  The question names every session, so
+the questions FUNCTION would ask of each one are answered yes.  A
+session FUNCTION refuses with a `user-error' is skipped and its reason
+reported.  Declining keeps the marks."
+  (when (yes-or-no-p
+         (format "%s %s (%s)? " verb
+                 (agent-shell-vertico-sidebar--sessions-text (length buffers))
+                 (mapconcat #'agent-shell-vertico-sidebar--title buffers
+                            ", ")))
+    (let ((done 0) skipped)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+        (dolist (buffer buffers)
+          (condition-case err
+              (progn
+                (funcall function (buffer-name buffer))
+                (cl-incf done))
+            (user-error
+             (push (format "(%s)" (error-message-string err)) skipped)))))
+      (setq agent-shell-vertico-sidebar--marked nil)
+      (agent-shell-vertico-sidebar-refresh)
+      (message "%s %s" done-verb
+               (agent-shell-vertico-sidebar--batch-message done skipped)))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-undo ()
@@ -6854,28 +7141,54 @@ unread by mistake returns to its old place in the queue.  Repeating walks
 further back.  An action on a session since killed is skipped.  An
 action whose session has changed since, by an event such as a
 permission request ending a snooze or by the reader reading it, is
-refused and dropped: putting it back would hide what changed it."
+refused and dropped: putting it back would hide what changed it.
+
+An action run on marked sessions is one entry, undone at once.  Its
+sessions that changed since are left as they are, and the rest are
+restored."
   (interactive)
   (let ((skipped 0) entry)
     (while (and agent-shell-vertico-sidebar--undo-stack (not entry))
-      (let ((head (pop agent-shell-vertico-sidebar--undo-stack)))
-        (if (buffer-live-p (car head))
-            (setq entry head)
-          (cl-incf skipped))))
+      (pcase-let* ((`(,label ,records ,batch)
+                    (pop agent-shell-vertico-sidebar--undo-stack))
+                   (live (seq-filter (lambda (record)
+                                       (buffer-live-p (car record)))
+                                     records)))
+        (cl-incf skipped (- (length records) (length live)))
+        (when live
+          (setq entry (list label live batch)))))
     (let ((note (if (> skipped 0)
                     (format " (skipped %d on a killed session)" skipped)
                   "")))
       (pcase entry
         ('nil (message "Nothing to undo%s" note))
-        (`(,buffer ,label ,title ,before ,after)
-         (if (not (equal (agent-shell-vertico-sidebar--parking-slots buffer)
-                         after))
-             (message "Cannot undo %s of %s: the session changed since%s"
-                      label title note)
-           (pcase-dolist (`(,slot . ,value) before)
-             (agent-shell-vertico-sidebar--set buffer slot value))
-           (agent-shell-vertico-sidebar-refresh)
-           (message "Undid %s of %s%s" label title note)))))))
+        (`(,label ,records ,batch)
+         (let* ((unchanged
+                 (seq-filter
+                  (pcase-lambda (`(,buffer ,_title ,_before ,after))
+                    (equal (agent-shell-vertico-sidebar--parking-slots buffer)
+                           after))
+                  records))
+                (changed (- (length records) (length unchanged)))
+                (what (lambda (records)
+                        (if batch
+                            (agent-shell-vertico-sidebar--sessions-text
+                             (length records))
+                          (nth 1 (car records))))))
+           (if (null unchanged)
+               (message "Cannot undo %s of %s: %s changed since%s"
+                        label (funcall what records)
+                        (if batch "they" "the session") note)
+             (pcase-dolist (`(,buffer ,_title ,before ,_after) unchanged)
+               (pcase-dolist (`(,slot . ,value) before)
+                 (agent-shell-vertico-sidebar--set buffer slot value)))
+             (agent-shell-vertico-sidebar-refresh)
+             (message "Undid %s of %s%s%s" label (funcall what unchanged)
+                      (if (> changed 0)
+                          (format "; %d changed since, left as it is"
+                                  changed)
+                        "")
+                      note))))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-mark-unread (&optional stay)
@@ -6899,23 +7212,37 @@ Marking the session the selected window shows also moves the reader out
 of it, because the mark is cleared as soon as the reader is seen looking
 at the session again (`agent-shell-vertico-sidebar--leave-unread' says
 where they land).  With prefix argument STAY, mark it and stay; the mark
-then holds only until the window is next selected."
+then holds only until the window is next selected.
+
+In the sidebar with sessions marked, mark every one of them unread, in
+the order they are drawn, except the working ones."
   (interactive "P")
-  (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
-         (status (agent-shell-vertico-sidebar--raw-status buffer)))
-    (when (eq status 'busy)
-      (user-error "Session %s is still working" (buffer-name buffer)))
-    (agent-shell-vertico-sidebar--recording-undo
-     buffer "mark unread"
-     (lambda ()
-       (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-       (agent-shell-vertico-sidebar--set buffer 'settled nil)
-       (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))))
-    (agent-shell-vertico-sidebar-refresh)
-    (message "Session %s marked unread" (buffer-name buffer))
-    (when (and (not stay)
-               (eq (agent-shell-vertico--current-session) buffer))
-      (agent-shell-vertico-sidebar--leave-unread buffer))))
+  (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
+      (let ((now (float-time)))
+        (agent-shell-vertico-sidebar--park-batch
+         marked "mark unread" "Marked %s unread"
+         (lambda (buffer)
+           ;; Apart by a microsecond, so the queue keeps the drawn order.
+           (setq now (+ now 1e-6))
+           (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+           (agent-shell-vertico-sidebar--set buffer 'settled nil)
+           (agent-shell-vertico-sidebar--mark-unread-at buffer now))
+         #'agent-shell-vertico-sidebar--refuse-working))
+    (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
+           (status (agent-shell-vertico-sidebar--raw-status buffer)))
+      (when (eq status 'busy)
+        (user-error "Session %s is still working" (buffer-name buffer)))
+      (agent-shell-vertico-sidebar--recording-undo
+       buffer "mark unread"
+       (lambda ()
+         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+         (agent-shell-vertico-sidebar--set buffer 'settled nil)
+         (agent-shell-vertico-sidebar--mark-unread-at buffer (float-time))))
+      (agent-shell-vertico-sidebar-refresh)
+      (message "Session %s marked unread" (buffer-name buffer))
+      (when (and (not stay)
+                 (eq (agent-shell-vertico--current-session) buffer))
+        (agent-shell-vertico-sidebar--leave-unread buffer)))))
 
 (defun agent-shell-vertico-sidebar--leave-unread (buffer)
   "Move the reader out of session BUFFER, which they just marked unread.
@@ -6955,16 +7282,28 @@ New output marks the session again, which includes a turn that finishes
 after this and a background stream that goes quiet after this.
 
 A session working through a burst carries no mark to see: the burst
-cleared it, and marks the session again when it settles."
+cleared it, and marks the session again when it settles.
+
+In the sidebar with sessions marked, mark every one of them read."
   (interactive)
-  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
-    (if (not (agent-shell-vertico-sidebar--get buffer 'unread))
-        (message "Session %s has nothing unread" (buffer-name buffer))
-      (agent-shell-vertico-sidebar--recording-undo
-       buffer "mark read"
-       (lambda () (agent-shell-vertico-sidebar--set buffer 'unread nil)))
-      (agent-shell-vertico-sidebar-refresh)
-      (message "Session %s marked read" (buffer-name buffer)))))
+  (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
+      (if-let* ((unread (seq-filter
+                         (lambda (buffer)
+                           (agent-shell-vertico-sidebar--get buffer 'unread))
+                         marked)))
+          (agent-shell-vertico-sidebar--park-batch
+           unread "mark read" "Marked %s read"
+           (lambda (buffer)
+             (agent-shell-vertico-sidebar--set buffer 'unread nil)))
+        (message "No marked session has anything unread"))
+    (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+      (if (not (agent-shell-vertico-sidebar--get buffer 'unread))
+          (message "Session %s has nothing unread" (buffer-name buffer))
+        (agent-shell-vertico-sidebar--recording-undo
+         buffer "mark read"
+         (lambda () (agent-shell-vertico-sidebar--set buffer 'unread nil)))
+        (agent-shell-vertico-sidebar-refresh)
+        (message "Session %s marked read" (buffer-name buffer))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-sidebar-subagents ()
@@ -7004,27 +7343,42 @@ agent cannot go on without the reader; so is running this again, or
 back with the age it had.
 
 A working session is refused, because it has not yet said anything to
-put off."
+put off.
+
+In the sidebar with sessions marked, snooze every one of them that is
+not snoozed, the working ones aside, or wake them all when all are."
   (interactive)
-  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
-    (cond
-     ((agent-shell-vertico-sidebar--get buffer 'snoozed)
-      (agent-shell-vertico-sidebar--recording-undo
-       buffer "wake"
-       (lambda () (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
-      (agent-shell-vertico-sidebar-refresh)
-      (message "Session %s woken" (buffer-name buffer)))
-     ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
-      (user-error "Session %s is still working" (buffer-name buffer)))
-     (t
-      (agent-shell-vertico-sidebar--recording-undo
-       buffer "snooze"
-       (lambda ()
-         (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
-         (agent-shell-vertico-sidebar--set buffer 'pinned nil)
-         (agent-shell-vertico-sidebar--set buffer 'settled nil)))
-      (agent-shell-vertico-sidebar-refresh)
-      (message "Session %s snoozed" (buffer-name buffer))))))
+  (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
+      (agent-shell-vertico-sidebar--toggle-batch
+       marked 'snoozed
+       (list "snooze" "Snoozed %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
+               (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+               (agent-shell-vertico-sidebar--set buffer 'settled nil))
+             #'agent-shell-vertico-sidebar--refuse-working)
+       (list "wake" "Woke %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'snoozed nil))))
+    (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+      (cond
+       ((agent-shell-vertico-sidebar--get buffer 'snoozed)
+        (agent-shell-vertico-sidebar--recording-undo
+         buffer "wake"
+         (lambda () (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
+        (agent-shell-vertico-sidebar-refresh)
+        (message "Session %s woken" (buffer-name buffer)))
+       ((eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+        (user-error "Session %s is still working" (buffer-name buffer)))
+       (t
+        (agent-shell-vertico-sidebar--recording-undo
+         buffer "snooze"
+         (lambda ()
+           (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
+           (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+           (agent-shell-vertico-sidebar--set buffer 'settled nil)))
+        (agent-shell-vertico-sidebar-refresh)
+        (message "Session %s snoozed" (buffer-name buffer)))))))
 
 (defun agent-shell-vertico-sidebar--settle-next (buffer)
   "Return the session to show once BUFFER is settled, or nil.
@@ -7069,41 +7423,58 @@ moves to the row drawn after it.
 Run on a settled session, this un-settles it where it stands, and
 `agent-shell-vertico-sidebar-auto-settle-after' then leaves it alone
 until its next turn.  A working session is refused: it has not
-finished."
+finished.
+
+In the sidebar with sessions marked, settle every one of them that is
+not settled, the working ones aside, or un-settle them all when all
+are.  Point stays where it is."
   (interactive "P")
-  (let* ((in-sidebar (derived-mode-p 'agent-shell-vertico-sidebar-mode))
-         (buffer (agent-shell-vertico-sidebar--attention-target)))
-    (if (agent-shell-vertico-sidebar--get buffer 'settled)
-        (progn
+  (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
+      (agent-shell-vertico-sidebar--toggle-batch
+       marked 'settled
+       (list "settle" "Settled %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'settled (float-time))
+               (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+               (agent-shell-vertico-sidebar--set buffer 'snoozed nil))
+             #'agent-shell-vertico-sidebar--refuse-working)
+       (list "unsettle" "Unsettled %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'settled nil)
+               (agent-shell-vertico-sidebar--set buffer 'unsettled t))))
+    (let* ((in-sidebar (derived-mode-p 'agent-shell-vertico-sidebar-mode))
+           (buffer (agent-shell-vertico-sidebar--attention-target)))
+      (if (agent-shell-vertico-sidebar--get buffer 'settled)
+          (progn
+            (agent-shell-vertico-sidebar--recording-undo
+             buffer "unsettle"
+             (lambda ()
+               (agent-shell-vertico-sidebar--set buffer 'settled nil)
+               (agent-shell-vertico-sidebar--set buffer 'unsettled t)))
+            (agent-shell-vertico-sidebar-refresh)
+            (message "Session %s unsettled" (buffer-name buffer)))
+        (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
+          (user-error "Session %s is still working" (buffer-name buffer)))
+        ;; Asked before settling moves the row to the bottom.
+        (let* ((leave (and (not in-sidebar) (not stay)
+                           (eq (agent-shell-vertico--current-session) buffer)))
+               (next (and leave
+                          (agent-shell-vertico-sidebar--settle-next buffer)))
+               (neighbour (and in-sidebar
+                               (agent-shell-vertico-sidebar--row-neighbour
+                                buffer))))
           (agent-shell-vertico-sidebar--recording-undo
-           buffer "unsettle"
+           buffer "settle"
            (lambda ()
-             (agent-shell-vertico-sidebar--set buffer 'settled nil)
-             (agent-shell-vertico-sidebar--set buffer 'unsettled t)))
+             (agent-shell-vertico-sidebar--set buffer 'settled (float-time))
+             (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+             (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
           (agent-shell-vertico-sidebar-refresh)
-          (message "Session %s unsettled" (buffer-name buffer)))
-      (when (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy)
-        (user-error "Session %s is still working" (buffer-name buffer)))
-      ;; Asked before settling moves the row to the bottom.
-      (let* ((leave (and (not in-sidebar) (not stay)
-                         (eq (agent-shell-vertico--current-session) buffer)))
-             (next (and leave
-                        (agent-shell-vertico-sidebar--settle-next buffer)))
-             (neighbour (and in-sidebar
-                             (agent-shell-vertico-sidebar--row-neighbour
-                              buffer))))
-        (agent-shell-vertico-sidebar--recording-undo
-         buffer "settle"
-         (lambda ()
-           (agent-shell-vertico-sidebar--set buffer 'settled (float-time))
-           (agent-shell-vertico-sidebar--set buffer 'pinned nil)
-           (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
-        (agent-shell-vertico-sidebar-refresh)
-        (message "Session %s settled" (buffer-name buffer))
-        (cond (neighbour (agent-shell-vertico-sidebar--goto-node
-                          (cons 'session neighbour)))
-              (next (agent-shell-vertico-sidebar--jump-display next))
-              (leave (agent-shell-vertico-sidebar-focus)))))))
+          (message "Session %s settled" (buffer-name buffer))
+          (cond (neighbour (agent-shell-vertico-sidebar--goto-node
+                            (cons 'session neighbour)))
+                (next (agent-shell-vertico-sidebar--jump-display next))
+                (leave (agent-shell-vertico-sidebar-focus))))))))
 
 (defun agent-shell-vertico-sidebar--auto-settle-p (buffer now after)
   "Return non-nil when BUFFER has been idle AFTER seconds before NOW.
@@ -7178,23 +7549,37 @@ gave one."
 A pinned session sorts above every other session, whatever the sort,
 and the state and project views draw it under a Pinned header at the
 top.  It keeps its state: the header still counts it in its own band.
-Pinning wakes a snoozed session, and snoozing unpins one."
+Pinning wakes a snoozed session, and snoozing unpins one.
+
+In the sidebar with sessions marked, pin every one of them that is not
+pinned, or unpin them all when all are."
   (interactive)
-  (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
-    (if (agent-shell-vertico-sidebar--get buffer 'pinned)
-        (progn
-          (agent-shell-vertico-sidebar--recording-undo
-           buffer "unpin"
-           (lambda () (agent-shell-vertico-sidebar--set buffer 'pinned nil)))
-          (message "Session %s unpinned" (buffer-name buffer)))
-      (agent-shell-vertico-sidebar--recording-undo
-       buffer "pin"
-       (lambda ()
-         (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
-         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
-         (agent-shell-vertico-sidebar--set buffer 'settled nil)))
-      (message "Session %s pinned" (buffer-name buffer)))
-    (agent-shell-vertico-sidebar-refresh)))
+  (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
+      (agent-shell-vertico-sidebar--toggle-batch
+       marked 'pinned
+       (list "pin" "Pinned %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
+               (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+               (agent-shell-vertico-sidebar--set buffer 'settled nil)))
+       (list "unpin" "Unpinned %s"
+             (lambda (buffer)
+               (agent-shell-vertico-sidebar--set buffer 'pinned nil))))
+    (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
+      (if (agent-shell-vertico-sidebar--get buffer 'pinned)
+          (progn
+            (agent-shell-vertico-sidebar--recording-undo
+             buffer "unpin"
+             (lambda () (agent-shell-vertico-sidebar--set buffer 'pinned nil)))
+            (message "Session %s unpinned" (buffer-name buffer)))
+        (agent-shell-vertico-sidebar--recording-undo
+         buffer "pin"
+         (lambda ()
+           (agent-shell-vertico-sidebar--set buffer 'pinned (float-time))
+           (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
+           (agent-shell-vertico-sidebar--set buffer 'settled nil)))
+        (message "Session %s pinned" (buffer-name buffer)))
+      (agent-shell-vertico-sidebar-refresh))))
 
 (defconst agent-shell-vertico-sidebar--peek-buffer "*Agent Shell Peek*"
   "Buffer `agent-shell-vertico-sidebar-peek' shows a session in.")

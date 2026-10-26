@@ -1101,6 +1101,50 @@ unread, or the reader reading it, and putting the old values back would
 hide what that change says. Undo restores the record only; a reader that
 mark unread moved out of a session stays where they landed.
 
+**Marking sessions.** T3 Code's multi-select, done as Dired marks rather
+than mu4e's pending actions: batches here are one action over a few
+sessions, every parking action is already immediate and undoable, and a
+pending mark would go stale when an event changed its session before
+the execute key. `--marked` is the sidebar's buffer-local list of marked
+buffers, not a session slot, because a mark is a selection rather than a
+fact about the session; it is not saved, and every render drops a session
+no longer live. `agent-shell-vertico-sidebar-mark` (`m`, also under Evil)
+toggles the row at point and moves down; on a header it marks every
+session `--header-sessions` finds under it, folded or not, filtered as
+the render filters, or unmarks them when all are marked
+(`--toggle-marks`), and an active region (Evil `V`) works the same way
+over the rows it covers. `M` unmarks all. `m`, `M`, `t` and `T` were set
+mode, set model, traffic and transcript, which Bill rarely used: their
+commands stay for `M-x` and the field activation, and `t`/`T` are now
+unbound. A marked
+title is drawn on `-marked` (inherits `lazy-highlight`), prepended last in
+`--session-lines` so its background wins while unread's bold survives;
+no glyph, since one beside the status star read badly, and not `region`
+or `highlight`, which the region and hl-line already draw. The header
+line, otherwise only the filter's, counts the marks and how many have no
+row drawn (`--marks-header-line`, set after the rows are inserted), since
+an action reaches a hidden mark too (`--marked-sessions` reads
+`--display-order`, as the blind jumps do).
+
+While `--batch-targets` answers, which it does only in the sidebar, the
+parking commands and the destructive ones act on every marked session
+and then clear the marks. Parking goes one way for all
+(`--toggle-batch`): the sessions lacking the slot get it, or, when none
+lacks it, all lose it; `--park-batch` skips what the single command
+refuses (`--refuse-working`) and says so (`Snoozed 1 session, skipped 1
+working`), and mark unread stamps each session a microsecond apart so the
+queue keeps the drawn order. No batch moves the reader or point. Kill,
+archive, interrupt and restart (`--session-action-batch`) ask one
+`yes-or-no-p` naming the sessions and then answer every question the
+action asks of each with yes, by binding `yes-or-no-p` and `y-or-n-p`
+around the loop: kill and archive confirm per session and interrupt asks
+through `agent-shell-interrupt-confirmed-p`. A `user-error` skips that
+session with its reason. Undo entries became `(LABEL RECORDS BATCH)`, one
+record per session changed (`--recording-undo-all`); undoing a batch
+restores the sessions unchanged since, names the rest by count, and drops
+the entry either way. Other commands, rename and peek among them, ignore
+marks.
+
 **Work behind a prompt.** `background` is an idle session with a subagent or an
 async task still running: `agent-shell-status` calls it ready, because no turn
 is in flight, and it does take a prompt, which is what separates it from `busy`.
