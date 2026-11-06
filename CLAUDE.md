@@ -1531,10 +1531,16 @@ window reserves for it. Both are a `display` spec on one space used as a
 `line-prefix`, so neither costs a column of the text area itself.
 `--apply-marker-space` reserves the margin column, or a left fringe at least
 as wide as the bitmap (`--fringe-bitmap-width`) in graphical sidebar
-windows. It runs before the render measures `window-body-width`, which
+windows. It runs before the render measures the row width, which
 excludes both areas. Margin changes re-show the buffer, because that is
 when a window reads `left-margin-width`; an unchanged width leaves point and
-window-start alone. Fringe repair uses `set-window-fringes` instead,
+window-start alone. A restored layout can also bring back a window margin
+the buffer no longer asks for, which is set back with `set-window-margins`.
+The row width is `--text-width`, `window-max-chars-per-line` rather than
+`window-body-width`: a window with no right fringe, every terminal window
+and a layout saved that way, gives its last column to the truncation glyph,
+and rows laid out to the body width lost the last character of their age.
+Fringe repair uses `set-window-fringes` instead,
 preserving wider left fringes, the right fringe's width, point and
 window-start; what to set is decided by `--marker-fringes`, a plain function
 of `window-fringes`'s answer, because batch Emacs has no graphical frame and

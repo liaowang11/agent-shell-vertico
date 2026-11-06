@@ -3065,6 +3065,9 @@ A window reads `left-margin-width' when the buffer is put there, so a
 margin change reaches an existing window by re-showing the buffer.
 Doing nothing when the width already agrees keeps that out of ordinary
 renders: re-showing resets what the render is careful to restore.
+A window whose own margin disagrees while the buffer's value already
+agrees, which is how a restored layout brings back the margin it saved,
+is set with `set-window-margins' instead, which leaves point alone.
 
 A fringe marker needs the bitmap's width in every graphical window
 showing the sidebar.  A restored layout can carry a zero-width
@@ -3078,20 +3081,25 @@ narrow left fringe, keeping the right fringe's width and the rest;
          (changed margin-changed))
     (when margin-changed
       (setq-local left-margin-width width))
-    (when (or margin-changed fringe-p)
-      (dolist (window (get-buffer-window-list nil nil t))
-        ;; Re-showing for a margin change can reset non-persistent fringes.
-        ;; Read them first so fringe markers retain the custom settings.
-        (let ((fringes (and fringe-p
-                            (display-graphic-p (window-frame window))
-                            (window-fringes window))))
-          (when margin-changed
-            (set-window-buffer window (current-buffer)))
-          (when-let* ((args (and fringes
-                                 (agent-shell-vertico-sidebar--marker-fringes
-                                  fringes margin-changed))))
-            (when (apply #'set-window-fringes window args)
-              (setq changed t))))))
+    (dolist (window (get-buffer-window-list nil nil t))
+      ;; Re-showing for a margin change can reset non-persistent fringes.
+      ;; Read them first so fringe markers retain the custom settings.
+      (let ((fringes (and fringe-p
+                          (display-graphic-p (window-frame window))
+                          (window-fringes window))))
+        (cond
+         (margin-changed
+          (set-window-buffer window (current-buffer)))
+         ;; A restored layout sets a window's margins from what it saved,
+         ;; whatever the buffer asks for.
+         ((not (eql (or (car (window-margins window)) 0) width))
+          (set-window-margins window width (cdr (window-margins window)))
+          (setq changed t)))
+        (when-let* ((args (and fringes
+                               (agent-shell-vertico-sidebar--marker-fringes
+                                fringes margin-changed))))
+          (when (apply #'set-window-fringes window args)
+            (setq changed t)))))
     changed))
 
 (defun agent-shell-vertico-sidebar--insert-row (lines kind node &optional depth)
@@ -3665,7 +3673,7 @@ every session it holds."
     ;; let the jump redraw once its key is read.
     (setq agent-shell-vertico-sidebar--dirty t)
     (cl-return-from agent-shell-vertico-sidebar--render))
-  ;; Reserve fringes and margins before measuring `window-body-width':
+  ;; Reserve fringes and margins before measuring the text width:
   ;; neither is part of the text area the rows are laid out to.
   (agent-shell-vertico-sidebar--apply-marker-space)
   (let* ((agent-shell-vertico-sidebar--render-children
@@ -3691,7 +3699,7 @@ every session it holds."
          ;; a sidebar on another frame at the fallback width.
          (width (or (when-let* ((window (get-buffer-window (current-buffer)
                                                            'visible)))
-                      (window-body-width window))
+                      (agent-shell-vertico-sidebar--text-width window))
                     agent-shell-vertico-sidebar-width))
          ;; `erase-buffer' invalidates raw positions.  Keep only the stable
          ;; node, its line offset and ordinal fallback, for point and for
@@ -3826,6 +3834,14 @@ every session it holds."
           (agent-shell-vertico-sidebar--ensure-age-refresh snapshots t))
       (setq agent-shell-vertico-sidebar--render-snapshots nil))))
 
+(defun agent-shell-vertico-sidebar--text-width (window)
+  "Return how many columns of a row WINDOW can draw.
+That is `window-max-chars-per-line', not `window-body-width': a window
+with no right fringe, which every terminal window is and a restored
+layout can be, gives its last column to the truncation glyph, so a row
+laid out to the body width loses its last character, the end of the age."
+  (window-max-chars-per-line window))
+
 (defun agent-shell-vertico-sidebar--clamp-width (width frame-width)
   "Cap WIDTH to the configured share of FRAME-WIDTH's columns.
 The cap stops at 16 columns, below which the list is unreadable, and
@@ -3877,7 +3893,7 @@ from."
   (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
     (when-let* ((window (get-buffer-window sidebar frame)))
       (with-current-buffer sidebar
-        (let ((width (window-body-width window)))
+        (let ((width (agent-shell-vertico-sidebar--text-width window)))
           (when (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
                      (or (not (equal
                                width
@@ -3895,7 +3911,9 @@ from."
                          (when-let* ((window (get-buffer-window sidebar frame)))
                            (agent-shell-vertico-sidebar--enforce-window-width
                             window)
-                           (let ((width (window-body-width window)))
+                           (let ((width
+                                  (agent-shell-vertico-sidebar--text-width
+                                   window)))
                              (when (and
                                     (derived-mode-p
                                      'agent-shell-vertico-sidebar-mode)

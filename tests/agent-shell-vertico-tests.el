@@ -3333,7 +3333,7 @@ and `window-state-put', which only carry parameters marked writable in
       (setq-local agent-shell-vertico-sidebar--last-rendered-width 20)
       (cl-letf (((symbol-function 'get-buffer-window)
                  (lambda (&rest _args) (selected-window)))
-                ((symbol-function 'window-body-width)
+                ((symbol-function 'agent-shell-vertico-sidebar--text-width)
                  (lambda (&rest _args) 30))
                 ((symbol-function 'run-with-idle-timer)
                  (lambda (_delay _repeat function &rest _args)
@@ -3903,6 +3903,55 @@ have set it before it measures the body width the rows are laid out to."
               (agent-shell-vertico-sidebar--render)
               (should-not (car (window-margins window))))))))))
 
+
+(ert-deftest agent-shell-vertico-sidebar-rows-fit-the-drawable-columns ()
+  "No row is wider than the columns the window can draw.
+
+A window with no right fringe, as a terminal frame or a restored layout
+leaves it, gives its last column to the truncation glyph, which
+`window-body-width' still counts; a row laid out to that width lost the
+last character of its age."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((session "Codex Agent @ long" "/work/long/"
+                '((:session . ((:id . "l")
+                               (:title . "A title long enough to be cut")))))
+       )
+    (let ((agent-shell-test-buffers (list session))
+          (agent-shell-vertico-sidebar-marker-method 'fringe))
+      (agent-shell-vertico-tests--with-sidebar
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+            (set-window-fringes window 8 0)
+            (agent-shell-vertico-sidebar--render)
+            (let ((limit (window-max-chars-per-line window))
+                  (widest 0))
+              (should (< limit (window-body-width window)))
+              (save-excursion
+                (goto-char (point-min))
+                (while (not (eobp))
+                  (end-of-line)
+                  (setq widest (max widest (current-column)))
+                  (forward-line 1)))
+              (should (= widest limit)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-marker-space-clears-a-stale-margin ()
+  "A window margin the buffer did not ask for is taken back.
+
+Restoring a saved layout sets a window's margins from the layout, so a
+sidebar last saved under the margin method came back with a margin
+column the fringe method never uses."
+  (let ((agent-shell-test-buffers nil)
+        (agent-shell-vertico-sidebar-marker-method 'fringe))
+    (agent-shell-vertico-tests--with-sidebar
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (agent-shell-vertico-sidebar--display-buffer)))
+          (should-not (car (window-margins window)))
+          (set-window-margins window 1)
+          (should (agent-shell-vertico-sidebar--apply-marker-space))
+          (should-not (car (window-margins window)))
+          (should-not (agent-shell-vertico-sidebar--apply-marker-space)))))))
 (ert-deftest agent-shell-vertico-sidebar-marker-fringes-widens-only-narrow ()
   "Only a left fringe narrower than the bitmap is widened.
 
@@ -6589,7 +6638,8 @@ ALPHA is working on a long prompt, so its detail line is cut too."
                  (lambda (format &rest args)
                    (setq echoed (and format (apply #'format format args)))))
                 ((symbol-function 'current-message) (lambda () nil))
-                ((symbol-function 'window-body-width) (lambda (&rest _) 80)))
+                ((symbol-function 'agent-shell-vertico-sidebar--text-width)
+                 (lambda (&rest _) 80)))
         (agent-shell-vertico-sidebar--render)
         (agent-shell-vertico-tests--goto-first-row)
         (agent-shell-vertico-sidebar--echo-row)
