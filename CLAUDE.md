@@ -708,9 +708,10 @@ has no header to unfold, so a session arriving in Needs input found it
 folded behind a fold nobody could see.
 The header counts, folded or open, which `--header-counts` says (see the
 header paragraph below). The project view puts a Pinned section above the
-projects (`--split-pinned`) and a Settled one below them, holding the
-families whose every member is settled (`--project-view-parts`); both fold
-with the projects at the header level. Its projects start open
+projects (`--split-pinned`) and Snoozed and Settled ones below them,
+holding the families whose `--family-section` is that band
+(`--project-view-parts`), so each parking state has a header of its own in
+both views; all three fold with the projects at the header level. Its projects start open
 (`agent-shell-vertico-sidebar-expand-by-default`). `--display-order`,
 `--reveal-session`, `--view-level` and `--set-view-level` each have a state
 arm, and each asks `--family-section` of a root, so stepping, revealing and
@@ -1015,11 +1016,10 @@ it is one every motion and row count would have to step over. The newline
 carries it with `:extend`, since rows are not padded; its colour is the
 foreground of `-snoozed-rule`, because a plain overline takes each glyph's
 colour. A terminal
-draws no overline, so there the split is the order alone. A project whose
-sessions are all snoozed sorts below the others, since `--sort-groups` compares
-groups by their first session. In the state view the snoozed sessions are a
-section of their own, folded by default, and the rule is not drawn there: it
-marks a snoozed row only below an awake sibling. What ends a
+draws no overline, so there the split is the order alone. In both views the
+snoozed families are a section of their own, folded by default, so the rule
+is drawn only within a family: a snoozed child below an awake sibling, or a
+snoozed root whose awake child keeps the family in its project. What ends a
 snooze is dealing with the session or a new ask: `input-submitted`, a
 `permission-request` or an `error` (the agent cannot go on without the reader),
 `mark-unread`, or the command again. Looking at it, `mark-read`, a finished turn

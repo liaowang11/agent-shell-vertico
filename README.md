@@ -121,7 +121,8 @@ Code's agent view, and it has two views; `=` switches between them:
   folded (`agent-shell-vertico-sidebar-folded-sections`); an open section
   shows every session it holds.
 - **project** puts each session under a foldable project header, with a
-  Pinned section above the projects and a Settled section below them.
+  Pinned section above the projects and Snoozed and Settled sections below
+  them.
   Projects start open (`agent-shell-vertico-sidebar-expand-by-default`).
 
 `agent-shell-vertico-sidebar-group-by` picks the view: `state` or `project`.

@@ -18718,30 +18718,41 @@ last line has no newline, since the render drops the final one."
         (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-rule-inside-a-project ()
-  "Grouped, the rule splits a project's own sessions."
+  "Grouped, the rule splits a parent's children, not the project's roots.
+A snoozed root leaves its project for the Snoozed section, so only a
+snoozed child below an awake sibling draws the rule."
   (agent-shell-vertico-tests--with-session-buffers
-      ((alpha "Codex Agent @ shared" "/work/shared/"
+      ((parent "Codex Agent @ shared" "/work/shared/"
+               '((:session . ((:id . "p") (:title . "Parent")))))
+       (alpha "Codex Agent @ shared<2>" "/work/shared/"
               '((:session . ((:id . "a") (:title . "Alpha")))))
-       (beta "Codex Agent @ shared<2>" "/work/shared/"
-             '((:session . ((:id . "b") (:title . "Beta"))))))
-    (let ((agent-shell-test-buffers (list alpha beta))
-          (agent-shell-test-statuses (list (cons alpha 'ready)
-                                           (cons beta 'ready)))
+       (beta "Codex Agent @ shared<3>" "/work/shared/"
+             '((:session . ((:id . "b") (:title . "Beta")))))
+       (gamma "Codex Agent @ shared<4>" "/work/shared/"
+              '((:session . ((:id . "g") (:title . "Gamma"))))))
+    (let ((agent-shell-test-buffers (list parent alpha beta gamma))
+          (agent-shell-test-statuses (list (cons parent 'ready)
+                                           (cons alpha 'ready)
+                                           (cons beta 'ready)
+                                           (cons gamma 'ready)))
           (agent-shell-vertico-sidebar-group-by 'project)
-          (agent-shell-vertico-sidebar-expand-by-default t))
-      (agent-shell-vertico-tests--snooze alpha)
-      (with-temp-buffer
-        (agent-shell-vertico-sidebar-mode)
-        (agent-shell-vertico-sidebar--render)
-        (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
-        (should-not (agent-shell-vertico-tests--snooze-separator-p
-                     "Beta"))
-        ;; With every session snoozed there is nothing to split off.
-        (agent-shell-vertico-tests--snooze beta)
-        (agent-shell-vertico-sidebar--render)
-        (should-not (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
-        (should-not (agent-shell-vertico-tests--snooze-separator-p
-                     "Beta"))))))
+          (agent-shell-vertico-sidebar-expand-by-default t)
+          (agent-shell-vertico-sidebar-folded-sections nil))
+      (agent-shell-vertico-tests--with-side-links
+          (list (cons alpha parent) (cons beta parent))
+        (agent-shell-vertico-tests--snooze alpha)
+        (agent-shell-vertico-tests--snooze gamma)
+        (with-temp-buffer
+          (agent-shell-vertico-sidebar-mode)
+          (agent-shell-vertico-sidebar--render)
+          (should (agent-shell-vertico-tests--snooze-separator-p "Alpha"))
+          (should-not (agent-shell-vertico-tests--snooze-separator-p "Beta"))
+          ;; The snoozed root is under Snoozed, with no rule over it.
+          (goto-char (point-min))
+          (should (< (search-forward "Parent") (search-forward "Snoozed")
+                     (search-forward "Gamma")))
+          (should-not (agent-shell-vertico-tests--snooze-separator-p
+                       "Gamma")))))))
 
 (ert-deftest agent-shell-vertico-sidebar-snooze-survives-reading-and-output ()
   "Looking at a snoozed session, or its next turn, leaves it snoozed.
@@ -20968,6 +20979,42 @@ No window changes."
                        (list beta gamma alpha)))
         (should (equal (agent-shell-vertico-sidebar--display-order)
                        (list beta gamma alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-snooze-project-view ()
+  "The project view draws snoozed sessions under Snoozed, above Settled.
+A snoozed session leaves its project as a settled one does, so the
+three parking states are each drawn under a header of their own."
+  (agent-shell-vertico-tests--with-three-sessions
+    (let ((agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default t)
+          (agent-shell-vertico-sidebar-folded-sections nil))
+      (agent-shell-vertico-tests--snooze alpha)
+      (agent-shell-vertico-tests--settle beta t)
+      (agent-shell-vertico-tests--with-sidebar
+        (agent-shell-vertico-sidebar--render)
+        (let ((headers (agent-shell-vertico-tests--header-lines)))
+          (should (= (length headers) 3))
+          (should (string-prefix-p "Snoozed · 1" (nth 1 headers)))
+          (should (string-prefix-p "Settled · 1" (nth 2 headers))))
+        (should (equal (mapcar #'car
+                               (agent-shell-vertico-sidebar--session-rows))
+                       (list gamma alpha beta)))
+        (should (equal (agent-shell-vertico-sidebar--display-order)
+                       (list gamma alpha beta)))
+        (should (agent-shell-vertico-sidebar--goto-node
+                 (cons 'section 'snoozed)))
+        (agent-shell-vertico-sidebar-mark)
+        (should (equal (agent-shell-vertico-sidebar--marked-sessions)
+                       (list alpha)))
+        (agent-shell-vertico-sidebar-unmark-all)
+        ;; Folded, revealing the session opens the section.
+        (agent-shell-vertico-sidebar--set-section-folded 'snoozed t)
+        (agent-shell-vertico-sidebar--render)
+        (agent-shell-vertico-sidebar--reveal-session alpha)
+        (should (eq (agent-shell-vertico-sidebar--session-at-point) alpha))
+        ;; The header level folds it with the projects.
+        (agent-shell-vertico-sidebar--set-view-level 'projects)
+        (should (agent-shell-vertico-sidebar--section-folded-p 'snoozed))))))
 
 (ert-deftest agent-shell-vertico-sidebar-auto-settle ()
   "With the option set, a session idle long enough is settled at render.

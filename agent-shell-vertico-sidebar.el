@@ -3346,18 +3346,23 @@ the projects."
     (cons (nreverse pinned) (nreverse rest))))
 
 (defun agent-shell-vertico-sidebar--project-view-parts (roots)
-  "Return (PINNED REST SETTLED), ROOTS as the project view draws them.
-The pinned roots go under Pinned above the projects, the families whose
-every member is settled under Settled below them, the rest in their
-projects."
+  "Return (PINNED REST SNOOZED SETTLED), ROOTS as the project view draws them.
+The pinned roots go under Pinned above the projects, and below them the
+families the reader has parked: under Snoozed those whose section is
+Snoozed, every member snoozed or settled and one at least snoozed, and
+under Settled those whose every member is settled.  The rest stay in
+their projects.  Each parking state is thus drawn under a header of its
+own, as the state view draws it."
   (pcase-let ((`(,pinned . ,rest)
                (agent-shell-vertico-sidebar--split-pinned roots)))
-    (let ((settled-p (lambda (root)
-                       (eq (agent-shell-vertico-sidebar--family-section root)
-                           'settled))))
-      (list pinned
-            (seq-remove settled-p rest)
-            (seq-filter settled-p rest)))))
+    (let (projects snoozed settled)
+      (dolist (root rest)
+        (pcase (agent-shell-vertico-sidebar--family-section root)
+          ('snoozed (push root snoozed))
+          ('settled (push root settled))
+          (_ (push root projects))))
+      (list pinned (nreverse projects) (nreverse snoozed)
+            (nreverse settled)))))
 
 (defun agent-shell-vertico-sidebar--section-folded-p (section)
   "Return non-nil when state SECTION hides its rows in this sidebar."
@@ -3784,7 +3789,7 @@ every session it holds."
                  (agent-shell-vertico-sidebar--insert-section
                   section members width)))
               ('project
-               (pcase-let ((`(,pinned ,rest ,settled)
+               (pcase-let ((`(,pinned ,rest ,snoozed ,settled)
                             (agent-shell-vertico-sidebar--project-view-parts
                              roots)))
                  (when pinned
@@ -3799,6 +3804,12 @@ every session it holds."
                            agent-shell-vertico-sidebar-sort-by))
                    (agent-shell-vertico-sidebar--insert-project
                     (car group) (cdr group) width))
+                 (when snoozed
+                   (agent-shell-vertico-sidebar--insert-section
+                    'snoozed
+                    (agent-shell-vertico-sidebar--sort-buffers
+                     snoozed agent-shell-vertico-sidebar-sort-by)
+                    width))
                  (when settled
                    (agent-shell-vertico-sidebar--insert-section
                     'settled
@@ -6178,8 +6189,8 @@ In the state view the header level folds every section and the other
 levels unfold every section.  Putting
 back each section's default fold instead would leave a sidebar whose
 sessions all sit in a section that starts folded showing headers alone
-at every level.  The project view folds or unfolds its Pinned and
-Settled sections with the projects, for the same reason.
+at every level.  The project view folds or unfolds its Pinned, Snoozed
+and Settled sections with the projects, for the same reason.
 
 A filtered sidebar draws every header open, so there no fold is
 written: the levels would change nothing on screen, and the folds are
@@ -6191,8 +6202,8 @@ what the sidebar shows once the filter is cleared."
        (setq agent-shell-vertico-sidebar-expand-by-default (not folded))
        (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
          (clrhash agent-shell-vertico-sidebar--expanded-projects))
-       (agent-shell-vertico-sidebar--set-section-folded 'pinned folded)
-       (agent-shell-vertico-sidebar--set-section-folded 'settled folded))
+       (dolist (section '(pinned snoozed settled))
+         (agent-shell-vertico-sidebar--set-section-folded section folded)))
       ('state
        (dolist (section agent-shell-vertico-sidebar--sections)
          (agent-shell-vertico-sidebar--set-section-folded
@@ -6973,11 +6984,12 @@ only the families it keeps count, as only they are drawn."
              (alist-get node (agent-shell-vertico-sidebar--group-by-section
                               roots)))
             ('project
-             (pcase-let ((`(,pinned ,rest ,settled)
+             (pcase-let ((`(,pinned ,rest ,snoozed ,settled)
                           (agent-shell-vertico-sidebar--project-view-parts
                            roots)))
                (pcase (cons kind node)
                  ('(section . pinned) pinned)
+                 ('(section . snoozed) snoozed)
                  ('(section . settled) settled)
                  (`(project . ,root)
                   (cdr (assoc root (agent-shell-vertico-sidebar--group-buffers
@@ -8371,7 +8383,7 @@ should not depend on how the sidebar was left."
                             roots sort-by))))
                         ('project
                          (pcase-let
-                             ((`(,pinned ,rest ,settled)
+                             ((`(,pinned ,rest ,snoozed ,settled)
                                (agent-shell-vertico-sidebar--project-view-parts
                                 roots)))
                            (append
@@ -8383,6 +8395,8 @@ should not depend on how the sidebar was left."
                               (agent-shell-vertico-sidebar--group-buffers
                                rest)
                               sort-by))
+                            (agent-shell-vertico-sidebar--sort-buffers
+                             snoozed sort-by)
                             (agent-shell-vertico-sidebar--sort-buffers
                              settled sort-by)))))))
       (seq-mapcat (lambda (buffer)
@@ -8776,7 +8790,7 @@ see that session."
         (pcase (agent-shell-vertico-sidebar--view)
           ('project
            (pcase (agent-shell-vertico-sidebar--family-section top)
-             ((and section (or 'pinned 'settled))
+             ((and section (or 'pinned 'snoozed 'settled))
               (agent-shell-vertico-sidebar--set-section-folded section nil))
              (_
               (when (hash-table-p
