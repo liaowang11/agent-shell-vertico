@@ -4998,18 +4998,69 @@ input, rather than hidden behind a fold nobody could see."
     (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed))))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-cycles-fold-levels ()
-  "S-TAB folds every section, then shows rows, then details."
+  "S-TAB steps through headers, rows with the parked sections folded,
+every row, and details."
   (agent-shell-vertico-tests--with-state-view
-    (let ((agent-shell-vertico-sidebar-show-details nil))
+    (let ((agent-shell-vertico-sidebar-show-details nil)
+          (agent-shell-vertico-sidebar-folded-sections '(snoozed settled))
+          (rows (lambda ()
+                  (mapcar #'car (agent-shell-vertico-sidebar--session-rows)))))
+      ;; Snoozed starts folded, which is the parked level.
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'parked-folded))
+      (agent-shell-vertico-sidebar-cycle-global-view)
       (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+      (should (memq snoozed (funcall rows)))
       (agent-shell-vertico-sidebar-cycle-global-view)
       (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+      (should (memq snoozed (funcall rows)))
       (agent-shell-vertico-sidebar-cycle-global-view)
       (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
-      (should-not (agent-shell-vertico-sidebar--session-rows))
+      (should-not (funcall rows))
       (agent-shell-vertico-sidebar-cycle-global-view)
-      (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
-      (should (agent-shell-vertico-sidebar--session-rows)))))
+      (should (eq (agent-shell-vertico-sidebar--view-level) 'parked-folded))
+      (should (memq waiting (funcall rows)))
+      (should (memq done-1 (funcall rows)))
+      (should-not (memq snoozed (funcall rows)))
+      (should-not agent-shell-vertico-sidebar-show-details))))
+
+(ert-deftest agent-shell-vertico-sidebar-project-view-cycles-parked-folded ()
+  "S-TAB in the project view folds Snoozed and Settled in one step, with
+the projects and Pinned open, then opens them too."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (pinned "Codex Agent @ pinned" "/work/alpha/"
+               '((:session . ((:id . "p") (:title . "Pinned one")))))
+       (snoozed "Codex Agent @ snoozed" "/work/alpha/"
+                '((:session . ((:id . "s") (:title . "Snoozed one")))))
+       (settled "Codex Agent @ settled" "/work/alpha/"
+                '((:session . ((:id . "e") (:title . "Settled one"))))))
+    (let ((agent-shell-test-buffers (list alpha pinned snoozed settled))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-expand-by-default nil)
+          (agent-shell-vertico-sidebar-folded-sections nil)
+          (agent-shell-vertico-sidebar-show-details nil)
+          (rows (lambda ()
+                  (mapcar #'car (agent-shell-vertico-sidebar--session-rows)))))
+      (agent-shell-vertico-sidebar--set pinned 'pinned 100.0)
+      (agent-shell-vertico-sidebar--set snoozed 'snoozed 100.0)
+      (agent-shell-vertico-sidebar--set settled 'settled 100.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--set-view-level 'projects)
+        (agent-shell-vertico-sidebar--render)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'parked-folded))
+        (should (seq-set-equal-p (funcall rows) (list alpha pinned)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (should (seq-set-equal-p (funcall rows)
+                                 (list alpha pinned snoozed settled)))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'details))
+        (agent-shell-vertico-sidebar-cycle-global-view)
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))))))
 
 (ert-deftest agent-shell-vertico-sidebar-state-view-cycles-folded-sections ()
   "S-TAB reaches every level when each session sits in a folded section."
@@ -5901,7 +5952,8 @@ Nil, the flat view this option once offered, is read as the state view."
         (agent-shell-vertico-sidebar--render)
         (should (equal (agent-shell-vertico-tests--lines) state))
         (should (equal (agent-shell-vertico-sidebar--display-order) order))
-        (should (eq (agent-shell-vertico-sidebar--view-level) 'sessions))
+        (should (eq (agent-shell-vertico-sidebar--view-level) 'parked-folded))
+        (agent-shell-vertico-sidebar-cycle-global-view)
         (agent-shell-vertico-sidebar-cycle-global-view)
         (agent-shell-vertico-sidebar-cycle-global-view)
         (should (eq (agent-shell-vertico-sidebar--view-level) 'projects))))))

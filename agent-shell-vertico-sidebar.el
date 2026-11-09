@@ -6157,19 +6157,51 @@ default."
     (clrhash agent-shell-vertico-sidebar--expanded-sessions))
   (agent-shell-vertico-sidebar-refresh))
 
+(defun agent-shell-vertico-sidebar--live-roots ()
+  "Return the live sessions drawn at the top level, with no live parent."
+  (seq-remove #'agent-shell-vertico-sidebar--parent-of
+              (seq-filter #'buffer-live-p (agent-shell-buffers))))
+
 (defun agent-shell-vertico-sidebar--any-section-unfolded-p ()
   "Return non-nil when any state section holding a session shows it."
   (seq-some (lambda (buffer)
               (not (agent-shell-vertico-sidebar--section-folded-p
                     (agent-shell-vertico-sidebar--family-section buffer))))
-            (seq-remove #'agent-shell-vertico-sidebar--parent-of
-                        (seq-filter #'buffer-live-p (agent-shell-buffers)))))
+            (agent-shell-vertico-sidebar--live-roots)))
+
+(defconst agent-shell-vertico-sidebar--parked-sections '(snoozed settled)
+  "The sections the `parked-folded' fold level keeps folded.")
+
+(defun agent-shell-vertico-sidebar--parked-root-p (root)
+  "Return non-nil when ROOT's family is drawn under a parked section."
+  (memq (agent-shell-vertico-sidebar--family-section root)
+        agent-shell-vertico-sidebar--parked-sections))
+
+(defun agent-shell-vertico-sidebar--any-parked-section-folded-p ()
+  "Return non-nil when a parked section holding a session hides it."
+  (seq-some (lambda (root)
+              (and (agent-shell-vertico-sidebar--parked-root-p root)
+                   (agent-shell-vertico-sidebar--section-folded-p
+                    (agent-shell-vertico-sidebar--family-section root))))
+            (agent-shell-vertico-sidebar--live-roots)))
+
+(defun agent-shell-vertico-sidebar--parked-level-differs-p ()
+  "Return non-nil when the `parked-folded' level draws something of its own.
+That needs a family under a parked section, which it hides, and one
+elsewhere, which it shows; otherwise it would draw what the header or
+the session level draws."
+  (let ((roots (agent-shell-vertico-sidebar--live-roots)))
+    (and (seq-some #'agent-shell-vertico-sidebar--parked-root-p roots)
+         (seq-remove #'agent-shell-vertico-sidebar--parked-root-p roots)
+         t)))
 
 (defun agent-shell-vertico-sidebar--view-level ()
   "Return the fold level the whole sidebar currently shows.
 
-`projects' shows project or section headers only, `sessions' adds their
-session rows, and `details' adds each session's metadata lines."
+`projects' shows project or section headers only, `parked-folded' adds
+the session rows of every section but Snoozed and Settled, `sessions'
+adds every session row, and `details' adds each session's metadata
+lines."
   (cond
    ;; A filter draws every header open, so it has no header level.
    ((and (not agent-shell-vertico-sidebar--filter)
@@ -6180,22 +6212,31 @@ session rows, and `details' adds each session's metadata lines."
             (not (agent-shell-vertico-sidebar--any-section-unfolded-p)))))
     'projects)
    ((agent-shell-vertico-sidebar--any-session-details-visible-p) 'details)
+   ((and (not agent-shell-vertico-sidebar--filter)
+         (agent-shell-vertico-sidebar--any-parked-section-folded-p))
+    'parked-folded)
    (t 'sessions)))
 
 (defun agent-shell-vertico-sidebar--set-view-level (level)
   "Show every row at fold LEVEL, discarding per-row fold overrides.
 
-In the state view the header level folds every section and the other
-levels unfold every section.  Putting
-back each section's default fold instead would leave a sidebar whose
-sessions all sit in a section that starts folded showing headers alone
-at every level.  The project view folds or unfolds its Pinned, Snoozed
-and Settled sections with the projects, for the same reason.
+In the state view the header level folds every section, the
+`parked-folded' level folds Snoozed and Settled alone, and the other
+levels unfold every section.  Putting back each section's default fold
+instead would leave a sidebar whose sessions all sit in a section that
+starts folded showing headers alone at every level.  The project view
+folds or unfolds its Pinned, Snoozed and Settled sections with the
+projects, for the same reason, except that `parked-folded' opens the
+projects and Pinned and folds Snoozed and Settled.
 
 A filtered sidebar draws every header open, so there no fold is
 written: the levels would change nothing on screen, and the folds are
 what the sidebar shows once the filter is cleared."
-  (let ((folded (eq level 'projects)))
+  (let* ((folded (eq level 'projects))
+         (parked (and (eq level 'parked-folded)
+                      agent-shell-vertico-sidebar--parked-sections))
+         (folded-p (lambda (section)
+                     (or folded (and (memq section parked) t)))))
     (pcase (and (not agent-shell-vertico-sidebar--filter)
                 (agent-shell-vertico-sidebar--view))
       ('project
@@ -6203,11 +6244,12 @@ what the sidebar shows once the filter is cleared."
        (when (hash-table-p agent-shell-vertico-sidebar--expanded-projects)
          (clrhash agent-shell-vertico-sidebar--expanded-projects))
        (dolist (section '(pinned snoozed settled))
-         (agent-shell-vertico-sidebar--set-section-folded section folded)))
+         (agent-shell-vertico-sidebar--set-section-folded
+          section (funcall folded-p section))))
       ('state
        (dolist (section agent-shell-vertico-sidebar--sections)
          (agent-shell-vertico-sidebar--set-section-folded
-          (car section) folded)))))
+          (car section) (funcall folded-p (car section)))))))
   (setq agent-shell-vertico-sidebar-show-details (eq level 'details))
   (when (hash-table-p agent-shell-vertico-sidebar--expanded-sessions)
     (clrhash agent-shell-vertico-sidebar--expanded-sessions)))
@@ -6215,10 +6257,13 @@ what the sidebar shows once the filter is cleared."
 (defun agent-shell-vertico-sidebar-cycle-global-view ()
   "Cycle the whole sidebar to its next fold level.
 
-In both views the levels are the headers alone, then their session
-rows, then each session's metadata lines, then back to the headers.
-While the sidebar is filtered every header is open, so the levels are
-the rows and their details alone, and no fold is written.
+In both views the levels are the headers alone, then the session rows
+with Snoozed and Settled folded, then every session row, then each
+session's metadata lines, then back to the headers.  The second level
+is skipped when it would draw what the first or third does: when no
+session is snoozed or settled, or every session is.  While the sidebar
+is filtered every header is open, so the levels are the rows and their
+details alone, and no fold is written.
 
 Every per-project and per-session fold made with `TAB' is discarded, so the
 sidebar reaches the chosen level as a whole.
@@ -6236,7 +6281,11 @@ the whole command runs there however it was called."
         (user-error "The named sidebar buffer is not an agent-shell sidebar"))
       (agent-shell-vertico-sidebar--set-view-level
        (pcase (agent-shell-vertico-sidebar--view-level)
-         ('projects 'sessions)
+         ('projects
+          (if (agent-shell-vertico-sidebar--parked-level-differs-p)
+              'parked-folded
+            'sessions))
+         ('parked-folded 'sessions)
          ('sessions 'details)
          (_ (if agent-shell-vertico-sidebar--filter 'sessions 'projects))))
       (agent-shell-vertico-sidebar--render))))

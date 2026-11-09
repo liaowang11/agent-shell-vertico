@@ -242,7 +242,9 @@ that directory in another window.  Sections other than Snoozed and projects
 start open, and session metadata is hidden by default.  `S-TAB` cycles the
 whole sidebar through its fold levels in both views, following Org's
 global-cycle convention: section or project headers alone, then their session
-rows, then each session's metadata, then back to the headers.  It discards the
+rows with Snoozed and Settled still folded, then every session row, then each
+session's metadata, then back to the headers.  The second step is skipped when
+no session is snoozed or settled, or every one is.  It discards the
 individual folds made with `TAB`.  A title is shown up to
 `agent-shell-vertico-sidebar-title-max-length` characters.
 The layout measures the current sidebar body width and reflows titles when the

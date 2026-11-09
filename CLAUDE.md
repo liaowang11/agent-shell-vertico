@@ -716,7 +716,10 @@ both views; all three fold with the projects at the header level. Its projects s
 `--reveal-session`, `--view-level` and `--set-view-level` each have a state
 arm, and each asks `--family-section` of a root, so stepping, revealing and
 `S-TAB` see the sections the render draws. `S-TAB` steps both views through
-headers alone, rows, then rows with details, and back to headers.
+headers alone, rows with Snoozed and Settled folded (`parked-folded`), every
+row, then rows with details, and back to headers. The second step is skipped
+when it would draw what a neighbour draws: no family is parked, or every one
+is (`--parked-level-differs-p`).
 `agent-shell-vertico-sidebar-jump-by-key` keeps the configured view and opens
 every project and section for the read: it temporarily binds
 `--expanded-projects` and `--section-folds` to nil, `expand-by-default` to t
