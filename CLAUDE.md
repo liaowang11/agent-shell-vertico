@@ -1334,6 +1334,19 @@ moves it within its section, so the same key answers differently next
 time. That was the user's call, a quick jump
 rather than an address, and it is why the reading jump exists beside it.
 
+**Going to a session by name.** `agent-shell-vertico-sidebar-goto-session`
+(`j`, as `dired-goto-file`; `J` under Evil, whose `j` moves a line) is the
+sidebar's goto: it reads a session over the core's `--table` in
+`--display-order` (`identity` as the sort, so candidates come in row order),
+grouped by `--display-group` under the header each row is drawn under
+(the section in the state view; Pinned, Snoozed, Settled or the project in
+the project view), which replaces `agent-shell-vertico-group-by` here,
+and moves point with `--reveal-session`, which unfolds the section or
+project holding it and clears a filter hiding it. Nothing is opened. It
+reads with plain `completing-read`, not `read-session-function`, because
+the Consult reader previews by displaying sessions, which is not what
+moving point in the sidebar asks for.
+
 **Stepping along the rows.** `agent-shell-vertico-sidebar-next-session`
 and `-previous-session` move one row from the session in the selected
 window (`agent-shell-vertico--current-session`, so a viewport counts),

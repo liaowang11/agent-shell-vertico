@@ -6607,6 +6607,7 @@ count leaves them out.  Nothing is shown when none waits."
    "              While rows are marked, P z e u ! and kill, archive,\n"
    "              interrupt and restart act on every marked session\n\n"
    "Actions\n"
+   "  j (J)       Go to a session read with completion\n"
    "  o           Jump to a session by key\n"
    "  O           Open the session in another window\n"
    "  =           Switch between the state and project views\n"
@@ -6649,6 +6650,7 @@ count leaves them out.  Nothing is shown when none waits."
 
 (defvar agent-shell-vertico-sidebar-action-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "j") #'agent-shell-vertico-sidebar-goto-session)
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-jump-by-key)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "=") #'agent-shell-vertico-sidebar-toggle-grouping)
@@ -6687,6 +6689,7 @@ count leaves them out.  Nothing is shown when none waits."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") #'agent-shell-vertico-sidebar-activate)
     (define-key map (kbd "<return>") #'agent-shell-vertico-sidebar-activate)
+    (define-key map (kbd "j") #'agent-shell-vertico-sidebar-goto-session)
     (define-key map (kbd "o") #'agent-shell-vertico-sidebar-jump-by-key)
     (define-key map (kbd "O") #'agent-shell-vertico-sidebar-open-other-window)
     (define-key map (kbd "C-j") #'agent-shell-vertico-sidebar-next-row)
@@ -6753,6 +6756,7 @@ continues a limited session at its reset and `ge' settles a session.")
     ("TAB" . agent-shell-vertico-sidebar-toggle-at-point)
     ("<tab>" . agent-shell-vertico-sidebar-toggle-at-point)
     ("<mouse-1>" . agent-shell-vertico-sidebar-activate)
+    ("J" . agent-shell-vertico-sidebar-goto-session)
     ("o" . agent-shell-vertico-sidebar-jump-by-key)
     ("O" . agent-shell-vertico-sidebar-open-other-window)
     ("S-TAB" . agent-shell-vertico-sidebar-cycle-global-view)
@@ -6791,7 +6795,8 @@ The explicit `j'/`k' entries keep vertical navigation intact, and `C-j'/`C-k'
 move a whole row at a time; `D'/`R'/`I' are the destructive session
 actions so navigation and lowercase mnemonics remain available.  Refresh is
 `gr', resuming a past session `gh', dispatching `gc', continuing at a
-limit's reset `gw' and settling `ge', which leave `H' to
+limit's reset `gw' and settling `ge', and going to a session `J', which
+leave `j' to `evil-next-line', `H' to
 `evil-window-top', `d' to Evil's delete operator and `w' and `e' to its
 word motions.  The other
 mnemonic actions intentionally take precedence over their generic Evil
@@ -6821,7 +6826,7 @@ while normal and motion states get the same direct mnemonic commands."
       (dolist (binding agent-shell-vertico-sidebar--evil-bindings)
         (unless (member (car binding) '("gr" "gh" "gc" "gw" "ge"))
           (evil-local-set-key state (kbd (car binding)) (cdr binding))))
-      (dolist (key '("o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
+      (dolist (key '("j" "o" "O" "=" "s" "f" "g" "c" "d" "k" "r" "i" "m" "M" "C"
                      "A" "a" "F" "Y" "H" "u" "!" "z" "P" "U" "p"
                      "S" "w" "e" "?" "q"))
         (when-let* ((command (lookup-key
@@ -8854,6 +8859,77 @@ see that session."
              (agent-shell-vertico-sidebar--set-section-folded section nil)
              (agent-shell-vertico-sidebar--render)
              (agent-shell-vertico-sidebar--goto-node node))))))))
+
+(defun agent-shell-vertico-sidebar--display-group (buffer)
+  "Return the header the sidebar draws session BUFFER under.
+
+A child is drawn under its topmost live ancestor, so the ancestor's
+family answers.  The state view names its section; the project view
+names Pinned, Snoozed or Settled for a family drawn there, and the
+project otherwise."
+  (let ((root buffer))
+    (while-let ((parent (agent-shell-vertico-sidebar--parent-of root)))
+      (setq root parent))
+    (let ((section (agent-shell-vertico-sidebar--family-section root)))
+      (if (or (eq (agent-shell-vertico-sidebar--view) 'state)
+              (memq section '(pinned snoozed settled)))
+          (alist-get section agent-shell-vertico-sidebar--sections)
+        (agent-shell-vertico-sidebar--project-name
+         (agent-shell-vertico-sidebar--project-root root) root)))))
+
+(defun agent-shell-vertico-sidebar--goto-table (buffers)
+  "Return the core session table over BUFFERS, grouped as the sidebar is.
+
+BUFFERS are in row order and kept so.  Each group is computed once, when
+the table is made, so a session changing state while the prompt is open
+keeps the group it was offered under."
+  (let ((table (agent-shell-vertico--table (lambda () buffers) #'identity))
+        (groups (make-hash-table :test #'equal)))
+    (dolist (buffer buffers)
+      (puthash (buffer-name buffer)
+               (agent-shell-vertico-sidebar--display-group buffer)
+               groups))
+    (let ((group (lambda (candidate transform)
+                   (if transform
+                       candidate
+                     (gethash (substring-no-properties candidate) groups)))))
+      (lambda (string pred action)
+        (if (eq action 'metadata)
+            `(metadata
+              (group-function . ,group)
+              ,@(assq-delete-all
+                 'group-function
+                 (copy-sequence
+                  (cdr (funcall table string pred action)))))
+          (funcall table string pred action))))))
+
+;;;###autoload
+(defun agent-shell-vertico-sidebar-goto-session (buffer)
+  "Move point to the row of session BUFFER, read with completion.
+
+The sidebar's `dired-goto-file': nothing is opened, point lands on the
+row, and a folded section or project holding it unfolds, as revealing
+does.  A filter hiding the session is cleared.  The candidates are the
+core session table's, so they carry its annotations and category, in
+the order the sidebar draws its rows (`--display-order'), and grouped
+under the headers it draws them under (`--display-group')."
+  (interactive
+   (progn
+     (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+       (user-error "Not in the agent-shell sidebar"))
+     (let ((buffers (agent-shell-vertico-sidebar--display-order)))
+       (unless buffers
+         (user-error "No agent-shell sessions"))
+       (list (get-buffer
+              (completing-read
+               "Go to session: "
+               (agent-shell-vertico-sidebar--goto-table buffers)
+               nil t nil 'agent-shell-vertico-history))))))
+  (unless (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+    (user-error "Not in the agent-shell sidebar"))
+  (unless (buffer-live-p buffer)
+    (user-error "That session is gone"))
+  (agent-shell-vertico-sidebar--reveal-session buffer))
 
 (defun agent-shell-vertico-sidebar--window-configuration-change ()
   "Repair visible sidebar display settings and stop timers when hidden.

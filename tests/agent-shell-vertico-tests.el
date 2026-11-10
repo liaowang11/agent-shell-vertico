@@ -4997,6 +4997,95 @@ input, rather than hidden behind a fold nobody could see."
     (agent-shell-vertico-sidebar--reveal-session snoozed)
     (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed))))
 
+(ert-deftest agent-shell-vertico-sidebar-goto-session-moves-to-the-row ()
+  "Goto offers the sessions in row order and lands on the chosen one,
+opening the folded section that holds it."
+  (agent-shell-vertico-tests--with-state-view
+    (let (offered)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (setq offered
+                         (funcall
+                          (alist-get 'display-sort-function
+                                     (cdr (funcall table "" nil 'metadata)))
+                          (all-completions "" table)))
+                   (buffer-name snoozed))))
+        (call-interactively #'agent-shell-vertico-sidebar-goto-session))
+      (should (equal offered
+                     (mapcar #'buffer-name
+                             (agent-shell-vertico-sidebar--display-order))))
+      (should (eq (agent-shell-vertico-sidebar--node-at-point) snoozed)))))
+
+(defun agent-shell-vertico-tests--goto-session-groups ()
+  "Run the sidebar's goto and return each candidate's group, in order.
+The reader is stubbed to answer with the first candidate."
+  (let (groups)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (let* ((metadata (cdr (funcall table "" nil 'metadata)))
+                        (group (alist-get 'group-function metadata))
+                        (candidates (all-completions "" table)))
+                   (setq groups
+                         (mapcar (lambda (candidate)
+                                   (cons candidate
+                                         (funcall group candidate nil)))
+                                 candidates))
+                   (car candidates)))))
+      (call-interactively #'agent-shell-vertico-sidebar-goto-session))
+    groups))
+
+(ert-deftest agent-shell-vertico-sidebar-goto-session-groups-by-section ()
+  "In the state view the candidates are grouped by the sidebar's sections,
+whatever `agent-shell-vertico-group-by' says."
+  (agent-shell-vertico-tests--with-state-view
+    (let ((agent-shell-vertico-group-by 'agent)
+          (groups (agent-shell-vertico-tests--goto-session-groups)))
+      (should (equal (cdr (assoc (buffer-name waiting) groups))
+                     "Needs input"))
+      (should (equal (cdr (assoc (buffer-name working) groups)) "Working"))
+      (should (equal (cdr (assoc (buffer-name done-1) groups)) "Completed"))
+      (should (equal (cdr (assoc (buffer-name snoozed) groups)) "Snoozed")))))
+
+(ert-deftest agent-shell-vertico-sidebar-goto-session-groups-by-project ()
+  "In the project view the candidates are grouped under the headers the
+view draws: Pinned above the projects, then each project by name."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((zeta "Codex Agent @ zeta" "/work/alpha/"
+             '((:session . ((:id . "z") (:title . "Zeta")))))
+       (pinned "Codex Agent @ pinned" "/work/alpha/"
+               '((:session . ((:id . "p") (:title . "Pinned one")))))
+       (beta "Codex Agent @ beta" "/work/beta/"
+             '((:session . ((:id . "b") (:title . "Beta"))))))
+    (let ((agent-shell-test-buffers (list zeta pinned beta))
+          (agent-shell-vertico-sidebar-group-by 'project)
+          (agent-shell-vertico-sidebar-sort-by 'name))
+      (agent-shell-vertico-sidebar--set pinned 'pinned 100.0)
+      (with-temp-buffer
+        (agent-shell-vertico-sidebar-mode)
+        (agent-shell-vertico-sidebar--render)
+        (should (equal (agent-shell-vertico-tests--goto-session-groups)
+                       (list (cons (buffer-name pinned) "Pinned")
+                             (cons (buffer-name zeta) "alpha")
+                             (cons (buffer-name beta) "beta"))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-goto-session-needs-the-sidebar ()
+  "Outside the sidebar there is no row to move to."
+  (with-temp-buffer
+    (should-error
+     (call-interactively #'agent-shell-vertico-sidebar-goto-session)
+     :type 'user-error)))
+
+(ert-deftest agent-shell-vertico-sidebar-goto-session-is-bound ()
+  "`j' as in Dired, `J' under Evil, whose `j' moves a line."
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "j"))
+              #'agent-shell-vertico-sidebar-goto-session))
+  (should (eq (lookup-key agent-shell-vertico-sidebar-mode-map (kbd "C-c j"))
+              #'agent-shell-vertico-sidebar-goto-session))
+  (should (eq (cdr (assoc "J" agent-shell-vertico-sidebar--evil-bindings))
+              #'agent-shell-vertico-sidebar-goto-session))
+  (should (string-match-p "^  j (J) +Go to a session read with completion$"
+                          (agent-shell-vertico-sidebar--help-text))))
+
 (ert-deftest agent-shell-vertico-sidebar-state-view-cycles-fold-levels ()
   "S-TAB steps through headers, rows with the parked sections folded,
 every row, and details."
