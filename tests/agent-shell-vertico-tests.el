@@ -3751,6 +3751,47 @@ that leaves the answer alone schedules nothing."
               (should (buffer-local-value
                        'agent-shell-vertico-sidebar--dirty sidebar)))))))))
 
+(ert-deftest agent-shell-vertico-sidebar-marker-redraw-is-not-idle ()
+  "Moving onto a session redraws the marker without waiting for idle time.
+
+An idle timer restarts on every input event, so a marker waiting on one
+lagged by however long the reader kept typing after the jump."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Codex Agent @ alpha" "/work/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (let ((agent-shell-test-buffers (list alpha))
+          (agent-shell-vertico-sidebar-group-by 'state))
+      (agent-shell-vertico-tests--with-sidebar
+        (with-temp-buffer
+          (let ((other (current-buffer)))
+            (save-window-excursion
+              (delete-other-windows)
+              (set-window-buffer (selected-window) other)
+              (set-window-buffer (split-window) sidebar)
+              (with-current-buffer sidebar
+                (agent-shell-vertico-sidebar--render))
+              (set-window-buffer (selected-window) alpha)
+              (agent-shell-vertico-sidebar--window-selection-change
+               (selected-frame))
+              (let ((timer (buffer-local-value
+                            'agent-shell-vertico-sidebar--marker-timer
+                            sidebar)))
+                (should (timerp timer))
+                (should (memq timer timer-list))
+                (should-not (memq timer timer-idle-list))
+                (should-not (eq (buffer-local-value
+                                 'agent-shell-vertico-sidebar--rendered-focused-session
+                                 sidebar)
+                                alpha))
+                (timer-event-handler timer))
+              (should (eq (buffer-local-value
+                           'agent-shell-vertico-sidebar--rendered-focused-session
+                           sidebar)
+                          alpha))
+              (should-not (timerp (buffer-local-value
+                                   'agent-shell-vertico-sidebar--marker-timer
+                                   sidebar))))))))))
+
 (ert-deftest agent-shell-vertico-sidebar-marker-ignores-window-order ()
   "Rearranging windows that show the same sessions schedules no redraw.
 

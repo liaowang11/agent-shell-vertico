@@ -1485,8 +1485,12 @@ only the marker: unread still needs the selected window (`--session-focused-p`),
 because seeing a session in a side window is not reading it. The render caches
 what it drew in `--rendered-current-sessions`, and the selection and
 buffer-change hooks compare against that cache as a set, so a window
-rearrangement showing the same sessions redraws nothing and the cache can never
-disagree with the windows for longer than one idle refresh.
+rearrangement showing the same sessions redraws nothing. A difference redraws
+through `--schedule-marker-refresh`, a plain 0.05 s timer rather than the idle
+one, because input restarts idle time and the marker lagged a jump by as long as
+the reader kept typing (a render costs 12 ms with 11 sessions, so there is
+nothing to save by waiting). Streamed output keeps the idle timer, and the
+cache can disagree with the windows for at most the minute age refresh.
 
 **Which of them you are in.** A frame showing several sessions leaves the
 marker unable to say which one the reader is typing into, so the marker has

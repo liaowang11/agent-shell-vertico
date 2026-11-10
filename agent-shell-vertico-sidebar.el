@@ -738,6 +738,11 @@ separately.")
 (defvar-local agent-shell-vertico-sidebar--refresh-timer nil
   "Pending idle sidebar refresh timer.")
 
+(defvar-local agent-shell-vertico-sidebar--marker-timer nil
+  "Pending timer that redraws the current-session marker.
+Not an idle timer: input restarts idle time, so one would hold the marker
+back for as long as the reader kept typing after moving onto a session.")
+
 (defvar-local agent-shell-vertico-sidebar--age-refresh-timer nil
   "Timer that keeps visible activity ages current.")
 
@@ -3950,10 +3955,12 @@ from."
     (get-buffer-window sidebar 'visible)))
 
 (defun agent-shell-vertico-sidebar--cancel-refresh ()
-  "Cancel the pending sidebar refresh timer."
-  (when (timerp agent-shell-vertico-sidebar--refresh-timer)
-    (cancel-timer agent-shell-vertico-sidebar--refresh-timer)
-    (setq agent-shell-vertico-sidebar--refresh-timer nil)))
+  "Cancel the pending sidebar refresh timer and the marker's."
+  (dolist (slot '(agent-shell-vertico-sidebar--refresh-timer
+                  agent-shell-vertico-sidebar--marker-timer))
+    (when (timerp (symbol-value slot))
+      (cancel-timer (symbol-value slot))
+      (set slot nil))))
 
 (defun agent-shell-vertico-sidebar--cancel-age-refresh ()
   "Cancel the repeating activity-age refresh timer."
@@ -4190,6 +4197,36 @@ avoids rediscovering live sessions just to decide that."
         (agent-shell-vertico-sidebar--cancel-age-refresh)
         (agent-shell-vertico-sidebar--cancel-busy-refresh)
         (agent-shell-vertico-sidebar--cancel-background-refresh)))))
+
+(defconst agent-shell-vertico-sidebar--marker-delay 0.05
+  "Seconds before the marker is redrawn, so one move's hooks share a render.")
+
+(defun agent-shell-vertico-sidebar--schedule-marker-refresh ()
+  "Mark the sidebar dirty and redraw it soon, whether or not Emacs is idle.
+
+`--schedule-refresh' waits for idle time, which suits streamed output
+that arrives many times a second.  The marker answers a move the reader
+just made, and the render is cheap, so it waits only long enough for the
+selection and buffer-change hooks of one move to coalesce.  A hidden
+sidebar is left to `--schedule-refresh', which arms nothing for it."
+  (when-let* ((sidebar (get-buffer "*Agent Shell Sessions*")))
+    (with-current-buffer sidebar
+      (if (not (and (derived-mode-p 'agent-shell-vertico-sidebar-mode)
+                    (agent-shell-vertico-sidebar--sidebar-visible-p sidebar)))
+          (agent-shell-vertico-sidebar--schedule-refresh)
+        (setq agent-shell-vertico-sidebar--dirty t)
+        (unless (timerp agent-shell-vertico-sidebar--marker-timer)
+          (setq agent-shell-vertico-sidebar--marker-timer
+                (run-with-timer
+                 agent-shell-vertico-sidebar--marker-delay nil
+                 (lambda ()
+                   (when (buffer-live-p sidebar)
+                     (with-current-buffer sidebar
+                       (setq agent-shell-vertico-sidebar--marker-timer nil)
+                       (when (and agent-shell-vertico-sidebar--dirty
+                                  (agent-shell-vertico-sidebar--sidebar-visible-p
+                                   sidebar))
+                         (agent-shell-vertico-sidebar--render))))))))))))
 
 (defconst agent-shell-vertico-sidebar--out-of-turn-events
   '(agent-message-chunk tool-call-update)
@@ -5563,7 +5600,7 @@ the selected window moves onto or off a session, with the set untouched."
                        (buffer-local-value
                         'agent-shell-vertico-sidebar--rendered-focused-session
                         sidebar)))
-        (agent-shell-vertico-sidebar--schedule-refresh)))))
+        (agent-shell-vertico-sidebar--schedule-marker-refresh)))))
 
 (defun agent-shell-vertico-sidebar--mark-seen (buffer)
   "Mark unread output in BUFFER as seen.
@@ -6843,6 +6880,7 @@ while normal and motion states get the same direct mnemonic commands."
               mode-line-format nil
               header-line-format nil
               agent-shell-vertico-sidebar--refresh-timer nil
+              agent-shell-vertico-sidebar--marker-timer nil
               agent-shell-vertico-sidebar--age-refresh-timer nil
               agent-shell-vertico-sidebar--resize-timer nil
               agent-shell-vertico-sidebar--busy-timer nil
