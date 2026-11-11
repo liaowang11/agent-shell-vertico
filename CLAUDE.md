@@ -98,8 +98,10 @@ in the table) and `--annotate` (the Marginalia annotator registered for the
 category) — and both render through `--suffix`, so they cannot drift. The
 columns are status, model, mode, buffer name, path.
 
-A candidate is the title, or the buffer name while there is none, followed
-by an invisible key (`--candidate-key`) naming the buffer through a weak
+A candidate is the title, or the buffer name while there is none, on one
+line and cut to `--title-max-width` (50 columns, whole on `help-echo`,
+since Marginalia starts every annotation after the widest candidate),
+followed by an invisible key (`--candidate-key`) naming the buffer through a weak
 registry, so two sessions sharing a title stay two candidates.
 `--candidate-buffer` reads the key from the characters, not a text
 property, because `completing-read` returns its value without properties

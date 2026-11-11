@@ -7556,7 +7556,7 @@ the agent also sends a `current_mode_update' notification."
   "Return the candidate COLLECTION offers for BUFFER."
   (seq-find (lambda (candidate)
               (eq (agent-shell-vertico--candidate-buffer candidate) buffer))
-            (agent-shell-vertico-tests--offered "" collection)))
+            (all-completions "" collection)))
 
 (ert-deftest agent-shell-vertico-session-candidates-show-titles ()
   "A session reads as its title, and an untitled one as its buffer name."
@@ -7589,6 +7589,25 @@ the agent also sends a `current_mode_update' notification."
       (should (equal (mapcar #'agent-shell-vertico--candidate-buffer
                              candidates)
                      (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-session-candidate-keeps-a-title-on-one-line ()
+  "A title is drawn on one line and cut to a width, whole on `help-echo'."
+  (let ((long (concat "Fix\n  the   " (make-string 80 ?x))))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+                `((:session . ((:id . "a") (:title . ,long))))))
+      (setq agent-shell-test-buffers (list alpha))
+      (let* ((candidate (agent-shell-vertico-tests--candidate-for
+                         alpha (agent-shell-vertico--completion-table 'all)))
+             (text (agent-shell-vertico-tests--candidate-text candidate)))
+        (should (string-prefix-p "Fix the x" text))
+        (should-not (string-match-p "\n" text))
+        (should (= (string-width text)
+                   agent-shell-vertico--title-max-width))
+        (should (equal (get-text-property 0 'help-echo candidate)
+                       (concat "Fix the " (make-string 80 ?x))))
+        (should (eq (agent-shell-vertico--candidate-buffer candidate)
+                    alpha))))))
 
 (ert-deftest agent-shell-vertico-read-session-returns-the-buffer-name ()
   "The reader answers with the buffer name, even from a stripped candidate.
@@ -8063,14 +8082,16 @@ The session picker's other-shell branch reads that way."
                  (lambda (table &rest options)
                    (should (equal (agent-shell-vertico-tests--offered "" table)
                                   (list (buffer-name alpha))))
-                   (let ((state (plist-get options :state)))
+                   (let ((state (plist-get options :state))
+                         (candidate (agent-shell-vertico-tests--candidate-for
+                                     alpha table)))
                      (funcall state 'setup nil)
-                     (funcall state 'preview (buffer-name alpha))
+                     (funcall state 'preview candidate)
                      (should-not agent-shell-test-displayed-buffer)
                      (funcall state 'preview nil)
                      (funcall state 'exit nil)
-                     (funcall state 'return (buffer-name alpha)))
-                   (buffer-name alpha))))
+                     (funcall state 'return candidate)
+                     (substring-no-properties candidate)))))
         (agent-shell-vertico-switch))
       (should (eq agent-shell-test-displayed-buffer alpha))
       (should

@@ -512,21 +512,42 @@ the text alone."
 (defvar agent-shell-vertico--candidate-counter 0
   "The number most recently given to a session buffer.")
 
+(defconst agent-shell-vertico--title-max-width 50
+  "Widest a session title is drawn as a candidate, in columns.
+Marginalia starts every row's annotation after the widest candidate, so
+one long title would push the columns of every row off screen.")
+
+(defun agent-shell-vertico--candidate-title (buffer)
+  "Return the text session BUFFER's candidate is drawn with.
+
+The title, or the buffer name while there is none, on one line and cut
+to `agent-shell-vertico--title-max-width' with the whole of it on
+`help-echo'."
+  (let* ((title (agent-shell-vertico--session-field buffer :title))
+         (text (string-trim
+                (replace-regexp-in-string
+                 "[[:space:]\n]+" " "
+                 (substring-no-properties
+                  (if (stringp title) title ""))))))
+    (cond
+     ((string-empty-p text) (buffer-name buffer))
+     ((<= (string-width text) agent-shell-vertico--title-max-width) text)
+     (t (propertize (truncate-string-to-width
+                     text agent-shell-vertico--title-max-width 0 nil t)
+                    'help-echo text)))))
+
 (defun agent-shell-vertico--session-candidate (buffer)
   "Return the completion candidate for session BUFFER.
 
-The candidate is the session's title, or its buffer name while it has
-none, followed by the buffer's invisible key, so two sessions sharing a
-title stay two candidates and `--candidate-buffer' can find either."
+The candidate is `--candidate-title' followed by the buffer's invisible
+key, so two sessions sharing a title stay two candidates and
+`--candidate-buffer' can find either."
   (let ((index (or (gethash buffer agent-shell-vertico--candidate-indices)
                    (let ((new (cl-incf agent-shell-vertico--candidate-counter)))
                      (puthash new buffer agent-shell-vertico--candidate-buffers)
                      (puthash buffer new
-                              agent-shell-vertico--candidate-indices))))
-        (title (agent-shell-vertico--session-field buffer :title)))
-    (concat (if (and (stringp title) (not (string-empty-p title)))
-                (substring-no-properties title)
-              (buffer-name buffer))
+                              agent-shell-vertico--candidate-indices)))))
+    (concat (agent-shell-vertico--candidate-title buffer)
             (agent-shell-vertico--candidate-key index))))
 
 (defun agent-shell-vertico--candidate-index (candidate)
