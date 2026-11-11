@@ -297,7 +297,7 @@ the caller decides what to open once the minibuffer is gone."
 When viewport interaction is preferred, use an existing viewport when
 there is one.  Do not create a viewport just because completion moved
 over a candidate; fall back to the shell buffer when none exists."
-  (when-let* ((buffer (get-buffer (substring-no-properties candidate))))
+  (when-let* ((buffer (agent-shell-vertico--candidate-buffer candidate)))
     (or (and agent-shell-prefer-viewport-interaction
              (agent-shell-viewport--buffer
               :shell-buffer buffer :existing-only t))
@@ -365,7 +365,8 @@ OTHER-WINDOW matches the final display direction, for the reader
 TABLE is the same completion table the plain reader uses, so candidate
 annotations and sorting come from its metadata.  Consult merges its own
 metadata behind the table's, and its default lookup returns the selected
-string, which is the buffer name the caller expects."
+string, which `agent-shell-vertico--read-session' turns into the buffer
+name the caller expects."
   (let ((selection
          (consult--read
           table

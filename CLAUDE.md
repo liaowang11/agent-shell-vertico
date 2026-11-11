@@ -90,12 +90,26 @@ the session's `:models`/`:modes` list (`--lookup-name`).
 
 **The completion table** (`--completion-table`) is the core. It returns a
 `metadata` form declaring category `agent-shell-session` plus affixation and
-sort functions, and otherwise completes against live buffer names. `scope` is
+sort functions, and otherwise completes against the live sessions' titles
+(`--session-candidate`). `scope` is
 `'all` (→ `agent-shell-buffers`) or `'project` (→ `agent-shell-project-buffers`).
 Annotations reach the user two ways — `--affixate` (the `affixation-function`
 in the table) and `--annotate` (the Marginalia annotator registered for the
 category) — and both render through `--suffix`, so they cannot drift. The
-columns are status, model, mode, title, path.
+columns are status, model, mode, buffer name, path.
+
+A candidate is the title, or the buffer name while there is none, followed
+by an invisible key (`--candidate-key`) naming the buffer through a weak
+registry, so two sessions sharing a title stay two candidates.
+`--candidate-buffer` reads the key from the characters, not a text
+property, because `completing-read` returns its value without properties
+and Embark injects targets the same way; it falls back to `get-buffer`, so
+every function that took a buffer name still takes one. The readers
+(`--read-session`, `--read-session-buffers`) answer with the buffer name,
+and an Embark transformer (`--embark-session-target`) hands every action,
+including the inherited `embark-buffer-map` ones, the buffer name too.
+Sorting by `creation` still compares buffer names. Typing matches the title
+only; a buffer name matches through orderless's `&` annotation matching.
 
 **Sorting** is user-configurable via `agent-shell-vertico-sort-by`
 (`recency`/`creation`/`status`), implemented in `--sort-candidates` and wired
@@ -162,7 +176,8 @@ read, so those prompts gain the annotations, the sort, and the
 `agent-shell-session` category (hence the Embark actions). It keeps upstream's
 contract: `:buffers` still names the shells to offer, the chosen buffer is
 returned, and no shells or no selection is a `user-error`. `:force-short-names`
-is accepted and ignored, because candidates are whole buffer names.
+is accepted and ignored, because candidates are session titles, never short
+or long buffer names.
 
 **Opening a live session's transcript.** `agent-shell-open-transcript` is a
 bare `find-file`, so a transcript reached from a session misses the reader

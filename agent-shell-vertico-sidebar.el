@@ -8922,15 +8922,17 @@ BUFFERS are in row order and kept so.  Each group is computed once, when
 the table is made, so a session changing state while the prompt is open
 keeps the group it was offered under."
   (let ((table (agent-shell-vertico--table (lambda () buffers) #'identity))
-        (groups (make-hash-table :test #'equal)))
+        (groups (make-hash-table :test #'eq)))
     (dolist (buffer buffers)
-      (puthash (buffer-name buffer)
+      (puthash buffer
                (agent-shell-vertico-sidebar--display-group buffer)
                groups))
     (let ((group (lambda (candidate transform)
                    (if transform
                        candidate
-                     (gethash (substring-no-properties candidate) groups)))))
+                     (gethash (agent-shell-vertico--candidate-buffer
+                               candidate)
+                              groups)))))
       (lambda (string pred action)
         (if (eq action 'metadata)
             `(metadata
@@ -8958,7 +8960,7 @@ under the headers it draws them under (`--display-group')."
      (let ((buffers (agent-shell-vertico-sidebar--display-order)))
        (unless buffers
          (user-error "No agent-shell sessions"))
-       (list (get-buffer
+       (list (agent-shell-vertico--candidate-buffer
               (completing-read
                "Go to session: "
                (agent-shell-vertico-sidebar--goto-table buffers)

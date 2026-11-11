@@ -84,6 +84,7 @@
 (defvar embark-default-action-overrides)
 (defvar embark-keymap-alist)
 (defvar embark-target-finders)
+(defvar embark-transformer-alist)
 (defvar marginalia-annotators)
 
 (defgroup agent-shell-vertico nil
@@ -292,7 +293,7 @@ configuration's `:mode-line-name' when set, otherwise its `:buffer-name'."
      ((agent-shell-vertico--status buffer) :truncate 10 :face 'marginalia-type)
      ((agent-shell-vertico--model-name buffer) :truncate 20 :face 'marginalia-value)
      ((agent-shell-vertico--mode-name buffer) :truncate 15 :face 'marginalia-mode)
-     ((agent-shell-vertico--title buffer) :truncate 30 :face 'marginalia-documentation)
+     ((buffer-name buffer) :truncate 30 :face 'marginalia-documentation)
      ((agent-shell-vertico--path buffer) :truncate -0.5 :face 'marginalia-file-name))))
 
 (defun agent-shell-vertico--icon-prefix (buffer)
@@ -307,7 +308,7 @@ configuration's `:mode-line-name' when set, otherwise its `:buffer-name'."
 (defun agent-shell-vertico--affixate (candidates)
   "Add annotation suffix to CANDIDATES."
   (mapcar (lambda (cand)
-            (let ((buf (get-buffer cand)))
+            (let ((buf (agent-shell-vertico--candidate-buffer cand)))
               (list cand
                     ""
                     (or (and buf (agent-shell-vertico--suffix buf)) ""))))
@@ -318,13 +319,13 @@ configuration's `:mode-line-name' when set, otherwise its `:buffer-name'."
 
 Renders through `agent-shell-vertico--suffix', which the completion
 table's affixation function also uses, so the two cannot drift apart."
-  (when-let* ((buf (get-buffer cand)))
+  (when-let* ((buf (agent-shell-vertico--candidate-buffer cand)))
     (agent-shell-vertico--suffix buf)))
 
 (with-eval-after-load 'nerd-icons-completion
   (cl-defmethod nerd-icons-completion-get-icon (cand (_cat (eql agent-shell-session)))
     "Return the icon for CAND of category `agent-shell-session'."
-    (if-let* ((buf (get-buffer cand)))
+    (if-let* ((buf (agent-shell-vertico--candidate-buffer cand)))
         (agent-shell-vertico--icon-prefix buf)
       "")))
 
@@ -345,17 +346,24 @@ table's affixation function also uses, so the two cannot drift apart."
     ('recency
      (cl-sort (copy-sequence candidates) #'>
               :key (lambda (name)
-                     (if-let* ((buf (get-buffer name))
+                     (if-let* ((buf (agent-shell-vertico--candidate-buffer
+                                     name))
                                (time (buffer-local-value
                                       'buffer-display-time buf)))
                          (float-time time)
                        0.0))))
     ('creation
-     (cl-sort (copy-sequence candidates) #'string<))
+     (cl-sort (copy-sequence candidates) #'string<
+              :key (lambda (candidate)
+                     (if-let* ((buf (agent-shell-vertico--candidate-buffer
+                                     candidate)))
+                         (buffer-name buf)
+                       candidate))))
     ('status
      (cl-sort (copy-sequence candidates) #'<
               :key (lambda (name)
-                     (if-let* ((buf (get-buffer name)))
+                     (if-let* ((buf (agent-shell-vertico--candidate-buffer
+                                     name)))
                          (agent-shell-vertico--status-priority
                           (agent-shell-vertico--status buf))
                        3))))
@@ -431,7 +439,7 @@ nil KEY is no narrowing at all, so every candidate belongs to it, and a
 key standing for nothing selects nothing."
   (if (null key)
       t
-    (when-let* ((buffer (get-buffer (substring-no-properties candidate))))
+    (when-let* ((buffer (agent-shell-vertico--candidate-buffer candidate)))
       (pcase key
         ;; A status key is named after the status it selects, so the key
         ;; list is also what a candidate's status is compared against.
@@ -448,11 +456,11 @@ key standing for nothing selects nothing."
 (defun agent-shell-vertico--session-group (candidate transform)
   "Return the group title of session CANDIDATE.
 With TRANSFORM, return CANDIDATE as the completion UI should display it,
-which is unchanged: a session is shown by its whole buffer name."
+which is unchanged: a session is shown by its title."
   (if transform
       candidate
     (when-let* ((agent-shell-vertico-group-by)
-                (buffer (get-buffer (substring-no-properties candidate))))
+                (buffer (agent-shell-vertico--candidate-buffer candidate)))
       (pcase agent-shell-vertico-group-by
         ('project (agent-shell-vertico--path buffer))
         ('agent (agent-shell-vertico--agent-name buffer))
@@ -485,6 +493,87 @@ the text alone."
                   (setq remaining
                         (/ remaining agent-shell-vertico--key-range)))))
     (propertize key 'invisible t)))
+
+;; A live session is offered by its title, which need not be unique and
+;; which a value read back from the minibuffer cannot carry a buffer
+;; beside: `completing-read' and Embark's injection both drop text
+;; properties.  Each session buffer therefore owns a number for as long
+;; as it lives, written after the title as an invisible key, and the
+;; candidate's characters alone name its session.
+
+(defvar agent-shell-vertico--candidate-indices
+  (make-hash-table :test #'eq :weakness 'key)
+  "Session buffer to the number its candidates are keyed by.")
+
+(defvar agent-shell-vertico--candidate-buffers
+  (make-hash-table :test #'eql :weakness 'value)
+  "Number to the session buffer whose candidates are keyed by it.")
+
+(defvar agent-shell-vertico--candidate-counter 0
+  "The number most recently given to a session buffer.")
+
+(defun agent-shell-vertico--session-candidate (buffer)
+  "Return the completion candidate for session BUFFER.
+
+The candidate is the session's title, or its buffer name while it has
+none, followed by the buffer's invisible key, so two sessions sharing a
+title stay two candidates and `--candidate-buffer' can find either."
+  (let ((index (or (gethash buffer agent-shell-vertico--candidate-indices)
+                   (let ((new (cl-incf agent-shell-vertico--candidate-counter)))
+                     (puthash new buffer agent-shell-vertico--candidate-buffers)
+                     (puthash buffer new
+                              agent-shell-vertico--candidate-indices))))
+        (title (agent-shell-vertico--session-field buffer :title)))
+    (concat (if (and (stringp title) (not (string-empty-p title)))
+                (substring-no-properties title)
+              (buffer-name buffer))
+            (agent-shell-vertico--candidate-key index))))
+
+(defun agent-shell-vertico--candidate-index (candidate)
+  "Return the number CANDIDATE's trailing key encodes, or nil without one."
+  (let* ((end (length candidate))
+         (start end)
+         (limit (+ agent-shell-vertico--key-char
+                   agent-shell-vertico--key-range)))
+    (while (and (> start 0)
+                (<= agent-shell-vertico--key-char
+                    (aref candidate (1- start))
+                    (1- limit)))
+      (setq start (1- start)))
+    (when (< start end)
+      (let ((index 0))
+        (dotimes (offset (- end start))
+          (setq index (+ (* index agent-shell-vertico--key-range)
+                         (- (aref candidate (+ start offset))
+                            agent-shell-vertico--key-char))))
+        index))))
+
+(defun agent-shell-vertico--candidate-buffer (candidate)
+  "Return the live session buffer CANDIDATE names, or nil.
+
+CANDIDATE is a session candidate, with or without its text properties, a
+buffer name, or a buffer."
+  (cond
+   ((bufferp candidate) (and (buffer-live-p candidate) candidate))
+   ((stringp candidate)
+    (if-let* ((index (agent-shell-vertico--candidate-index candidate)))
+        (let ((buffer (gethash index agent-shell-vertico--candidate-buffers)))
+          (and (buffer-live-p buffer) buffer))
+      (get-buffer (substring-no-properties candidate))))))
+
+(defun agent-shell-vertico--candidate-name (candidate)
+  "Return the buffer name of the session CANDIDATE names.
+A candidate naming no live session is returned unchanged, so a caller
+reports it as it would have reported the string."
+  (if-let* ((buffer (agent-shell-vertico--candidate-buffer candidate)))
+      (buffer-name buffer)
+    candidate))
+
+(defun agent-shell-vertico--embark-session-target (type candidate)
+  "Hand Embark's actions the buffer name of session CANDIDATE.
+TYPE is kept, so the session's own action map still applies; the buffer
+actions it inherits take the name a buffer is known by."
+  (cons type (agent-shell-vertico--candidate-name candidate)))
 
 (defun agent-shell-vertico--ordered-table (candidates)
   "Return a completion table over CANDIDATES that keeps their order.
@@ -521,9 +610,10 @@ order carries the answer passes `identity' for."
                      . ,#'agent-shell-vertico--session-group)))
               (display-sort-function . ,sort)
               (cycle-sort-function . ,sort))
-          (complete-with-action action
-                                (mapcar #'buffer-name buffers)
-                                string pred))))))
+          (complete-with-action
+           action
+           (mapcar #'agent-shell-vertico--session-candidate buffers)
+           string pred))))))
 
 (defun agent-shell-vertico--completion-table (scope)
   "Return a completion table for SCOPE."
@@ -544,10 +634,11 @@ candidate, so it ignores it."
 
 OTHER-WINDOW tells a previewing reader where the selected session will
 be displayed.  It does not affect the returned candidate."
-  (funcall agent-shell-vertico-read-session-function
-           prompt
-           (agent-shell-vertico--completion-table scope)
-           other-window))
+  (agent-shell-vertico--candidate-name
+   (funcall agent-shell-vertico-read-session-function
+            prompt
+            (agent-shell-vertico--completion-table scope)
+            other-window)))
 
 (defun agent-shell-vertico--read-session-buffers
     (prompt buffers &optional other-window sort-function)
@@ -557,10 +648,11 @@ BUFFERS is the caller's own set of choices rather than a scope.  Dead
 buffers still drop out whenever the table is queried, so a session that
 dies while the prompt is open leaves the list.  SORT-FUNCTION is passed
 on to `agent-shell-vertico--table'."
-  (funcall agent-shell-vertico-read-session-function
-           prompt
-           (agent-shell-vertico--table (lambda () buffers) sort-function)
-           other-window))
+  (agent-shell-vertico--candidate-name
+   (funcall agent-shell-vertico-read-session-function
+            prompt
+            (agent-shell-vertico--table (lambda () buffers) sort-function)
+            other-window)))
 
 (defun agent-shell-vertico--maybe-resolve-viewport (buffer)
   "Return viewport buffer for BUFFER when viewport is preferred.
@@ -585,7 +677,7 @@ not gain a viewport because a caller asked about it."
 
 (defun agent-shell-vertico--session-buffer (buffer)
   "Resolve BUFFER to a live `agent-shell' buffer."
-  (or (get-buffer buffer)
+  (or (agent-shell-vertico--candidate-buffer buffer)
       (user-error "No live agent-shell buffer named %s" buffer)))
 
 (defun agent-shell-vertico--ensure-shell-buffer (buffer)
@@ -1046,9 +1138,9 @@ PROMPT and BUFFERS keep the meaning they have in the `agent-shell'
 reader this replaces: PROMPT is the prompt string, and BUFFERS the
 shells to choose from, defaulting to `agent-shell-buffers'.
 
-FORCE-SHORT-NAMES is accepted and ignored.  Candidates are whole buffer
-names, the names `agent-shell-vertico-switch' shows, so a shell reads the
-same wherever it is picked.
+FORCE-SHORT-NAMES is accepted and ignored.  Candidates are the session
+titles `agent-shell-vertico-switch' shows, so a shell reads the same
+wherever it is picked.
 
 Returns the chosen buffer.  Signals a `user-error' when there is no
 shell to offer or none was chosen, as the reader it replaces does."
@@ -1280,6 +1372,9 @@ Call this only after Embark is loaded."
                  embark-buffer-map))
   (add-to-list 'embark-default-action-overrides
                '(agent-shell-session . agent-shell-vertico--display-session))
+  (add-to-list 'embark-transformer-alist
+               '(agent-shell-session
+                 . agent-shell-vertico--embark-session-target))
   ;; In-buffer rendered Markdown links.
   (add-to-list 'embark-keymap-alist
                '(agent-shell-url agent-shell-vertico-markdown-link-map))

@@ -19,8 +19,9 @@ locations are resolved through `agent-shell-dot-subdir-function`.
 - `M-x agent-shell-vertico-setup`
   Enable every Agent Shell Vertico integration.
 
-Candidates keep the recent ordering from `agent-shell-buffers` and show
-consult-style annotations for status, model, mode, title, and path.
+Candidates are session titles (the buffer name while a session has none),
+keep the recent ordering from `agent-shell-buffers`, and show consult-style
+annotations for status, model, mode, buffer name, and path.
 
 Loading `agent-shell-vertico-consult` adds live previews to these commands,
 project-scoped send commands when they ask for a session, and the shell picker
@@ -767,8 +768,8 @@ and declares no completion category.
 `agent-shell-vertico-setup` reads those prompts through the same annotated list
 the switch commands use.
 
-Candidates become whole buffer names annotated with status, model, mode, title,
-and path, sorted by `agent-shell-vertico-sort-by`, and carrying the
+Candidates become session titles annotated with status, model, mode, buffer
+name, and path, sorted by `agent-shell-vertico-sort-by`, and carrying the
 `agent-shell-session` category, so the registered Embark actions work there
 too. The shells offered are unchanged: a command that names its own buffers
 still gets exactly those.
@@ -1048,8 +1049,8 @@ annotation Marginalia renders is what gets matched. Two limits follow from
 that. It is matched as rendered, so a value cut to fit its column matches by
 its visible prefix only, and `&` matches every column rather than one, so
 `&Claude` finds an agent and a project called `claude` alike. Plain typing,
-with no `&`, still matches the candidate: the buffer name of a session, the
-title of a transcript.
+with no `&`, still matches the candidate: the title of a session or a
+transcript, so a session's buffer name matches only with `&`.
 
 Grouping is separate and off by default. Set
 `agent-shell-vertico-group-by` to `project`, `agent`, or `status` to

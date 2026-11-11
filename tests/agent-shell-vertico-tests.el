@@ -38,6 +38,7 @@
 (defvar embark-keymap-alist)
 (defvar embark-default-action-overrides)
 (defvar embark-target-finders)
+(defvar embark-transformer-alist)
 (defvar embark-quit-after-action)
 (defvar agent-shell-viewport-view-mode-hook)
 (defvar agent-shell-viewport-edit-mode-hook)
@@ -5049,8 +5050,10 @@ opening the folded section that holds it."
                          (funcall
                           (alist-get 'display-sort-function
                                      (cdr (funcall table "" nil 'metadata)))
-                          (all-completions "" table)))
-                   (buffer-name snoozed))))
+                          (agent-shell-vertico-tests--offered "" table)))
+                   (substring-no-properties
+                    (agent-shell-vertico-tests--candidate-for
+                     snoozed table)))))
         (call-interactively #'agent-shell-vertico-sidebar-goto-session))
       (should (equal offered
                      (mapcar #'buffer-name
@@ -5068,7 +5071,8 @@ The reader is stubbed to answer with the first candidate."
                         (candidates (all-completions "" table)))
                    (setq groups
                          (mapcar (lambda (candidate)
-                                   (cons candidate
+                                   (cons (agent-shell-vertico--candidate-name
+                                          candidate)
                                          (funcall group candidate nil)))
                                  candidates))
                    (car candidates)))))
@@ -7526,7 +7530,8 @@ the agent also sends a `current_mode_update' notification."
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (prompt collection &rest _)
                    (setq seen (list prompt
-                                    (all-completions "" collection)))
+                                    (agent-shell-vertico-tests--offered
+                                     "" collection)))
                    (buffer-name beta))))
         (should (equal
                  (agent-shell-vertico--read-session
@@ -7536,6 +7541,118 @@ the agent also sends a `current_mode_update' notification."
                      (list "Agent shell: "
                            (list (buffer-name alpha)
                                  (buffer-name beta))))))))
+
+(defun agent-shell-vertico-tests--offered (string table &optional pred)
+  "Return the buffer names of the sessions TABLE offers for STRING and PRED."
+  (mapcar #'agent-shell-vertico--candidate-name
+          (all-completions string table pred)))
+
+(defun agent-shell-vertico-tests--candidate-text (candidate)
+  "Return CANDIDATE as the reader sees it, without its invisible key."
+  (replace-regexp-in-string "[\U00100000-\U0010FFFD]+\\'" ""
+                            (substring-no-properties candidate)))
+
+(defun agent-shell-vertico-tests--candidate-for (buffer collection)
+  "Return the candidate COLLECTION offers for BUFFER."
+  (seq-find (lambda (candidate)
+              (eq (agent-shell-vertico--candidate-buffer candidate) buffer))
+            (agent-shell-vertico-tests--offered "" collection)))
+
+(ert-deftest agent-shell-vertico-session-candidates-show-titles ()
+  "A session reads as its title, and an untitled one as its buffer name."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((candidates (all-completions
+                       "" (agent-shell-vertico--completion-table 'all))))
+      (should (equal (mapcar #'agent-shell-vertico-tests--candidate-text
+                             candidates)
+                     '("Review alpha" "Beta Agent @ beta")))
+      (should (equal (mapcar #'agent-shell-vertico--candidate-buffer
+                             candidates)
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-session-candidates-share-titles ()
+  "Two sessions sharing a title are two candidates, each its own session."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Fix tests")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b") (:title . "Fix tests"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (let ((candidates (all-completions
+                       "" (agent-shell-vertico--completion-table 'all))))
+      (should (= (length (delete-dups (copy-sequence candidates))) 2))
+      (should (equal (mapcar #'agent-shell-vertico--candidate-buffer
+                             candidates)
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-read-session-returns-the-buffer-name ()
+  "The reader answers with the buffer name, even from a stripped candidate.
+`completing-read' drops text properties from what it returns, so the
+session has to be found from the candidate's characters alone."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Fix tests")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b") (:title . "Fix tests"))))))
+    (setq agent-shell-test-buffers (list alpha beta))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (substring-no-properties
+                  (agent-shell-vertico-tests--candidate-for
+                   beta collection)))))
+      (should (equal (agent-shell-vertico--read-session "Agent shell: " 'all)
+                     (buffer-name beta))))))
+
+(ert-deftest agent-shell-vertico-session-annotation-names-the-buffer ()
+  "The annotation names the buffer, since the candidate is the title."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (setq agent-shell-test-buffers (list alpha))
+    (let* ((table (agent-shell-vertico--completion-table 'all))
+           (candidate (agent-shell-vertico-tests--candidate-for alpha table))
+           (annotation (agent-shell-vertico--annotate candidate)))
+      (should (string-match-p "Alpha Agent @ alpha" annotation))
+      (should-not (string-match-p "Review alpha" annotation)))))
+
+(ert-deftest agent-shell-vertico-session-candidate-sorts-by-creation ()
+  "Sorting by creation still orders by buffer name, not by title."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Zebra")))))
+       (beta "Beta Agent @ beta" "/tmp/beta/"
+             '((:session . ((:id . "b") (:title . "Aardvark"))))))
+    (setq agent-shell-test-buffers (list beta alpha))
+    (let* ((agent-shell-vertico-sort-by 'creation)
+           (table (agent-shell-vertico--completion-table 'all))
+           (sort (alist-get 'display-sort-function
+                            (cdr (funcall table "" nil 'metadata)))))
+      (should (equal (mapcar #'agent-shell-vertico--candidate-buffer
+                             (funcall sort (all-completions "" table)))
+                     (list alpha beta))))))
+
+(ert-deftest agent-shell-vertico-embark-target-is-the-buffer-name ()
+  "Embark hands actions the buffer name, so buffer actions keep working."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Alpha Agent @ alpha" "/tmp/alpha/"
+              '((:session . ((:id . "a") (:title . "Review alpha"))))))
+    (setq agent-shell-test-buffers (list alpha))
+    (let ((embark-keymap-alist nil)
+          (embark-default-action-overrides nil)
+          (embark-target-finders nil)
+          (embark-transformer-alist nil)
+          (candidate (agent-shell-vertico-tests--candidate-for
+                      alpha (agent-shell-vertico--completion-table 'all))))
+      (agent-shell-vertico-setup-embark)
+      (should (equal (funcall (alist-get 'agent-shell-session
+                                         embark-transformer-alist)
+                              'agent-shell-session candidate)
+                     (cons 'agent-shell-session (buffer-name alpha)))))))
 
 (ert-deftest agent-shell-vertico-status-reports-working-while-busy ()
   "A shell with work in flight reports Working and sorts before the rest."
@@ -7578,7 +7695,7 @@ difference between them shows up only in one completion framework."
            (name (buffer-name alpha))
            (affixated (caddr (car (agent-shell-vertico--affixate (list name))))))
       (should (equal (agent-shell-vertico--annotate name) affixated))
-      (should (string-match-p "Review alpha" affixated))))
+      (should (string-match-p "GPT-5" affixated))))
   (should-not (agent-shell-vertico--annotate "No such session buffer")))
 
 (ert-deftest agent-shell-vertico-annotation-keeps-marginalia-formatting ()
@@ -7615,13 +7732,14 @@ and every annotation would lose its columns for real users too."
     (let* ((agent-shell-test-buffers (list alpha beta))
            (table (agent-shell-vertico--completion-table 'all))
            (candidates (all-completions "" table)))
-      (should (equal candidates
+      (should (equal (mapcar #'agent-shell-vertico--candidate-name candidates)
                      '("Alpha Agent @ alpha" "Beta Agent @ beta")))
       (let* ((metadata (funcall table "" nil 'metadata))
              (affixation (cdr (assq 'affixation-function (cdr metadata))))
              (decorated (funcall affixation candidates)))
         (should (equal (mapcar #'car decorated) candidates))
-        (should (string-match-p "Review alpha" (caddr (car decorated))))
+        (should (string-match-p "Alpha Agent @ alpha"
+                                (caddr (car decorated))))
         (should (string-match-p "GPT-5" (caddr (car decorated))))
         (should (string-match-p "Edit" (caddr (cadr decorated))))))))
 
@@ -7632,7 +7750,7 @@ and every annotation would lose its columns for real users too."
     (let* ((agent-shell-test-buffers (list alpha beta))
            (agent-shell-test-project-buffers (list beta))
            (table (agent-shell-vertico--completion-table 'project))
-           (candidates (all-completions "" table)))
+           (candidates (agent-shell-vertico-tests--offered "" table)))
       (should (equal candidates '("Beta Agent @ beta"))))))
 
 ;;; Shell buffer picker
@@ -7708,7 +7826,8 @@ and every annotation would lose its columns for real users too."
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (prompt collection &rest _)
                    (setq seen (list prompt
-                                    (all-completions "" collection)
+                                    (agent-shell-vertico-tests--offered
+                                     "" collection)
                                     (funcall collection "" nil 'metadata)))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--read-shell-buffer
@@ -7721,7 +7840,7 @@ and every annotation would lose its columns for real users too."
         (should (equal (alist-get 'category (cdr metadata))
                        'agent-shell-session))
         (should (string-match-p
-                 "Review alpha"
+                 "Alpha Agent @ alpha"
                  (caddr (car (funcall (alist-get 'affixation-function
                                                  (cdr metadata))
                                       (list (buffer-name alpha)))))))))))
@@ -7738,7 +7857,8 @@ The session picker's other-shell branch reads that way."
       (kill-buffer dead)
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
-                   (setq candidates (all-completions "" collection))
+                   (setq candidates (agent-shell-vertico-tests--offered
+                                     "" collection))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--read-shell-buffer
                      :prompt "Switch to shell buffer: "
@@ -7809,7 +7929,7 @@ The session picker's other-shell branch reads that way."
                   "Agent shell: "
                   (agent-shell-vertico--completion-table 'all))
                  (buffer-name beta))))
-      (should (equal (all-completions "" table)
+      (should (equal (agent-shell-vertico-tests--offered "" table)
                      (list (buffer-name alpha) (buffer-name beta))))
       (let ((metadata (funcall table "" nil 'metadata)))
         (should (equal (alist-get 'category (cdr metadata))
@@ -7941,7 +8061,7 @@ The session picker's other-shell branch reads that way."
                      (push (list action candidate) preview-calls))))
                 ((symbol-function 'consult--read)
                  (lambda (table &rest options)
-                   (should (equal (all-completions "" table)
+                   (should (equal (agent-shell-vertico-tests--offered "" table)
                                   (list (buffer-name alpha))))
                    (let ((state (plist-get options :state)))
                      (funcall state 'setup nil)
@@ -7971,7 +8091,7 @@ The session picker's other-shell branch reads that way."
           (offered nil))
       (cl-letf (((symbol-function 'consult--read)
                  (lambda (table &rest _)
-                   (setq offered (all-completions "" table))
+                   (setq offered (agent-shell-vertico-tests--offered "" table))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--read-shell-buffer
                      :prompt "Switch to shell buffer: "
@@ -7993,7 +8113,7 @@ The session picker's other-shell branch reads that way."
       (cl-letf (((symbol-function 'consult--read)
                  (lambda (table &rest _)
                    (kill-buffer alpha)
-                   (setq offered (all-completions "" table))
+                   (setq offered (agent-shell-vertico-tests--offered "" table))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--read-shell-buffer
                      :buffers (list alpha beta))
@@ -8041,7 +8161,7 @@ beta, with every shell live and `default-directory' in project alpha."
           offered)
       (cl-letf (((symbol-function 'consult--read)
                  (lambda (table &rest _)
-                   (setq offered (all-completions "" table))
+                   (setq offered (agent-shell-vertico-tests--offered "" table))
                    (buffer-name alpha-two))))
         (agent-shell-vertico-switch-project))
       (should (equal offered (list (buffer-name alpha-one)
@@ -8062,7 +8182,8 @@ beta, with every shell live and `default-directory' in project alpha."
     (let ((offered nil))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
-                   (setq offered (all-completions "" collection))
+                   (setq offered (agent-shell-vertico-tests--offered
+                                  "" collection))
                    (buffer-name alpha-two))))
         (should (eq (agent-shell-vertico--target-shell) alpha-two)))
       (should (equal offered (list (buffer-name alpha-one)
@@ -8075,7 +8196,8 @@ beta, with every shell live and `default-directory' in project alpha."
     (let ((offered nil))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
-                   (setq offered (all-completions "" collection))
+                   (setq offered (agent-shell-vertico-tests--offered
+                                  "" collection))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--target-shell) beta)))
       (should (equal offered (list (buffer-name alpha-one)
@@ -8088,7 +8210,8 @@ beta, with every shell live and `default-directory' in project alpha."
     (let ((offered nil))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _)
-                   (setq offered (all-completions "" collection))
+                   (setq offered (agent-shell-vertico-tests--offered
+                                  "" collection))
                    (buffer-name beta))))
         (should (eq (agent-shell-vertico--target-shell t) beta)))
       (should (equal offered (list (buffer-name alpha-one)
@@ -8302,7 +8425,8 @@ type to keymap mappings when embark loads later."
 (ert-deftest agent-shell-vertico-embark-setup-registers-manager-like-actions ()
   (let ((embark-keymap-alist nil)
         (embark-default-action-overrides nil)
-        (embark-target-finders nil))
+        (embark-target-finders nil)
+        (embark-transformer-alist nil))
     (agent-shell-vertico-setup-embark)
     (should (equal (assq 'agent-shell-session embark-keymap-alist)
                    '(agent-shell-session
@@ -8472,7 +8596,8 @@ dead agent would be started again.  A live agent is interrupted."
 (ert-deftest agent-shell-vertico-embark-setup-registers-default-action-override ()
   (let ((embark-keymap-alist nil)
         (embark-default-action-overrides nil)
-        (embark-target-finders nil))
+        (embark-target-finders nil)
+        (embark-transformer-alist nil))
     (agent-shell-vertico-setup-embark)
     (should (eq (cdr (assq 'agent-shell-session
                            embark-default-action-overrides))
@@ -8869,7 +8994,8 @@ over."
 (ert-deftest agent-shell-vertico-embark-setup-registers-markdown-link-support ()
   (let ((embark-keymap-alist nil)
         (embark-default-action-overrides nil)
-        (embark-target-finders nil))
+        (embark-target-finders nil)
+        (embark-transformer-alist nil))
     (agent-shell-vertico-setup-embark)
     (should (equal (assq 'agent-shell-url embark-keymap-alist)
                    '(agent-shell-url agent-shell-vertico-markdown-link-map)))
@@ -13888,6 +14014,7 @@ carries no annotation."
   (let ((embark-keymap-alist nil)
         (embark-default-action-overrides nil)
         (embark-target-finders nil)
+        (embark-transformer-alist nil)
         (embark-quit-after-action t))
     (agent-shell-vertico--setup-embark-integrations)
     (dolist (category '(agent-shell-session
@@ -15832,7 +15959,8 @@ settles nothing and would strand every other session behind it."
             (lambda (_prompt table &optional _other-window)
               ;; Reading covers every live session, not only the ones
               ;; needing attention.
-              (should (equal (sort (all-completions "" table) #'string<)
+              (should (equal (sort (agent-shell-vertico-tests--offered
+                                    "" table) #'string<)
                              (sort (list (buffer-name alpha)
                                          (buffer-name beta))
                                    #'string<)))
@@ -17604,7 +17732,7 @@ file the reader came from cannot be an entry."
             (agent-shell-vertico-tests--look-at elsewhere)
             (let ((agent-shell-vertico-read-session-function
                    (lambda (_prompt table &optional _other-window)
-                     (setq shown (all-completions "" table))
+                     (setq shown (agent-shell-vertico-tests--offered "" table))
                      (buffer-name beta))))
               (should (eq (agent-shell-vertico-tests--jump
                            #'agent-shell-vertico-jump-history)
@@ -17830,7 +17958,8 @@ would display, and selecting one steps the history to it."
                    (setq shown
                          (funcall (cdr (assq 'display-sort-function
                                              (cdr metadata)))
-                                  (all-completions "" table))))
+                                  (agent-shell-vertico-tests--offered
+                                   "" table))))
                  (buffer-name alpha))))
           (should (eq (agent-shell-vertico-tests--jump
                        #'agent-shell-vertico-jump-history)
@@ -17980,7 +18109,7 @@ the minibuffer is not the project the reader was asked about."
        (starting "Claude Agent @ beta" "/work/beta/" nil))
     (let ((agent-shell-test-buffers (list ready starting))
           (table (agent-shell-vertico--completion-table 'all)))
-      (should (equal (all-completions
+      (should (equal (agent-shell-vertico-tests--offered
                       "" table
                       (lambda (candidate)
                         (agent-shell-vertico--session-narrow-p
