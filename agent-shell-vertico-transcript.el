@@ -1550,6 +1550,41 @@ that is how they are reached in Evil states."
        (if agent-shell-vertico-transcript--clean-view-p "Full" "Clean")
        prefix))))
 
+(defvar agent-shell-vertico-transcript-mode)
+
+(defvar-local agent-shell-vertico-transcript--mode-transition nil
+  "Reader state saved across a major-mode change.")
+(put 'agent-shell-vertico-transcript--mode-transition 'permanent-local t)
+
+(defun agent-shell-vertico-transcript--before-mode-change ()
+  "Save reader state before a major-mode change."
+  (when agent-shell-vertico-transcript-mode
+    (setq agent-shell-vertico-transcript--mode-transition
+          (list major-mode agent-shell-vertico-transcript--record
+                agent-shell-vertico-transcript--clean-view-p
+                agent-shell-vertico-transcript--clean-overlays))))
+(put 'agent-shell-vertico-transcript--before-mode-change
+     'permanent-local-hook t)
+
+(defun agent-shell-vertico-transcript--after-mode-change ()
+  "Restore the reader when entering or leaving `so-long-mode'."
+  (when-let* ((state agent-shell-vertico-transcript--mode-transition))
+    (setq agent-shell-vertico-transcript--mode-transition nil)
+    (mapc #'delete-overlay (nth 3 state))
+    (if (or (provided-mode-derived-p (car state) 'so-long-mode)
+            (derived-mode-p 'so-long-mode))
+        (progn
+          (setq-local agent-shell-vertico-transcript--record (nth 1 state))
+          (agent-shell-vertico-transcript-mode 1)
+          (when (nth 2 state)
+            (agent-shell-vertico-transcript--show-clean-view)))
+      (remove-hook 'change-major-mode-hook
+                   #'agent-shell-vertico-transcript--before-mode-change t)
+      (remove-hook 'after-change-major-mode-hook
+                   #'agent-shell-vertico-transcript--after-mode-change t))))
+(put 'agent-shell-vertico-transcript--after-mode-change
+     'permanent-local-hook t)
+
 (define-minor-mode agent-shell-vertico-transcript-mode
   "Read and act on an `agent-shell' transcript."
   :lighter " Transcript"
@@ -1567,7 +1602,16 @@ that is how they are reached in Evil states."
                     '(:eval
                       (agent-shell-vertico-transcript--header-line)))
         (agent-shell-vertico-transcript--bind-evil-keys)
+        (add-hook 'change-major-mode-hook
+                  #'agent-shell-vertico-transcript--before-mode-change nil t)
+        (add-hook 'after-change-major-mode-hook
+                  #'agent-shell-vertico-transcript--after-mode-change nil t)
         (read-only-mode 1))
+    (remove-hook 'change-major-mode-hook
+                 #'agent-shell-vertico-transcript--before-mode-change t)
+    (remove-hook 'after-change-major-mode-hook
+                 #'agent-shell-vertico-transcript--after-mode-change t)
+    (setq agent-shell-vertico-transcript--mode-transition nil)
     (setq-local header-line-format nil)
     (agent-shell-vertico-transcript--unbind-evil-keys)
     (agent-shell-vertico-transcript--show-full-view)
@@ -1706,7 +1750,8 @@ A transcript not yet open is visited in the reader's Markdown mode, so
 the mode the file would select is never set up only to be replaced:
 `markdown-ts-mode', in a configuration that remaps `markdown-mode' to
 it, was most of the time an open took.  One already open is switched by
-`agent-shell-vertico-transcript--set-markdown-major-mode'."
+`agent-shell-vertico-transcript--set-markdown-major-mode', unless it is
+in `so-long-mode', whose protection is kept."
   (let* ((file
           (agent-shell-vertico-transcript-record-file record))
          (open (find-buffer-visiting file))
@@ -1725,7 +1770,8 @@ it, was most of the time an open took.  One already open is switched by
         (agent-shell-vertico-transcript--defer-embedded-ranges))
       ;; Before the record and the minor mode, since changing the major
       ;; mode clears both.
-      (agent-shell-vertico-transcript--set-markdown-major-mode)
+      (unless (derived-mode-p 'so-long-mode)
+        (agent-shell-vertico-transcript--set-markdown-major-mode))
       (setq-local agent-shell-vertico-transcript--record record)
       (agent-shell-vertico-transcript-mode 1)
       (when-let* ((line

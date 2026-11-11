@@ -15,6 +15,7 @@ compile:
 test:
 	$(EMACS) -Q --batch -L . -L tests/support -L tests \
 		-l tests/agent-shell-vertico-tests.el \
+		-l tests/transcript-so-long-reproduction.el \
 		-f ert-run-tests-batch-and-exit
 
 check: compile test

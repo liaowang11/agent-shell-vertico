@@ -865,7 +865,10 @@ transcript with 900 code blocks it costs 0.1–0.2 s a screen against 10 ms, and
 default adds a final newline, which marks the buffer modified for every
 transcript that ends without one; the cost is that the grammar can misread
 markup at the very end of such a transcript. A buffer already in a mode built
-on the chosen one keeps it.
+on the chosen one keeps it. If `so-long` selects its protected major mode,
+the reader keeps that mode, its header, keys and clean/full view. Markdown
+rendering may be reduced; `M-x so-long-revert` restores the previous major mode
+and keeps the reader, at the cost of the protection.
 
 `agent-shell-open-transcript` and `agent-shell-viewport-open-transcript` visit
 the same file with `find-file`, which leaves the mode to the file itself, so a
