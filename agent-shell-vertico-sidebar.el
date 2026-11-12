@@ -482,6 +482,15 @@ or an event has ended or replaced since is left to them.  See
 `agent-shell-vertico-sidebar-snooze-limited'.")
   (needs nil :documentation "\
 The question a turn ended on, from its `needs input:' line.")
+  (blocked nil :documentation "\
+What the agent says the session waits on, as (:kind KIND :msg MSG), or nil.
+
+omp's `requires_action' state update carries its newest open wait as
+`_meta.blocked': KIND is \"permission\" or \"question\" and MSG the
+dialog's title.  agent-shell keeps only the state, and emits nothing
+when the wait changes under it, so the sidebar keeps the wait from the
+update itself (see `agent-shell-vertico-sidebar--note-agent-state').
+Any other state update clears it.")
   (waiting-since nil :documentation "\
 When the permission request the session waits on arrived, or nil.
 
@@ -1441,7 +1450,10 @@ STATUS is BUFFER's `--raw-status' when the caller has already read it."
                       (or (agent-shell-vertico-sidebar--permission-needs
                            buffer)
                           (agent-shell-vertico-sidebar--elicitation-needs
-                           buffer)))
+                           buffer)
+                          (plist-get (agent-shell-vertico-sidebar--get
+                                      buffer 'blocked)
+                                     :msg)))
                  (agent-shell-vertico-sidebar--get buffer 'needs))))
       ((or 'done 'failed 'limited 'stopped) (list status 'idle nil))
       (_ (list 'working 'idle nil)))))
@@ -1672,8 +1684,20 @@ once it holds unread output."
 The name says what the session is, never whether anyone has read it:
 a finished turn leaves a session `Done'."
   (or (agent-shell-vertico-sidebar--snapshot-field buffer :status-name)
-      (agent-shell-vertico-sidebar--status-name-for
-       (agent-shell-vertico-sidebar--raw-status buffer))))
+      (agent-shell-vertico-sidebar--buffer-status-name
+       buffer (agent-shell-vertico-sidebar--raw-status buffer))))
+
+(defun agent-shell-vertico-sidebar--buffer-status-name (buffer status)
+  "Return the display status name for BUFFER at STATUS.
+A live blocked session whose agent said what it waits on is named by
+that wait's kind, `Permission' or `Question'; otherwise STATUS's name."
+  (or (and (eq status 'blocked)
+           (agent-shell-vertico-sidebar--live-p buffer)
+           (pcase (plist-get (agent-shell-vertico-sidebar--get buffer 'blocked)
+                             :kind)
+             ("permission" "Permission")
+             ("question" "Question")))
+      (agent-shell-vertico-sidebar--status-name-for status)))
 
 (defun agent-shell-vertico-sidebar--status-rank (buffer)
   "Return a status rank for BUFFER.  Lower ranks sort first."
@@ -1830,7 +1854,7 @@ repeating those queries during one redisplay."
            :title (agent-shell-vertico-sidebar--title buffer)
            :status status
            :status-name
-           (agent-shell-vertico-sidebar--status-name-for status)
+           (agent-shell-vertico-sidebar--buffer-status-name buffer status)
            :status-rank (agent-shell-vertico-sidebar--status-rank-for
                          status (and unread t) (and snoozed t)
                          (and (agent-shell-vertico-sidebar--settled-for
@@ -1982,8 +2006,9 @@ does."
          (line (if (eq (agent-shell-vertico-sidebar--view) 'state)
                    detail
                  (concat (propertize
-                          (agent-shell-vertico-sidebar--status-name-for
-                           (plist-get snapshot :status))
+                          (or (plist-get snapshot :status-name)
+                              (agent-shell-vertico-sidebar--status-name-for
+                               (plist-get snapshot :status)))
                           'face (agent-shell-vertico-sidebar--mark-face
                                  snapshot))
                          (and detail
@@ -4292,6 +4317,37 @@ report none leave nil."
   (equal (map-elt (agent-shell-vertico--state buffer) :agent-state)
          "running"))
 
+(defun agent-shell-vertico-sidebar--note-agent-state (&rest args)
+  "Keep what a root session's `state_update' says it waits on.
+
+Runs after `agent-shell--note-agent-state', whose ARGS are the session
+state, the notification and the declared state.  Only the root
+session's update counts, as agent-shell counts it.  A `requires_action'
+carrying `_meta.blocked' records it in the `blocked' slot, and any other
+update clears it; the sidebar redraws when that changes, since
+agent-shell emits nothing when only the wait changes."
+  (pcase-let* ((`(,state ,notification ,agent-state) args)
+               (buffer (map-elt state :buffer))
+               (session-id (map-nested-elt notification '(params sessionId))))
+    (when (and (buffer-live-p buffer)
+               (member agent-state '("running" "requires_action" "idle"))
+               (not (bound-and-true-p agent-shell--subagent-group))
+               (or (null session-id)
+                   (equal session-id (map-nested-elt state '(:session :id)))))
+      (let* ((blocked (and (equal agent-state "requires_action")
+                           (map-nested-elt notification
+                                           '(params update _meta blocked))))
+             (kind (map-elt blocked 'kind))
+             (msg (map-elt blocked 'msg))
+             (wait (and (stringp kind)
+                        (list :kind kind :msg (and (stringp msg) msg)))))
+        (unless (equal wait (agent-shell-vertico-sidebar--get buffer 'blocked))
+          (agent-shell-vertico-sidebar--set buffer 'blocked wait)
+          (agent-shell-vertico-sidebar--schedule-refresh))))))
+
+(advice-add 'agent-shell--note-agent-state :after
+            #'agent-shell-vertico-sidebar--note-agent-state)
+
 (defun agent-shell-vertico-sidebar--out-of-turn-quiet (buffer)
   "Settle BUFFER's burst after its quiet period, unless the agent is running.
 
@@ -5181,8 +5237,8 @@ is not yet true; by default the session's `--raw-status'."
           (funcall agent-shell-vertico-sidebar-notify-function
                    :buffer buffer
                    :agent (agent-shell-vertico--agent-name buffer)
-                   :status (agent-shell-vertico-sidebar--status-name-for
-                            status)
+                   :status (agent-shell-vertico-sidebar--buffer-status-name
+                            buffer status)
                    :state state
                    :needs needs
                    :unread (and (agent-shell-vertico-sidebar--unread-for
@@ -7973,8 +8029,8 @@ ASK is the pending request it draws, from
     (concat
      (propertize (agent-shell-vertico-sidebar--title buffer) 'face 'bold)
      " · "
-     (propertize (agent-shell-vertico-sidebar--status-name-for
-                  (plist-get snapshot :status))
+     (propertize (agent-shell-vertico-sidebar--buffer-status-name
+                  buffer (plist-get snapshot :status))
                  'face (agent-shell-vertico-sidebar--mark-face snapshot))
      (and age (concat " · " age))
      "\n"

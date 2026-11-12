@@ -21806,6 +21806,88 @@ marking read drops every mark."
     (should (string-match-p "^  M +" help))
     (should-not (string-match-p "Traffic\\|Set mode" help))))
 
+;;; What a blocked session waits on
+
+(defun agent-shell-vertico-tests--state-update (buffer state &optional blocked)
+  "Have BUFFER's agent send a `state_update' of STATE, as omp does.
+BLOCKED is the update's `_meta.blocked' alist, or nil."
+  (agent-shell--note-agent-state
+   (cons (cons :buffer buffer) (buffer-local-value 'agent-shell--state buffer))
+   `((method . "session/update")
+     (params . ((sessionId . "a")
+                (update . ((sessionUpdate . "state_update")
+                           (state . ,state)
+                           ,@(and blocked
+                                  `((_meta . ((blocked . ,blocked))))))))))
+   state))
+
+(ert-deftest agent-shell-vertico-sidebar-blocked-kind-names-the-wait ()
+  "omp's `_meta.blocked' says whether the wait is for permission or an answer.
+The newest wait wins even though the run state stays `requires_action',
+which agent-shell reports no change for, and running again clears it."
+  (agent-shell-vertico-tests--with-alpha
+    (setq agent-shell-test-statuses (list (cons alpha 'blocked)))
+    (with-current-buffer alpha
+      (setq-local agent-shell--state
+                  '((:session . ((:id . "a") (:title . "Review alpha")))
+                    (:elicitations
+                     . ((1 . ((:id . 1) (:status . pending)
+                              (:message . "Delete it?"))))))))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Waiting"))
+    (let (refreshed)
+      (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--schedule-refresh)
+                 (lambda (&rest _) (setq refreshed t))))
+        (agent-shell-vertico-tests--state-update
+         alpha "requires_action" '((kind . "permission") (msg . "Delete it?")))
+        (should refreshed)
+        (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                       "Permission"))
+        (should (equal (agent-shell-vertico-sidebar--detail-for
+                        (agent-shell-vertico-sidebar--snapshot alpha))
+                       "Delete it?"))
+        (setq refreshed nil)
+        (agent-shell-vertico-tests--state-update
+         alpha "requires_action" '((kind . "question") (msg . "Name?")))
+        (should refreshed)
+        (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                       "Question"))
+        (agent-shell-vertico-tests--state-update alpha "running")
+        (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                       "Waiting"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-blocked-kind-message-is-the-need ()
+  "The wait's message says what is asked when agent-shell holds no request."
+  (agent-shell-vertico-tests--with-alpha
+    (setq agent-shell-test-statuses (list (cons alpha 'blocked)))
+    (agent-shell-vertico-tests--state-update
+     alpha "requires_action" '((kind . "question") (msg . "Pick one")))
+    (should (equal (agent-shell-vertico-sidebar--job-state alpha)
+                   '(done blocked "Pick one")))))
+
+(ert-deftest agent-shell-vertico-sidebar-blocked-kind-absent-keeps-waiting ()
+  "A `requires_action' without `_meta.blocked', as Claude sends, says Waiting.
+Nor does a kind show while the session is not blocked, or one declared
+for another session."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--state-update
+     alpha "requires_action" '((kind . "permission")))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha) "Done"))
+    (setq agent-shell-test-statuses (list (cons alpha 'blocked)))
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Permission"))
+    (agent-shell-vertico-tests--state-update alpha "requires_action")
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Waiting"))
+    (agent-shell--note-agent-state
+     (cons (cons :buffer alpha) (buffer-local-value 'agent-shell--state alpha))
+     '((params . ((sessionId . "other")
+                  (update . ((state . "requires_action")
+                             (_meta . ((blocked . ((kind . "question"))))))))))
+     "requires_action")
+    (should (equal (agent-shell-vertico-sidebar--status-name alpha)
+                   "Waiting"))))
+
 (provide 'agent-shell-vertico-tests)
 
 ;;; agent-shell-vertico-tests.el ends here

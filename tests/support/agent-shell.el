@@ -313,6 +313,30 @@ picker, it offers nothing when there is neither a session nor a shell."
   "The subagent whose notification is being dispatched, as upstream binds it.
 Non-nil only around a subagent's content; tests bind it to fake one.")
 
+(defconst agent-shell--agent-states '("running" "requires_action" "idle")
+  "The run states ACP defines, as upstream lists them.")
+
+(defun agent-shell--note-agent-state (state acp-notification agent-state
+                                            &optional stop-reason)
+  "Record AGENT-STATE, declared by ACP-NOTIFICATION, as STATE's run state.
+Kept in the shape agent-shell's own function has: only the root
+session's state counts, and `state-changed' is emitted, with
+STOP-REASON, only when the state changes."
+  (when (and (member agent-state agent-shell--agent-states)
+             (not agent-shell--subagent-group)
+             (let ((session-id (map-nested-elt acp-notification
+                                               '(params sessionId))))
+               (or (null session-id)
+                   (equal session-id (map-nested-elt state '(:session :id)))))
+             (not (equal agent-state (map-elt state :agent-state))))
+    (let ((buffer (map-elt state :buffer)))
+      (with-current-buffer buffer
+        (setf (map-elt agent-shell--state :agent-state) agent-state))
+      (agent-shell-test--emit
+       buffer `((:event . state-changed)
+                (:data . ((:id) (:state . ,agent-state)
+                          (:stop-reason . ,stop-reason))))))))
+
 (defun agent-shell--subagent-latest-activity-label (state session-id)
   "Return SESSION-ID's latest activity label in STATE, as upstream does.
 Nil once the subagent has ended.  Only the kinds the tests use are
