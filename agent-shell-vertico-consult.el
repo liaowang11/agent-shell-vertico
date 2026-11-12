@@ -496,11 +496,12 @@ a choice with no transcript behind it previews nothing."
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-search-project ()
-  "Search transcripts belonging to the current project."
+  "Search transcripts belonging to the current project.
+Outside a project, search those recorded in `default-directory'."
   (interactive)
   (agent-shell-vertico-consult--search
    (list
-    (agent-shell-vertico-transcript--current-project-or-error))))
+    (agent-shell-vertico-transcript--current-project-or-directory))))
 
 ;;; Prompt queue preview
 ;;

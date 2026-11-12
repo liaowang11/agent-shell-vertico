@@ -810,7 +810,7 @@ transcripts.
 
 Browsing spans every known project. A prefix argument narrows it to one
 selected project, and the `-project` variants operate on the current project
-without asking for one.
+without asking for one, or on the current directory outside a project.
 
 - `M-x agent-shell-vertico-transcript-browse`
   Select and open a transcript from every known project. With a prefix

@@ -10294,6 +10294,20 @@ report on local metadata has no business doing."
       (should (eq opened record))
       (should-not activated))))
 
+(ert-deftest agent-shell-vertico-transcript-browse-project-outside-project ()
+  "Outside any project, the current directory stands in for the root."
+  (let ((default-directory "/work/loose/")
+        called-root)
+    (cl-letf
+        (((symbol-function
+           'agent-shell-vertico-transcript--current-project-root)
+          #'ignore)
+         ((symbol-function
+           'agent-shell-vertico-transcript--browse-project-root)
+          (lambda (root) (setq called-root root))))
+      (agent-shell-vertico-transcript-browse-project)
+      (should (equal called-root "/work/loose/")))))
+
 (defmacro agent-shell-vertico-tests--with-displayed-transcript
     (&rest body)
   "Display a transcript in the selected window and evaluate BODY.

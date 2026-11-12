@@ -1358,11 +1358,14 @@ It receives a prompt and a list of transcript records.")
         0 'agent-shell-vertico-project-root candidate))
      (user-error "No known projects"))))
 
-(defun agent-shell-vertico-transcript--current-project-or-error ()
-  "Return the current project root or signal a user error."
+(defun agent-shell-vertico-transcript--current-project-or-directory ()
+  "Return the current project root, else `default-directory'.
+A session need not run inside a project, and its transcripts are still
+found by the directory it ran in: a shared store matches the recorded
+working directory, and a project-local store sits under that directory."
   (or
    (agent-shell-vertico-transcript--current-project-root)
-   (user-error "Not in a project")))
+   (agent-shell-vertico-transcript--normalize-directory default-directory)))
 
 (defvar-local agent-shell-vertico-transcript--record nil
   "Transcript record associated with the current transcript buffer.")
@@ -2623,10 +2626,11 @@ browse only its transcripts."
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-browse-project ()
-  "Browse transcripts belonging to the current project."
+  "Browse transcripts belonging to the current project.
+Outside a project, browse those recorded in `default-directory'."
   (interactive)
   (agent-shell-vertico-transcript--browse-project-root
-   (agent-shell-vertico-transcript--current-project-or-error)))
+   (agent-shell-vertico-transcript--current-project-or-directory)))
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-resume (&optional select-project)
@@ -2643,10 +2647,11 @@ resume only from its transcripts."
 
 ;;;###autoload
 (defun agent-shell-vertico-transcript-resume-project ()
-  "Resume a transcript session belonging to the current project."
+  "Resume a transcript session belonging to the current project.
+Outside a project, resume from those recorded in `default-directory'."
   (interactive)
   (agent-shell-vertico-transcript--resume-project-root
-   (agent-shell-vertico-transcript--current-project-or-error)))
+   (agent-shell-vertico-transcript--current-project-or-directory)))
 
 (provide 'agent-shell-vertico-transcript)
 
