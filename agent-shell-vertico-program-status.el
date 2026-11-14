@@ -5,6 +5,13 @@
 (require 'seq)
 (require 'subr-x)
 
+(declare-function agent-shell--state "agent-shell" ())
+(declare-function agent-shell-buffers "agent-shell" ())
+(declare-function agent-shell-subscribe-to "agent-shell" (&rest args))
+(declare-function agent-shell-unsubscribe "agent-shell" (&rest args))
+(declare-function agent-shell-vertico-sidebar--watch-existing "agent-shell-vertico-sidebar" (&rest args))
+(declare-function agent-shell-vertico-sidebar--last-message "agent-shell-vertico-sidebar" (buffer))
+
 (defconst agent-shell-vertico-program-status-app "emacs"
   "The `app' every program status report names.")
 
@@ -317,6 +324,7 @@ RECORDS maps nil (the shell itself) or a child id to its protocol state.")
 (define-minor-mode agent-shell-vertico-program-status-mode
   "Report agent-shell activity to Rex terminals using OSC 7501."
   :global t
+  :group 'agent-shell-vertico
   (if agent-shell-vertico-program-status-mode
       (progn
         (require 'agent-shell)
