@@ -30,6 +30,18 @@ viewport interaction is preferred, but does not create one. The other-window
 command previews in that window. Selecting a session still uses the normal
 switch path, including attention handling.
 
+## Terminal program status
+
+Enable `(require 'agent-shell-vertico-program-status)` followed by
+`(agent-shell-vertico-program-status-mode 1)` to report agent-shell sessions
+to Rex text terminals using OSC 7501. Working reports show the latest active
+tool's description or title, falling back to `Working` when none is active.
+Completed sessions include the sidebar's last agent message when available.
+Sessions and background tasks have separate records. Earlier error records are
+acknowledged when new work starts, so Rex can show that work. The mode also
+replays records to newly attached Rex terminals and retracts them on exit or
+when disabled. Graphical frames and non-Rex terminals receive no reports.
+
 ## Jump history
 
 Moving between sessions leaves a trail, the way vim's jump list does for

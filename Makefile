@@ -6,6 +6,7 @@ compile:
 	$(EMACS) -Q --batch -L . -L tests/support \
 		-f batch-byte-compile agent-shell-vertico.el \
 		agent-shell-vertico-sidebar.el \
+		agent-shell-vertico-program-status.el \
 		agent-shell-vertico-transcript.el \
 		agent-shell-vertico-resume.el \
 		agent-shell-vertico-prompt-queue.el \
@@ -15,6 +16,7 @@ compile:
 test:
 	$(EMACS) -Q --batch -L . -L tests/support -L tests \
 		-l tests/agent-shell-vertico-tests.el \
+		-l tests/agent-shell-vertico-program-status-tests.el \
 		-l tests/transcript-so-long-reproduction.el \
 		-f ert-run-tests-batch-and-exit
 
