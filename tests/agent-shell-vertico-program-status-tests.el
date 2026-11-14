@@ -243,6 +243,21 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
                                  (bill/psp-test--sent-to 'rex))
                          '("Reading config" "Running tests" "Running tests" "Working"))))))))
 
+(ert-deftest bill/psp-new-tool-clears-old-child-error ()
+  (bill/psp-test--with-terminals
+    (let ((shell (bill/psp-test--shell "*claude*" "s")))
+      (bill/psp-test--emit shell "running")
+      (bill/psp-test--emit shell "running" nil "task/failed")
+      (bill/psp-test--emit shell "idle" "error" "task/failed")
+      (setq bill/psp-test--sent nil)
+      (with-current-buffer shell
+        (agent-shell-vertico-program-status--on-tool-call
+         '((:data . ((:tool-call-id . "next")
+                     (:tool-call . ((:status . "in_progress") (:title . "Next action"))))))))
+      (let ((reports (bill/psp-test--sent-to 'rex)))
+        (should (member "\e]7501;state=clear:id=s/task/failed\e\\" reports))
+        (should (equal (bill/psp-test--decoded (car (last reports)) "msg") "Next action"))))))
+
 (ert-deftest bill/psp-done-uses-tracked-agent-message ()
   (bill/psp-test--with-terminals
     (let ((shell (bill/psp-test--shell "*claude*" "s")))

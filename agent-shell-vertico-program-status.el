@@ -211,6 +211,8 @@ RECORDS maps nil (the shell itself) or a child id to its protocol state.")
       (when (equal (alist-get nil (cdr (gethash (current-buffer)
                                                 agent-shell-vertico-program-status--shells)))
                    "working")
+        (when (and (null entry) (or (null status) (member status '("pending" "in_progress"))))
+          (agent-shell-vertico-program-status--clear-errors (current-buffer) nil))
         (agent-shell-vertico-program-status--send
          (agent-shell-vertico-program-status--report (current-buffer) nil "working"))))))
 
