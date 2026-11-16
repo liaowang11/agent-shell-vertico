@@ -44,16 +44,77 @@
 (defvar-local agent-shell-ui-mode nil
   "Stubbed agent-shell fold minor mode.")
 
-(defun agent-shell-ui-toggle-fragment ()
-  "Record a fold toggle instead of folding."
-  (cl-incf agent-shell-test-toggle-fragment-count))
+(defun agent-shell-test--fragment-range (position)
+  "Return (START . END) of the fragment whose state covers POSITION."
+  (let ((state (get-text-property position 'agent-shell-ui-state)))
+    (cons (if (and (> position (point-min))
+                   (eq (get-text-property (1- position) 'agent-shell-ui-state)
+                       state))
+              (previous-single-property-change
+               position 'agent-shell-ui-state nil (point-min))
+            position)
+          (next-single-property-change
+           position 'agent-shell-ui-state nil (point-max)))))
 
-(defun agent-shell-ui--set-group-collapsed (group-qualified-id collapsed)
-  "Record a group fold change and reveal its children when expanded.
-This mirrors the part of the real private API used by the package: group
-children lose their `invisible' property when COLLAPSED is nil."
+(defun agent-shell-test--fragment-body (range)
+  "Return (START . END) of the body of the fragment spanning RANGE.
+The `body' section when the fragment marks one, else every line after
+its first, which is what a folded fragment hides."
+  (let* ((start (car range))
+         (end (cdr range))
+         (body (text-property-any start end 'agent-shell-ui-section 'body)))
+    (if body
+        (cons body (next-single-property-change
+                    body 'agent-shell-ui-section nil end))
+      (cons (min end (save-excursion
+                       (goto-char start)
+                       (1+ (line-end-position))))
+            end))))
+
+(defun agent-shell-ui-toggle-fragment (&optional recursive)
+  "Fold or unfold the fragment at point, as agent-shell does.
+The fragment's state flips `:collapsed' and its body is hidden or shown.
+Each call is counted in `agent-shell-test-toggle-fragment-count'.
+RECURSIVE is accepted and ignored."
+  (ignore recursive)
+  (cl-incf agent-shell-test-toggle-fragment-count)
+  (when-let* ((state (get-text-property (point) 'agent-shell-ui-state)))
+    (let* ((range (agent-shell-test--fragment-range (point)))
+           (body (agent-shell-test--fragment-body range))
+           (collapsed (not (map-elt state :collapsed))))
+      (map-put! state :collapsed collapsed)
+      (put-text-property (car body) (cdr body) 'invisible collapsed))))
+
+(defun agent-shell-ui--group-header-range (group-qualified-id)
+  "Return (:start :end) of the group header GROUP-QUALIFIED-ID, or nil."
+  (save-excursion
+    (goto-char (point-min))
+    (when-let* ((match (text-property-search-forward
+                        'agent-shell-ui-state nil
+                        (lambda (_ state)
+                          (and (equal (map-elt state :qualified-id)
+                                      group-qualified-id)
+                               (eq (map-elt state :kind) 'group))))))
+      (list (cons :start (prop-match-beginning match))
+            (cons :end (prop-match-end match))))))
+
+(cl-defun agent-shell-ui--set-group-collapsed
+    (&key group-qualified-id collapsed include-children)
+  "Fold or unfold group GROUP-QUALIFIED-ID, as agent-shell does.
+
+Takes upstream's keyword arguments; a positional call signals as the
+real function does.  The call is recorded in
+`agent-shell-test-group-collapse-calls' as (GROUP-QUALIFIED-ID
+COLLAPSED).  COLLAPSED hides every member whole; expanding shows each
+member's label, and its body unless the member is folded itself.
+INCLUDE-CHILDREN is accepted and ignored.  Point is left on the
+group's header, as the real function leaves it."
+  (ignore include-children)
   (push (list group-qualified-id collapsed)
         agent-shell-test-group-collapse-calls)
+  (when-let* ((header (agent-shell-ui--group-header-range
+                       group-qualified-id)))
+    (goto-char (map-elt header :start)))
   (save-excursion
     (goto-char (point-min))
     (while (< (point) (point-max))
@@ -63,18 +124,15 @@ children lose their `invisible' property when COLLAPSED is nil."
                         start 'agent-shell-ui-state nil (point-max))
                        (point-max))))
         (when (and state
-                   (equal (map-elt state :qualified-id)
-                          group-qualified-id))
-          (map-put! state :collapsed collapsed)
-          (put-text-property start next 'agent-shell-ui-state state))
-        (when (and (not collapsed)
-                   state
-                   (equal (map-elt state :group-id) group-qualified-id)
-                   (not (map-elt state :collapsed)))
-          (put-text-property start next 'invisible nil))
-        (if (> next start)
-            (goto-char next)
-          (goto-char (point-max)))))))
+                   (equal (map-elt state :qualified-id) group-qualified-id))
+          (map-put! state :collapsed collapsed))
+        (when (and state
+                   (equal (map-elt state :group-id) group-qualified-id))
+          (put-text-property start next 'invisible collapsed)
+          (when (and (not collapsed) (map-elt state :collapsed))
+            (let ((body (agent-shell-test--fragment-body (cons start next))))
+              (put-text-property (car body) (cdr body) 'invisible t))))
+        (goto-char (if (> next start) next (point-max)))))))
 
 (defun agent-shell-buffers ()
   "Return stubbed agent shell buffers."

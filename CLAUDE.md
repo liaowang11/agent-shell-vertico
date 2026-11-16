@@ -319,6 +319,25 @@ shell's point (which is how the viewport knows its page), so
 command makes the real jump. The header reads a cached position, so
 showing a page recomputes it first.
 
+**Opening what a jump lands on.** agent-shell folds with text
+properties, which neither imenu nor Consult opens, so
+`--reveal-folds-at-point` does: it opens the activity group holding the
+fragment at point (or the group, on its header) and then the fragment,
+and returns functions that fold them again. An imenu jump
+(`--imenu-reveal-at-point`, on `imenu-after-jump-hook`) opens the item's
+fragment even though its label, where the item points, is shown; a
+`consult-line` jump (`--expand-fold`) opens only what hides point, since a
+match on shown text needs no body. Previews go through a `:filter-return`
+advice on `consult--invisible-open-temporarily`, whose restore functions
+Consult runs when the preview moves on or ends, so a quit leaves the
+folds as they were; `current-minibuffer-command` naming imenu picks the
+imenu rule. Consult also runs `consult-after-jump-hook` after each
+preview, which then finds nothing left to open. agent-shell's
+`--set-group-collapsed` takes keywords and leaves point on the header,
+so the call binds `inhibit-read-only` and keeps point; the stub does
+both, because a stub that took positional arguments hid a reveal that
+signalled on every grouped item.
+
 **Preparing where a session appears.** Every command that opens a session
 goes through `--display-session` or `--display-session-other-window`, so
 `agent-shell-vertico-before-display-function` is called there, once, with

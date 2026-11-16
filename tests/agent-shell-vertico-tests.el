@@ -12668,7 +12668,8 @@ inside a collapsed block."
           (agent-shell-mode)
           (setq agent-shell-ui-mode t)
           (agent-shell-vertico-tests--insert-block
-           :qid "1-activity-0" :kind 'group :label-left "Activity")
+           :qid "1-activity-0" :kind 'group :label-left "Activity"
+           :collapsed t)
           (let ((member
                  (agent-shell-vertico-tests--insert-block
                   :qid "1-call_a" :group-id "1-activity-0"
@@ -12693,20 +12694,183 @@ inside a collapsed block."
           (agent-shell-mode)
           (setq agent-shell-ui-mode t)
           (agent-shell-vertico-tests--insert-block
-           :qid "1-activity-0" :kind 'group :label-left "Activity")
+           :qid "1-activity-0" :kind 'group :label-left "Activity"
+           :collapsed t)
           (let ((member
                  (agent-shell-vertico-tests--insert-block
                   :qid "1-call_a" :group-id "1-activity-0"
                   :label-left "completed read" :label-right "Read foo"
                   :body "contents" :navigatable t :collapsed t
                   :invisible t)))
-            (goto-char member)
+            ;; A line match in the member's body, which stays hidden once
+            ;; the group opens, because the member is folded itself.
+            (goto-char (text-property-any member (point-max)
+                                          'agent-shell-ui-section 'body))
             (should (invisible-p (point)))
             (agent-shell-vertico-consult--expand-fold)
             (should (equal agent-shell-test-group-collapse-calls
                            '(("1-activity-0" nil))))
             (should (= agent-shell-test-toggle-fragment-count 1))))
       (kill-buffer folding))))
+
+;;; Revealing a jump target
+
+(defun agent-shell-vertico-tests--fold-fixture (group-collapsed
+                                                member-collapsed)
+  "Return (BUFFER HEADER MEMBER LONE) for a folding shell buffer.
+
+HEADER is an activity group header, folded when GROUP-COLLAPSED;
+MEMBER a tool call in it, folded itself when MEMBER-COLLAPSED; LONE a
+folded tool call outside any group, its label shown and body hidden, as
+agent-shell draws one."
+  (let ((buffer (generate-new-buffer " *agent-shell-reveal*"))
+        header member lone)
+    (with-current-buffer buffer
+      (agent-shell-mode)
+      (setq agent-shell-ui-mode t)
+      (setq header (agent-shell-vertico-tests--insert-block
+                    :qid "1-activity-0" :kind 'group
+                    :label-left "Tool calls 1/1" :collapsed group-collapsed))
+      (setq member (agent-shell-vertico-tests--insert-block
+                    :qid "1-call_a" :group-id "1-activity-0"
+                    :label-left "completed" :label-right "Read foo"
+                    :body "member contents" :collapsed member-collapsed
+                    :invisible group-collapsed))
+      (when (and member-collapsed (not group-collapsed))
+        (agent-shell-vertico-tests--hide-body member))
+      (setq lone (agent-shell-vertico-tests--insert-block
+                  :qid "1-call_b" :label-left "completed"
+                  :label-right "Edit bar" :body "lone contents"
+                  :collapsed t))
+      (agent-shell-vertico-tests--hide-body lone))
+    (list buffer header member lone)))
+
+(defun agent-shell-vertico-tests--hide-body (start)
+  "Hide the body of the fragment starting at START."
+  (let ((body (text-property-any start (point-max)
+                                 'agent-shell-ui-section 'body)))
+    (put-text-property body (next-single-property-change
+                             body 'agent-shell-ui-section nil (point-max))
+                       'invisible t)))
+
+(defun agent-shell-vertico-tests--body-visible-p (start)
+  "Return non-nil when the body of the fragment starting at START shows."
+  (not (invisible-p (text-property-any start (point-max)
+                                       'agent-shell-ui-section 'body))))
+
+(defun agent-shell-vertico-tests--collapsed-p (position)
+  "Return the `:collapsed' state of the fragment at POSITION."
+  (map-elt (get-text-property position 'agent-shell-ui-state) :collapsed))
+
+(ert-deftest agent-shell-vertico-imenu-reveal-opens-folded-fragment ()
+  "An imenu jump to a folded tool call opens it, though its label shows.
+
+The item points at the label, which a fold leaves visible, so a rule
+that waited for hidden text left the body folded."
+  (pcase-let ((`(,buffer ,_header ,_member ,lone)
+               (agent-shell-vertico-tests--fold-fixture nil nil))
+              (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char lone)
+          (should-not (invisible-p (point)))
+          (agent-shell-vertico--imenu-reveal-at-point)
+          (should-not (agent-shell-vertico-tests--collapsed-p lone))
+          (should (agent-shell-vertico-tests--body-visible-p lone)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-imenu-reveal-opens-group-header ()
+  "An imenu jump to a folded group header opens the group."
+  (pcase-let ((`(,buffer ,header ,member ,_lone)
+               (agent-shell-vertico-tests--fold-fixture t nil))
+              (agent-shell-test-group-collapse-calls nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char header)
+          (agent-shell-vertico--imenu-reveal-at-point)
+          (should (equal agent-shell-test-group-collapse-calls
+                         '(("1-activity-0" nil))))
+          (should-not (invisible-p member))
+          (should (agent-shell-vertico-tests--body-visible-p member)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-imenu-reveal-opens-group-and-member ()
+  "A member of a folded group opens the group and then itself."
+  (pcase-let ((`(,buffer ,_header ,member ,_lone)
+               (agent-shell-vertico-tests--fold-fixture t t)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char member)
+          (agent-shell-vertico--imenu-reveal-at-point)
+          (should-not (agent-shell-vertico-tests--collapsed-p
+                       (point-min)))
+          (should-not (agent-shell-vertico-tests--collapsed-p member))
+          (should-not (invisible-p member))
+          (should (agent-shell-vertico-tests--body-visible-p member)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-consult-preview-reveals-then-refolds ()
+  "An imenu preview opens the folds and closing it folds them again.
+
+Consult runs the functions the wrapped call returns when the preview
+moves on or ends, which is how a quit leaves the buffer as it was."
+  (pcase-let ((`(,buffer ,header ,member ,_lone)
+               (agent-shell-vertico-tests--fold-fixture t t)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char member)
+          (let* ((current-minibuffer-command 'consult-imenu)
+                 (restore (agent-shell-vertico-consult--open-folds-temporarily
+                           (list #'ignore))))
+            (should (memq #'ignore restore))
+            (should (agent-shell-vertico-tests--body-visible-p member))
+            (mapc #'funcall restore))
+          (should (agent-shell-vertico-tests--collapsed-p header))
+          (should (agent-shell-vertico-tests--collapsed-p member))
+          (should (invisible-p member)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-consult-line-preview-keeps-visible-labels ()
+  "A line preview on a folded fragment's shown label opens nothing.
+
+A line match on text already shown needs no body, which is the rule
+`consult-line' jumps keep."
+  (pcase-let ((`(,buffer ,_header ,_member ,lone)
+               (agent-shell-vertico-tests--fold-fixture nil nil))
+              (agent-shell-test-toggle-fragment-count 0))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char lone)
+          (let ((current-minibuffer-command 'consult-line))
+            (should-not (agent-shell-vertico-consult--open-folds-temporarily
+                         nil)))
+          (should (= agent-shell-test-toggle-fragment-count 0)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-consult-line-preview-refolds-hidden-match ()
+  "A line preview on hidden text opens its fragment until it moves on."
+  (pcase-let ((`(,buffer ,_header ,_member ,lone)
+               (agent-shell-vertico-tests--fold-fixture nil nil)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (text-property-any lone (point-max)
+                                        'agent-shell-ui-section 'body))
+          (let* ((current-minibuffer-command 'consult-line)
+                 (restore (agent-shell-vertico-consult--open-folds-temporarily
+                           nil)))
+            (should (agent-shell-vertico-tests--body-visible-p lone))
+            (mapc #'funcall restore))
+          (should (agent-shell-vertico-tests--collapsed-p lone))
+          (should-not (agent-shell-vertico-tests--body-visible-p lone)))
+      (kill-buffer buffer))))
+
+(ert-deftest agent-shell-vertico-consult-preview-spares-other-buffers ()
+  "Outside a folding shell buffer the wrapped call is left alone."
+  (with-temp-buffer
+    (let ((current-minibuffer-command 'consult-imenu))
+      (should (equal (agent-shell-vertico-consult--open-folds-temporarily
+                      (list #'ignore))
+                     (list #'ignore))))))
 
 (ert-deftest agent-shell-vertico-consult-expand-fold-spares-visible-text ()
   (let ((folding (agent-shell-vertico-tests--folding-buffer t))
@@ -12756,6 +12920,9 @@ Toggling there would collapse the fragment the user just jumped into."
     (should (memq #'agent-shell-vertico-consult--expand-fold
                   consult-after-jump-hook))
     (should (memq #'recenter consult-after-jump-hook))
+    (should (advice-member-p
+             #'agent-shell-vertico-consult--open-folds-temporarily
+             'consult--invisible-open-temporarily))
     (agent-shell-vertico-consult-setup-buffer-search)
     (should (= (seq-count (lambda (fn)
                             (eq fn #'agent-shell-vertico-consult--expand-fold))

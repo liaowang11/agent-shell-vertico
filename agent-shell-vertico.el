@@ -60,8 +60,11 @@
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
 (declare-function agent-shell-markdown--parse-local-link "agent-shell-markdown")
 (declare-function agent-shell-ui--set-group-collapsed "agent-shell-ui"
-                  (group-qualified-id collapsed))
-(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui" ())
+                  (&rest keys))
+(declare-function agent-shell-ui--group-header-range "agent-shell-ui"
+                  (group-qualified-id))
+(declare-function agent-shell-ui-toggle-fragment "agent-shell-ui"
+                  (&optional recursive))
 (declare-function agent-shell-vertico-consult-setup-buffer-search
                   "agent-shell-vertico-consult" ())
 (declare-function agent-shell-vertico-prompt-queue-setup-embark
@@ -1903,21 +1906,79 @@ other mode's imenu would lose its annotations."
       ((and annotator (pred functionp)) (funcall annotator candidate))
       (_ (marginalia-annotate-imenu candidate)))))
 
-(defun agent-shell-vertico--imenu-reveal-at-point ()
-  "Reveal the activity group and fragment at point when they are hidden.
-The imenu and Consult jump hooks land inside the selected text.  A hidden
-activity member first needs its parent group expanded; if its own fragment
-is collapsed, expand that fragment as well."
+(defun agent-shell-vertico--group-collapsed-p (group-id)
+  "Return non-nil when the activity group GROUP-ID is folded."
+  (when-let* ((header (agent-shell-ui--group-header-range group-id)))
+    (map-elt (get-text-property (map-elt header :start) 'agent-shell-ui-state)
+             :collapsed)))
+
+(defun agent-shell-vertico--set-group-collapsed (group-id collapsed)
+  "Fold the activity group GROUP-ID when COLLAPSED, else unfold it.
+agent-shell's text is read-only and its own callers bind both variables
+below around this function, which is private and takes keywords.  It
+also leaves point on the group's header, so point is kept here: a
+member's fold is read at point afterwards."
+  (save-excursion
+    (let ((inhibit-read-only t)
+          (buffer-undo-list t))
+      (agent-shell-ui--set-group-collapsed
+       :group-qualified-id group-id :collapsed collapsed))))
+
+(defun agent-shell-vertico--reveal-folds-at-point (&optional hidden-only)
+  "Open the folds hiding the fragment at point; return how to close them.
+
+Opens the fragment's activity group when that is folded, the group
+itself when point is on its header, and then the fragment when it is
+folded.  With HIDDEN-ONLY, open nothing unless point is on hidden text,
+and the fragment only while point still is: a line match on text
+already shown needs no body, which is `consult-line''s rule.  Without
+it, as an imenu item asks, a folded fragment opens though its label,
+where the item points, is shown.
+
+Returns functions that fold again what was opened, innermost first, the
+form Consult's preview takes.  Nothing opens outside a buffer with
+`agent-shell-ui-mode' on."
   (when (and (bound-and-true-p agent-shell-ui-mode)
-             (invisible-p (point)))
-    (let* ((state (get-text-property (point) 'agent-shell-ui-state))
-           (group-id (map-elt state :group-id)))
-      (when group-id
-        (agent-shell-ui--set-group-collapsed group-id nil))
-      (when (and (invisible-p (point))
+             (or (not hidden-only) (invisible-p (point))))
+    (let* ((buffer (current-buffer))
+           (state (get-text-property (point) 'agent-shell-ui-state))
+           (header-p (eq (map-elt state :kind) 'group))
+           (group-id (if header-p
+                         (map-elt state :qualified-id)
+                       (map-elt state :group-id)))
+           closers)
+      (when (and group-id (agent-shell-vertico--group-collapsed-p group-id))
+        (agent-shell-vertico--set-group-collapsed group-id nil)
+        (push (lambda ()
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (agent-shell-vertico--set-group-collapsed group-id t))))
+              closers))
+      (when (and (not header-p)
+                 (or (not hidden-only) (invisible-p (point)))
                  (map-elt (get-text-property (point) 'agent-shell-ui-state)
                           :collapsed))
-        (agent-shell-ui-toggle-fragment)))))
+        (let ((marker (point-marker)))
+          (save-excursion (agent-shell-ui-toggle-fragment))
+          (push (lambda ()
+                  (when (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (save-excursion
+                        (goto-char marker)
+                        (unless (map-elt (get-text-property
+                                          (point) 'agent-shell-ui-state)
+                                         :collapsed)
+                          (agent-shell-ui-toggle-fragment)))))
+                  (set-marker marker nil))
+                closers)))
+      closers)))
+
+(defun agent-shell-vertico--imenu-reveal-at-point ()
+  "Open the fragment an imenu jump landed on, and the group holding it.
+An item points at its fragment's label, which a fold leaves shown, so
+the fragment opens whether or not point is on hidden text."
+  (agent-shell-vertico--reveal-folds-at-point)
+  nil)
 
 (defun agent-shell-vertico--imenu-setup ()
   "Install the agent-shell imenu index in the current buffer."

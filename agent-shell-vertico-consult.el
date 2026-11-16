@@ -623,23 +623,54 @@ is never read.  Candidates lose their buffer faces and keep their text."
     (setq-local consult-fontify-preserve nil)))
 
 (defun agent-shell-vertico-consult--expand-fold ()
-  "Reveal the activity group and fragment Consult jumped or previewed into.
+  "Reveal the activity group and fragment Consult jumped into.
 Agent-shell folds use text properties rather than overlays, so Consult's
-normal invisible-text handling cannot reveal them on its own."
+normal invisible-text handling cannot reveal them on its own.  A jump
+opens only what hides point, as a line match on shown text needs no
+body.  A preview has already opened them through
+`agent-shell-vertico-consult--open-folds-temporarily', so this hook,
+which Consult also runs after each preview, finds nothing left to open
+and the preview's folds close again when it moves on."
   (when (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
-    (agent-shell-vertico--imenu-reveal-at-point)))
+    (agent-shell-vertico--reveal-folds-at-point t)))
+
+(defun agent-shell-vertico-consult--imenu-preview-p ()
+  "Return non-nil when the minibuffer was entered by an imenu command.
+Matched by name, so a wrapper around `consult-imenu' counts too."
+  (and (symbolp current-minibuffer-command)
+       current-minibuffer-command
+       (string-match-p "imenu" (symbol-name current-minibuffer-command))))
+
+(defun agent-shell-vertico-consult--open-folds-temporarily (restore)
+  "Open agent-shell's folds at a previewed position until it moves on.
+
+Filters the value of `consult--invisible-open-temporarily', which
+Consult's jump preview calls with point on the previewed position and
+whose RESTORE functions it calls when the preview moves on or ends.
+That function opens overlays only, and agent-shell folds with text
+properties.  The functions returned here fold again what was opened,
+so a quit leaves the buffer as it was; a chosen item is opened again by
+the jump.  An imenu preview opens the item's fragment; any other, such
+as `consult-line''s, only what hides point."
+  (if (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
+      (append (agent-shell-vertico--reveal-folds-at-point
+               (not (agent-shell-vertico-consult--imenu-preview-p)))
+              restore)
+    restore))
 
 ;;;###autoload
 (defun agent-shell-vertico-consult-setup-buffer-search ()
-  "Make Consult's line search work inside agent-shell's collapsed blocks.
-Candidates keep their text instead of arriving blank, and both previewing
-and selecting one expand the block it lives in.  Nothing collapses those
-blocks again: Consult's preview only restores the folds it opened
-itself, which are overlays."
+  "Make Consult's line search and imenu work with agent-shell's folds.
+Candidates keep their text instead of arriving blank.  Previewing a
+`consult-line' match or a `consult-imenu' item opens the block it lives
+in and folds it again when the preview moves on or ends; selecting one
+leaves it open."
   (add-hook 'minibuffer-setup-hook
             #'agent-shell-vertico-consult--plain-candidates)
   (add-hook 'consult-after-jump-hook
-            #'agent-shell-vertico-consult--expand-fold))
+            #'agent-shell-vertico-consult--expand-fold)
+  (advice-add 'consult--invisible-open-temporarily :filter-return
+              #'agent-shell-vertico-consult--open-folds-temporarily))
 
 (provide 'agent-shell-vertico-consult)
 

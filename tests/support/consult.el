@@ -48,6 +48,13 @@ predicate learns which key the reader is narrowing with.")
 (defvar consult-after-jump-hook (list #'recenter)
   "Stubbed Consult hook, run after a jump and after each preview.")
 
+(defun consult--invisible-open-temporarily ()
+  "Stub: open no overlays and return no restore functions.
+Consult calls this from its jump preview with point at the previewed
+position and calls each function it returns when the preview moves on
+or ends."
+  nil)
+
 (provide 'consult)
 
 ;;; consult.el ends here
