@@ -303,6 +303,20 @@ prompts of a ten-page history keep one column, and it is also what tells
 two exchanges opening with the same prompt apart, which the prompt alone
 could not.
 
+A page is shown with the fork's `agent-shell-viewport--show-page`
+(`--show-viewport-page`; without it, the shell moves and the viewport
+refreshes), and the jump behaves like paging: the page left records its
+point in `--page-points` and the page shown opens where it was last read.
+Loading the Consult module swaps `agent-shell-vertico-viewport-read-page-function`
+for a reader that previews: the viewport itself shows each page selected.
+A preview writes no reading point, since `--show-page` only reads them; it
+does move the page cursor, the viewport's point and window starts, and the
+shell's point (which is how the viewport knows its page), so
+`--viewport-snapshot` saves those before the read and
+`--restore-viewport` puts them back on exit, chosen or not, before the
+command makes the real jump. The header reads a cached position, so
+showing a page recomputes it first.
+
 **Preparing where a session appears.** Every command that opens a session
 goes through `--display-session` or `--display-session-other-window`, so
 `agent-shell-vertico-before-display-function` is called there, once, with

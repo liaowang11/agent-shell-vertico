@@ -886,6 +886,44 @@ turn before it rather than starting one.  Each turn is an alist of
   (when (> index 0)
     (nth (1- index) (agent-shell--turns))))
 
+;; The two records below and `agent-shell-viewport--show-page' are the
+;; fork's (liaowang11/agent-shell), not upstream's.
+
+(defvar-local agent-shell-viewport--page-points nil
+  "Stub: alist mapping a history page index to the point last read on it.")
+
+(defvar-local agent-shell-viewport--page-cursor nil
+  "Stub: alist with :index and :point of the last history page shown.")
+
+(cl-defun agent-shell-viewport--show-page (index &key at-end restore-point)
+  "Stub: show history page INDEX, counted from one, in the current viewport.
+
+Mirrors the fork: the shell moves to the turn, the viewport holds its
+prompt and response, point goes to the point remembered for INDEX with
+RESTORE-POINT, else the end with AT-END, else the start, and INDEX
+becomes the page cursor.  The recorded position follows, standing in for
+the real one, which is derived from the shell's point."
+  (let ((turn (with-current-buffer (agent-shell-viewport--shell-buffer)
+                (let ((turn (or (agent-shell--turn-at-index index)
+                                (error "Page %d not found" index))))
+                  (goto-char (map-elt turn :position))
+                  turn))))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert "> " (or (map-elt turn :prompt) "") "\n\n"
+              (or (map-elt turn :response) "")))
+    (goto-char
+     (let ((remembered (and restore-point
+                            (alist-get index agent-shell-viewport--page-points))))
+       (cond
+        ((and remembered (<= (point-min) remembered (point-max))) remembered)
+        (at-end (point-max))
+        (t (point-min)))))
+    (setf (alist-get :current agent-shell-test-viewport-position) index)
+    (setq agent-shell-viewport--page-cursor
+          `((:index . ,index) (:point . ,(point))))
+    (cons (map-elt turn :prompt) (map-elt turn :response))))
+
 (cl-defun agent-shell-viewport--buffer (&key shell-buffer existing-only)
   "Stub: return `agent-shell-test-viewport-buffer' or SHELL-BUFFER.
 

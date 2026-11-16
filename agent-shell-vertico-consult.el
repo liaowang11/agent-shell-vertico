@@ -553,6 +553,48 @@ it would do instead of leaving the previous prompt on screen."
 (setq agent-shell-vertico-prompt-queue-read-function
       #'agent-shell-vertico-consult--read-prompt-queue)
 
+;;; Viewport page preview
+;;
+;; A viewport already draws one page at a time, so the preview is the
+;; viewport itself showing the selected page, and quitting shows the page
+;; it showed before.  Showing a page writes no reading point, so a
+;; preview leaves where each page was last read alone.
+
+(defun agent-shell-vertico-consult--viewport-page-state (pages)
+  "Return a Consult state function previewing PAGES in the current viewport.
+
+PAGES are (CANDIDATE . PAGE) pairs.  The viewport is snapshotted now
+and restored on exit, whether a page was chosen or not: a chosen page
+is then shown by the command, which also records where the page left
+was read, as only a real jump should."
+  (let ((snapshot (agent-shell-vertico--viewport-snapshot))
+        (previewed nil))
+    (lambda (action candidate)
+      (pcase action
+        ('preview
+         (when-let* ((page (cdr (assoc candidate pages)))
+                     (viewport (plist-get snapshot :viewport))
+                     ((buffer-live-p viewport)))
+           (with-current-buffer viewport
+             (agent-shell-vertico--show-viewport-page page))
+           (setq previewed t)))
+        ('exit
+         (when previewed
+           (agent-shell-vertico--restore-viewport snapshot)))))))
+
+(defun agent-shell-vertico-consult--read-viewport-page (prompt pages)
+  "Read one of PAGES' candidates with PROMPT, previewing each page."
+  (consult--read
+   (mapcar #'car pages)
+   :prompt prompt
+   :lookup #'consult--lookup-member
+   :state (agent-shell-vertico-consult--viewport-page-state pages)
+   :require-match t
+   :sort nil))
+
+(setq agent-shell-vertico-viewport-read-page-function
+      #'agent-shell-vertico-consult--read-viewport-page)
+
 ;;; Searching inside a live shell buffer
 
 (defun agent-shell-vertico-consult--folding-buffer-p (buffer)

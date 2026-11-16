@@ -15471,6 +15471,8 @@ resolves its shell from its own buffer name."
      (unwind-protect
          (let ((agent-shell-test-viewport-refreshed nil)
                (agent-shell-test-viewport-header-updated nil)
+               (agent-shell-vertico-viewport-read-page-function
+                #'agent-shell-vertico--read-viewport-page-plain)
                (agent-shell-test-viewport-position
                 (list (cons :current 1) (cons :total (length ,pages)))))
            (with-current-buffer shell
@@ -15518,8 +15520,112 @@ reader sort, which puts Activity first and Priority third."
       (should (equal offered '("1: first question" "2: second question"))))
     (with-current-buffer (agent-shell-viewport--shell-buffer)
       (should (looking-at "> second question")))
+    (should (string-match-p "\\`> second question\\s-*second answer\\s-*\\'"
+                             (buffer-string)))
+    (should (equal (alist-get :current agent-shell-test-viewport-position) 2))
+    (should agent-shell-test-viewport-header-updated)))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-keeps-reading-points ()
+  "A jump remembers where the page left was read and returns there.
+
+Paging does both: the point on the page being left goes into
+`agent-shell-viewport--page-points', and the page shown lands where it
+was last read.  A jump that did neither lost the reader's place twice."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer, long enough to read into")
+        ("second question" . "second answer"))
+    (agent-shell-viewport--show-page 1)
+    (goto-char 20)
+    (setq agent-shell-viewport--page-points '((2 . 5)))
+    (agent-shell-vertico-viewport-goto-page 2)
+    (should (equal (alist-get 1 agent-shell-viewport--page-points) 20))
+    (should (= (point) 5))
+    (agent-shell-vertico-viewport-goto-page 1)
+    (should (= (point) 20))))
+
+(ert-deftest agent-shell-vertico-viewport-goto-page-without-the-fork ()
+  "Upstream has no `agent-shell-viewport--show-page': move and refresh."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("second question" . "second answer"))
+    (cl-letf (((symbol-function 'agent-shell-viewport--show-page) nil))
+      (agent-shell-vertico-viewport-goto-page 2))
+    (with-current-buffer (agent-shell-viewport--shell-buffer)
+      (should (looking-at "> second question")))
     (should agent-shell-test-viewport-refreshed)
     (should agent-shell-test-viewport-header-updated)))
+
+(ert-deftest agent-shell-vertico-viewport-page-preview-restores-on-exit ()
+  "Previewing pages shows each and leaves the viewport as it was found.
+
+The preview writes no reading point, since nothing was read there, and
+quitting puts back the page, point, page cursor and the shell's point."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer, long enough to read into")
+        ("second question" . "second answer")
+        ("third question" . "third answer"))
+    (agent-shell-viewport--show-page 1)
+    (goto-char 20)
+    (setq agent-shell-viewport--page-points '((3 . 4)))
+    (let* ((before (buffer-string))
+           (cursor (copy-tree agent-shell-viewport--page-cursor))
+           (shell-point (with-current-buffer
+                            (agent-shell-viewport--shell-buffer)
+                          (point)))
+           (pages (agent-shell-vertico--viewport-pages))
+           (state (agent-shell-vertico-consult--viewport-page-state pages)))
+      (funcall state 'preview (car (nth 1 pages)))
+      (should (string-match-p "\\`> second question\\s-*second answer\\s-*\\'"
+                             (buffer-string)))
+      (should (= (point) (point-min)))
+      (funcall state 'preview (car (nth 2 pages)))
+      (should (string-match-p "\\`> third question\\s-*third answer\\s-*\\'"
+                             (buffer-string)))
+      (funcall state 'exit nil)
+      (should (equal (buffer-string) before))
+      (should (= (point) 20))
+      (should (equal agent-shell-viewport--page-cursor cursor))
+      (should (equal agent-shell-viewport--page-points '((3 . 4))))
+      (should (equal (alist-get :current agent-shell-test-viewport-position) 1))
+      (with-current-buffer (agent-shell-viewport--shell-buffer)
+        (should (= (point) shell-point))))))
+
+(ert-deftest agent-shell-vertico-viewport-page-preview-exit-without-preview ()
+  "Quitting before anything was previewed leaves the viewport untouched."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer"))
+    (agent-shell-viewport--show-page 1)
+    (goto-char 5)
+    (let ((state (agent-shell-vertico-consult--viewport-page-state
+                  (agent-shell-vertico--viewport-pages))))
+      (setq agent-shell-viewport--page-cursor 'untouched)
+      (funcall state 'preview nil)
+      (funcall state 'exit nil)
+      (should (eq agent-shell-viewport--page-cursor 'untouched))
+      (should (= (point) 5)))))
+
+(ert-deftest agent-shell-vertico-viewport-page-consult-reader ()
+  "Loading the Consult module installs a previewing page reader.
+
+It keeps the history's order and returns the chosen candidate."
+  (should (eq (default-value 'agent-shell-vertico-viewport-read-page-function)
+              #'agent-shell-vertico-consult--read-viewport-page))
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("second question" . "second answer"))
+    (let (candidates options)
+      (cl-letf (((symbol-function 'consult--read)
+                 (lambda (read-candidates &rest args)
+                   (setq candidates read-candidates options args)
+                   (nth 1 read-candidates))))
+        (let ((agent-shell-vertico-viewport-read-page-function
+               #'agent-shell-vertico-consult--read-viewport-page))
+          (agent-shell-vertico-viewport-goto-page nil)))
+      (should (equal candidates '("1: first question" "2: second question")))
+      (should-not (plist-get options :sort))
+      (should (plist-get options :state))
+      (should (string-match-p "\\`> second question\\s-*second answer\\s-*\\'"
+                             (buffer-string))))))
 
 (ert-deftest agent-shell-vertico-viewport-goto-page-keeps-history-order ()
   "The table sorts by nothing, so the reader shows the pages in order.

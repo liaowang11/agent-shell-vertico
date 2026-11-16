@@ -52,6 +52,8 @@
                   (&key force-refresh))
 (declare-function agent-shell-viewport-refresh "agent-shell-viewport" ())
 (declare-function agent-shell-viewport--update-header "agent-shell-viewport" ())
+(declare-function agent-shell-viewport--show-page "agent-shell-viewport"
+                  (index &rest keys))
 (declare-function agent-shell--turns "agent-shell" ())
 (declare-function agent-shell--turn-at-index "agent-shell" (index))
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
@@ -78,6 +80,8 @@
 (defvar agent-shell--state)
 (defvar agent-shell-agent-configs)
 (defvar agent-shell-prefer-viewport-interaction)
+(defvar agent-shell-viewport--page-points)
+(defvar agent-shell-viewport--page-cursor)
 (defvar agent-shell-preferred-agent-config)
 (defvar agent-shell-show-config-icons)
 (defvar consult-imenu-config)
@@ -1092,6 +1096,22 @@ so counting exchanges would number every later page past the viewport's."
              (1+ index)))
      turns)))
 
+(defvar agent-shell-vertico-viewport-read-page-function
+  #'agent-shell-vertico--read-viewport-page-plain
+  "Function reading which viewport page to show.
+
+Called with PROMPT and PAGES, the (CANDIDATE . PAGE) pairs of
+`agent-shell-vertico--viewport-pages', in the viewport whose history
+they are.  Returns the chosen CANDIDATE.  Loading
+`agent-shell-vertico-consult' replaces it with a reader that shows each
+page in the viewport as it is selected.")
+
+(defun agent-shell-vertico--read-viewport-page-plain (prompt pages)
+  "Read one of PAGES' candidates with PROMPT, in history order."
+  (completing-read prompt
+                   (agent-shell-vertico--ordered-table (mapcar #'car pages))
+                   nil t))
+
 (defun agent-shell-vertico--read-viewport-page (page)
   "Return the viewport history page PAGE names.
 
@@ -1107,11 +1127,8 @@ reads one by its number and prompt text."
         number)
     (let* ((pages (or (agent-shell-vertico--viewport-pages)
                       (user-error "No items in history")))
-           (selection (completing-read
-                       "Page: "
-                       (agent-shell-vertico--ordered-table
-                        (mapcar #'car pages))
-                       nil t)))
+           (selection (funcall agent-shell-vertico-viewport-read-page-function
+                               "Page: " pages)))
       (or (cdr (assoc selection pages))
           (user-error "Unknown page: %s" selection)))))
 
@@ -1125,20 +1142,88 @@ viewport's own page count."
                     (user-error "Page %d is out of range" page))))
       (goto-char (map-elt turn :position)))))
 
+(defun agent-shell-vertico--show-viewport-page (page &optional restore-point)
+  "Show PAGE in the current viewport and update its header.
+
+With RESTORE-POINT, land where PAGE was last read, as paging does.
+`agent-shell-viewport--show-page' is the fork's; without it, move the
+shell to the page and refresh, which always lands on the page's start.
+The header reads a cached position, so the position is recomputed for
+it first."
+  (if (fboundp 'agent-shell-viewport--show-page)
+      (agent-shell-viewport--show-page page :restore-point restore-point)
+    (agent-shell-vertico--goto-viewport-page
+     page (agent-shell-viewport--shell-buffer))
+    (agent-shell-viewport-refresh))
+  (agent-shell-viewport--position :force-refresh t)
+  (agent-shell-viewport--update-header))
+
+(defun agent-shell-vertico--remember-viewport-point ()
+  "Record point as where the current viewport page was last read.
+
+This is what paging records on leaving a page, so a jump away and back
+lands where reading stopped.  Only the fork keeps such a record."
+  (when-let* (((boundp 'agent-shell-viewport--page-points))
+              (position (agent-shell-viewport--position :force-refresh t))
+              (current (map-elt position :current)))
+    (setf (alist-get current agent-shell-viewport--page-points) (point))))
+
+(defun agent-shell-vertico--viewport-snapshot ()
+  "Return what showing other pages changes in the current viewport.
+
+A plist of the page shown, point, each window's start and point, the
+fork's page cursor, and the shell's point, which is how the viewport
+knows its page.  `agent-shell-vertico--restore-viewport' puts it back.
+The reading points need no saving: showing a page never writes them."
+  (let ((shell (agent-shell-viewport--shell-buffer)))
+    (list :viewport (current-buffer)
+          :page (map-elt (agent-shell-viewport--position :force-refresh t)
+                         :current)
+          :point (point)
+          :windows (mapcar (lambda (window)
+                             (list window (window-start window)
+                                   (window-point window)))
+                           (get-buffer-window-list nil nil t))
+          :cursor (and (boundp 'agent-shell-viewport--page-cursor)
+                       (copy-tree agent-shell-viewport--page-cursor))
+          :shell shell
+          :shell-point (and (buffer-live-p shell)
+                            (with-current-buffer shell (point))))))
+
+(defun agent-shell-vertico--restore-viewport (snapshot)
+  "Show the viewport as SNAPSHOT from `--viewport-snapshot' found it."
+  (let ((viewport (plist-get snapshot :viewport))
+        (shell (plist-get snapshot :shell)))
+    (when (and (buffer-live-p viewport) (buffer-live-p shell))
+      (with-current-buffer viewport
+        (when-let* ((page (plist-get snapshot :page)))
+          (agent-shell-vertico--show-viewport-page page))
+        (goto-char (min (plist-get snapshot :point) (point-max)))
+        (pcase-dolist (`(,window ,start ,point) (plist-get snapshot :windows))
+          (when (and (window-live-p window)
+                     (eq (window-buffer window) viewport))
+            (set-window-start window (min start (point-max)) t)
+            (set-window-point window (min point (point-max)))))
+        (when (boundp 'agent-shell-viewport--page-cursor)
+          (setq agent-shell-viewport--page-cursor
+                (plist-get snapshot :cursor))))
+      (with-current-buffer shell
+        (goto-char (min (plist-get snapshot :shell-point) (point-max)))))))
+
 ;;;###autoload
 (defun agent-shell-vertico-viewport-goto-page (page)
   "Show a chosen page of this viewport's history.
 
 Without a prefix argument, read which page by the prompt that started
-it.  With a numeric prefix argument PAGE, show that page directly."
+it.  With a numeric prefix argument PAGE, show that page directly.
+As with paging, the page left remembers where it was read, and the page
+shown opens where it was last read."
   (interactive "P")
   (unless (derived-mode-p 'agent-shell-viewport-view-mode)
     (user-error "Not in a shell viewport buffer"))
-  (let ((number (agent-shell-vertico--read-viewport-page page))
-        (shell-buffer (agent-shell-viewport--shell-buffer)))
-    (agent-shell-vertico--goto-viewport-page number shell-buffer)
-    (agent-shell-viewport-refresh)
-    (agent-shell-viewport--update-header)))
+  (let ((number (agent-shell-vertico--read-viewport-page page)))
+    (agent-shell-vertico--remember-viewport-point)
+    (agent-shell-vertico--show-viewport-page number t)))
 
 ;;; Shell buffer picker
 ;;
