@@ -15661,6 +15661,17 @@ history and then by length -- and the pages arrive shuffled."
       (should (equal (car (nth 0 pages)) " 1: question 1"))
       (should (equal (car (nth 9 pages)) "10: question 10")))))
 
+(ert-deftest agent-shell-vertico-viewport-goto-page-flattens-line-breaks ()
+  "A prompt typed over several lines is one line, its breaks drawn as ↲.
+
+Vertico draws a candidate holding a newline through
+`vertico--truncate-multiline', which trims the whole string, so the pad
+that right-aligns the page number was lost on exactly those rows."
+  (let ((candidate (agent-shell-vertico--viewport-page-candidate
+                    "first line  \n\n  second line\nthird" 2 2)))
+    (should (equal candidate " 2: first line↲second line↲third"))
+    (should-not (string-search "\n" candidate))))
+
 (ert-deftest agent-shell-vertico-viewport-goto-page-separates-repeats ()
   "Two exchanges starting the same way are still two candidates.
 

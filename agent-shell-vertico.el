@@ -1067,10 +1067,16 @@ shell for a viewport."
   "Return the candidate naming PAGE, the turn PROMPT started.
 
 The number leads, right-aligned in WIDTH columns, so the prompts of a
-history with ten or more pages still start in one column."
+history with ten or more pages still start in one column.
+
+The candidate is one line, each line break in PROMPT drawn as `↲' as
+Vertico draws one.  Vertico draws a candidate that holds a newline
+through `vertico--truncate-multiline', which trims the whole string and
+so drops the pad, which put those rows out of the column."
   (format "%s: %s"
           (string-pad (number-to-string page) width nil t)
-          (string-trim (or prompt ""))))
+          (replace-regexp-in-string "[ \t]*[\n\r][ \t\n\r]*" "↲"
+                                    (string-trim (or prompt "")))))
 
 (defun agent-shell-vertico--viewport-pages ()
   "Return the current viewport's history as (CANDIDATE . PAGE) pairs.
