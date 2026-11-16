@@ -36,6 +36,9 @@ Enable `(require 'agent-shell-vertico-program-status)` followed by
 `(agent-shell-vertico-program-status-mode 1)` to report agent-shell sessions
 to Rex text terminals using OSC 7501. Working reports show the latest active
 tool's description or title, falling back to `Working` when none is active.
+A subagent's record shows its own tool calls, and the session's record shows
+only the session's. A server-side tool call (`srvtoolu_` id), which ACP never
+reports finished, stops counting once the next tool call starts.
 Completed sessions include the sidebar's last agent message when available.
 Sessions and background tasks have separate records. Earlier error records are
 acknowledged when new work starts, so Rex can show that work. The mode also

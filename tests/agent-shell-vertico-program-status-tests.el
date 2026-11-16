@@ -11,6 +11,8 @@
 
 (require 'agent-shell-vertico-program-status)
 
+(defvar agent-shell--subagent-group)
+
 (defvar-local bill/psp-test--session-id nil
   "The session id the stubbed `agent-shell--state' reports.")
 
@@ -242,6 +244,51 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
           (should (equal (mapcar (lambda (report) (bill/psp-test--decoded report "msg"))
                                  (bill/psp-test--sent-to 'rex))
                          '("Reading config" "Running tests" "Running tests" "Working"))))))))
+
+(defun bill/psp-test--tool (shell id status title &optional subagent)
+  "Deliver a tool call update to SHELL, dispatched by SUBAGENT's session if given."
+  (let ((callback (nth 2 (seq-find (lambda (entry)
+                                     (and (eq (car entry) shell)
+                                          (eq (cadr entry) 'tool-call-update)))
+                                   bill/psp-test--subscriptions)))
+        (agent-shell--subagent-group (and subagent (list subagent))))
+    (should callback)
+    (with-current-buffer shell
+      (funcall callback
+               `((:data . ((:tool-call-id . ,id)
+                           (:tool-call . ((:status . ,status)
+                                          (:title . ,title))))))))))
+
+(defun bill/psp-test--messages (id)
+  "Return the decoded msg of each report sent to `rex' for record ID."
+  (delq nil (mapcar (lambda (report)
+                      (when (string-match-p (concat ":id=" (regexp-quote id) ":") report)
+                        (bill/psp-test--decoded report "msg")))
+                    (bill/psp-test--sent-to 'rex))))
+
+(ert-deftest bill/psp-subagent-tools-describe-the-subagent-record ()
+  (bill/psp-test--with-terminals
+    (let ((shell (bill/psp-test--shell "*claude*" "s")))
+      (bill/psp-test--emit shell "running")
+      (bill/psp-test--emit shell "running" nil "subagent/abc")
+      (setq bill/psp-test--sent nil)
+      (bill/psp-test--tool shell "t1" "in_progress" "Grep TODO" "abc")
+      (bill/psp-test--tool shell "t2" "in_progress" "Read notes.org")
+      (bill/psp-test--tool shell "t1" "completed" "Grep TODO" "abc")
+      (should (equal (bill/psp-test--messages "s/subagent/abc") '("Grep TODO" "Working")))
+      ;; The root reports its own tool, never the subagent's.
+      (should (equal (bill/psp-test--messages "s") '("Read notes.org"))))))
+
+(ert-deftest bill/psp-pending-server-tool-yields-to-the-next-tool ()
+  (bill/psp-test--with-terminals
+    (let ((shell (bill/psp-test--shell "*claude*" "s")))
+      (bill/psp-test--emit shell "running")
+      (setq bill/psp-test--sent nil)
+      ;; A server-side tool (srvtoolu_) never gets a completed update.
+      (bill/psp-test--tool shell "srvtoolu_1" "pending" "advisor")
+      (bill/psp-test--tool shell "toolu_2" "in_progress" "Run tests")
+      (bill/psp-test--tool shell "toolu_2" "completed" "Run tests")
+      (should (equal (bill/psp-test--messages "s") '("advisor" "Run tests" "Working"))))))
 
 (ert-deftest bill/psp-new-tool-clears-old-child-error ()
   (bill/psp-test--with-terminals
