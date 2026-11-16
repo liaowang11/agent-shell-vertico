@@ -15619,9 +15619,11 @@ It keeps the history's order and returns the chosen candidate."
                    (setq candidates read-candidates options args)
                    (nth 1 read-candidates))))
         (let ((agent-shell-vertico-viewport-read-page-function
-               #'agent-shell-vertico-consult--read-viewport-page))
+               #'agent-shell-vertico-consult--read-viewport-page)
+              (agent-shell-vertico-consult-preview-key '(:debounce 0.7 any)))
           (agent-shell-vertico-viewport-goto-page nil)))
       (should (equal candidates '("1: first question" "2: second question")))
+      (should (equal (plist-get options :preview-key) '(:debounce 0.7 any)))
       (should-not (plist-get options :sort))
       (should (plist-get options :state))
       (should (string-match-p "\\`> second question\\s-*second answer\\s-*\\'"

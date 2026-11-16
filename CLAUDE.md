@@ -308,7 +308,9 @@ A page is shown with the fork's `agent-shell-viewport--show-page`
 refreshes), and the jump behaves like paging: the page left records its
 point in `--page-points` and the page shown opens where it was last read.
 Loading the Consult module swaps `agent-shell-vertico-viewport-read-page-function`
-for a reader that previews: the viewport itself shows each page selected.
+for a reader that previews: the viewport itself shows each page selected,
+debounced by `agent-shell-vertico-consult-preview-key` as the transcript
+previews are, since each preview renders the page's whole response.
 A preview writes no reading point, since `--show-page` only reads them; it
 does move the page cursor, the viewport's point and window starts, and the
 shell's point (which is how the viewport knows its page), so

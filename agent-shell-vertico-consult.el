@@ -82,9 +82,11 @@ transcript costs about 80 ms on the main thread, and none of it can run
 elsewhere.  The default debounces that, so moving across candidates
 previews nothing until the reader stops on one.
 
-This applies to the transcript readers, the session picker's included.
-`consult-customize' cannot reach them, because it keys off the command
-being run and the picker runs inside `agent-shell''s own commands."
+This applies to the transcript readers, the session picker's included,
+and to `agent-shell-vertico-viewport-goto-page', whose preview renders
+the page's whole response in the viewport.  `consult-customize' cannot
+reach the picker, because it keys off the command being run and the
+picker runs inside `agent-shell''s own commands."
   :type '(choice (const :tag "Any key" any)
                  (const :tag "No preview" nil)
                  (sexp :tag "Key, keys or debounce list"))
@@ -589,6 +591,7 @@ was read, as only a real jump should."
    :prompt prompt
    :lookup #'consult--lookup-member
    :state (agent-shell-vertico-consult--viewport-page-state pages)
+   :preview-key agent-shell-vertico-consult-preview-key
    :require-match t
    :sort nil))
 
