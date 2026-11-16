@@ -1063,7 +1063,8 @@ shell for a viewport."
 ;; prompt plus every prompt steered into it, which is how the viewport
 ;; numbers its own pages.
 
-(defun agent-shell-vertico--viewport-page-candidate (prompt page width)
+(defun agent-shell-vertico--viewport-page-candidate
+    (prompt page width &optional max-width)
   "Return the candidate naming PAGE, the turn PROMPT started.
 
 The number leads, right-aligned in WIDTH columns, so the prompts of a
@@ -1072,11 +1073,22 @@ history with ten or more pages still start in one column.
 The candidate is one line, each line break in PROMPT drawn as `↲' as
 Vertico draws one.  Vertico draws a candidate that holds a newline
 through `vertico--truncate-multiline', which trims the whole string and
-so drops the pad, which put those rows out of the column."
-  (format "%s: %s"
-          (string-pad (number-to-string page) width nil t)
-          (replace-regexp-in-string "[ \t]*[\n\r][ \t\n\r]*" "↲"
-                                    (string-trim (or prompt "")))))
+so drops the pad, which put those rows out of the column.  That function
+also cut such a candidate to fit, so a PROMPT with line breaks is cut
+here instead, to MAX-WIDTH columns when given, with the whole PROMPT on
+`help-echo'.  A one-line PROMPT is left whole, as Vertico leaves it."
+  (let* ((prompt (string-trim (or prompt "")))
+         (candidate
+          (format "%s: %s"
+                  (string-pad (number-to-string page) width nil t)
+                  (replace-regexp-in-string "[ \t]*[\n\r][ \t\n\r]*" "↲"
+                                            prompt))))
+    (if (and max-width
+             (string-match-p "[\n\r]" prompt)
+             (> (string-width candidate) max-width))
+        (propertize (truncate-string-to-width candidate max-width 0 nil "…")
+                    'help-echo prompt)
+      candidate)))
 
 (defun agent-shell-vertico--viewport-pages ()
   "Return the current viewport's history as (CANDIDATE . PAGE) pairs.
@@ -1094,11 +1106,13 @@ so counting exchanges would number every later page past the viewport's."
   (when-let* ((shell-buffer (agent-shell-viewport--shell-buffer))
               (turns (with-current-buffer shell-buffer
                        (agent-shell--turns)))
-              (width (length (number-to-string (length turns)))))
+              (width (length (number-to-string (length turns))))
+              ;; Vertico's own width for a multi-line candidate.
+              (max-width (- (frame-width) 4)))
     (seq-map-indexed
      (lambda (turn index)
        (cons (agent-shell-vertico--viewport-page-candidate
-              (map-elt turn :prompt) (1+ index) width)
+              (map-elt turn :prompt) (1+ index) width max-width)
              (1+ index)))
      turns)))
 

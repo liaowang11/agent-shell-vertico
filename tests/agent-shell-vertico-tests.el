@@ -15672,6 +15672,20 @@ that right-aligns the page number was lost on exactly those rows."
     (should (equal candidate " 2: first line↲second line↲third"))
     (should-not (string-search "\n" candidate))))
 
+(ert-deftest agent-shell-vertico-viewport-goto-page-shortens-line-breaks ()
+  "A multi-line prompt is cut to MAX-WIDTH, as Vertico cut it, whole on hover.
+
+A single-line prompt is left whole, as Vertico leaves it."
+  (let ((cut (agent-shell-vertico--viewport-page-candidate
+              "first line\nsecond line that runs on" 2 2 20))
+        (single (agent-shell-vertico--viewport-page-candidate
+                 "one line that runs on and on" 3 2 20)))
+    (should (equal (substring-no-properties cut) " 2: first line↲seco…"))
+    (should (= (string-width cut) 20))
+    (should (equal (get-text-property 0 'help-echo cut)
+                   "first line\nsecond line that runs on"))
+    (should (equal single " 3: one line that runs on and on"))))
+
 (ert-deftest agent-shell-vertico-viewport-goto-page-separates-repeats ()
   "Two exchanges starting the same way are still two candidates.
 
