@@ -26,6 +26,7 @@
 (require 'map)
 (require 'seq)
 (require 'subr-x)
+(require 'timer)
 
 (declare-function agent-shell-status "agent-shell" (&key shell-buffer))
 (declare-function agent-shell-cwd "agent-shell-project")
@@ -472,11 +473,12 @@ may be nil.")
   (continuation nil :documentation "\
 The timer that continues a limited session once its limit resets, or nil.
 See `agent-shell-vertico-sidebar-continue-at-reset'.")
-  (limit-snooze nil :documentation "\
-The snooze a usage limit put the session in until it resets, or nil.
+  (timed-snooze nil :documentation "\
+A snooze with a deadline, or nil.
 
-A plist: `:snoozed', the value the limit wrote to `snoozed'; `:until',
-the reset time; and `:timer', which wakes the session then.  The wake
+A plist: `:snoozed', the value written to `snoozed'; `:until', the
+wake time; `:manual', non-nil for a duration chosen by the reader
+rather than a usage limit reset; and `:timer', which wakes it then.  The wake
 acts only while `snoozed' still holds that value, so a snooze the reader
 or an event has ended or replaced since is left to them.  See
 `agent-shell-vertico-sidebar-snooze-limited'.")
@@ -585,7 +587,7 @@ one."))
   '(pinned snoozed settled unsettled unread state result error needs limit
            detail last-terminal-at)
   "Record slots saved across Emacs restarts as they are.
-`limit-snooze' and `continuation' hold timers, so they are saved as
+`timed-snooze' and `continuation' hold timers, so they are saved as
 times instead, by `agent-shell-vertico-sidebar--entry'.")
 
 (defvar agent-shell-vertico-sidebar--store nil
@@ -629,6 +631,21 @@ long a session killed on purpose can bring back its pin or snooze.")
 
 Clearing a slot of a session with no record creates none, so the paths
 that tidy up after a killed buffer leave nothing behind."
+  (when (and (eq slot 'snoozed)
+             (not (equal value
+                         (agent-shell-vertico-sidebar--get buffer slot))))
+    (agent-shell-vertico-sidebar--cancel-snooze-wake buffer))
+  (when (eq slot 'timed-snooze)
+    (when-let* ((timer (plist-get (agent-shell-vertico-sidebar--get
+                                 buffer slot) :timer)))
+      (cancel-timer timer))
+    (when value
+      ;; Copy deadline data: undo and persistence never own a live timer.
+      (setq value (agent-shell-vertico-sidebar--snooze-deadline value))
+      (let ((timer (run-at-time
+                    (max 0 (- (plist-get value :until) (float-time))) nil
+                    #'agent-shell-vertico-sidebar--snooze-wake buffer value)))
+        (setq value (plist-put value :timer timer)))))
   (when-let* ((record (if value
                          (agent-shell-vertico-sidebar--record buffer)
                        (gethash buffer agent-shell-vertico-sidebar--sessions))))
@@ -636,7 +653,7 @@ that tidy up after a killed buffer leave nothing behind."
                                 record)
           value)
     (when (and (or (memq slot agent-shell-vertico-sidebar--saved-slots)
-                   (memq slot '(limit-snooze continuation)))
+                   (memq slot '(timed-snooze continuation)))
                (agent-shell-vertico-sidebar--session-persist-key record))
       (agent-shell-vertico-sidebar--note-store-change)))
   value)
@@ -644,7 +661,7 @@ that tidy up after a killed buffer leave nothing behind."
 (defun agent-shell-vertico-sidebar--forget (buffer)
   "Drop everything the sidebar recorded about BUFFER.
 A continuation it had scheduled is cancelled with it, and so is the
-wake at its limit's reset.
+wake at its snooze deadline.
 
 Unless Emacs is exiting, the reader killed the session, so its saved
 record is brought up to date and marked killed rather than dropped:
@@ -664,7 +681,7 @@ them as times."
         (remhash key store))
       (agent-shell-vertico-sidebar--note-store-change)))
   (agent-shell-vertico-sidebar--cancel-continuation buffer)
-  (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+  (agent-shell-vertico-sidebar--cancel-snooze-wake buffer)
   (remhash buffer agent-shell-vertico-sidebar--sessions))
 
 (defvar agent-shell-vertico-sidebar--subscriptions (make-hash-table :test #'eq)
@@ -1889,8 +1906,14 @@ repeating those queries during one redisplay."
            :limit (agent-shell-vertico-sidebar--get buffer 'limit)
            :continuation
            (and (agent-shell-vertico-sidebar--get buffer 'continuation) t)
-           :limit-snoozed
-           (agent-shell-vertico-sidebar--limit-snoozed-p buffer))
+           :timed-snoozed
+           (agent-shell-vertico-sidebar--timed-snoozed-p buffer)
+           :snooze-until
+           (when-let* ((wake (agent-shell-vertico-sidebar--get
+                             buffer 'timed-snooze))
+                       ((plist-get wake :manual))
+                       ((agent-shell-vertico-sidebar--timed-snoozed-p buffer)))
+             (plist-get wake :until)))
      (agent-shell-vertico-sidebar--job-fields buffer status snoozed))))
 
 (defun agent-shell-vertico-sidebar--limit-name (type)
@@ -1913,6 +1936,11 @@ time, and the weekday before it on any other day."
                           "%H:%M"
                         "%a %H:%M")
                       resets-at))
+
+(defun agent-shell-vertico-sidebar--snooze-text (snapshot)
+  "Return the manual snooze deadline in SNAPSHOT, or nil."
+  (when-let* ((until (plist-get snapshot :snooze-until)))
+    (concat "Wakes at " (agent-shell-vertico-sidebar--reset-text until))))
 
 (defun agent-shell-vertico-sidebar--limit-text (limit &optional now)
   "Return what stopped a turn at usage LIMIT, and when it resets.
@@ -1939,7 +1967,7 @@ continues then when a continuation is scheduled, or else that it wakes
 then when it is snoozed until the reset.
 Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
   (pcase-let (((map :state :tempo :needs :detail :result :error :dispatched
-                    :limit :continuation :limit-snoozed)
+                    :limit :continuation :timed-snoozed)
                snapshot))
     (cond ((eq tempo 'blocked) needs)
           ((and (eq tempo 'active) dispatched)
@@ -1949,7 +1977,7 @@ Otherwise NEEDS, else the turn's `result:' line, else its newest entry."
           ((eq state 'limited)
            (concat "Limited: " (agent-shell-vertico-sidebar--limit-text limit)
                    (cond (continuation " · continues then")
-                         (limit-snoozed " · wakes then"))))
+                         (timed-snoozed " · wakes then"))))
           ((eq state 'failed)
            (if (stringp error) (concat "Failed: " error) "Failed"))
           ((eq state 'stopped) "Stopped")
@@ -3001,6 +3029,12 @@ parent-child relationship."
                                   age)))
                 (cdr title-lines)))
     (append (mapcar (lambda (line) (cons line nil)) title-lines)
+            (when-let* ((wake (agent-shell-vertico-sidebar--snooze-text
+                              snapshot)))
+              (list (cons (propertize
+                           (agent-shell-vertico-sidebar--fit wake content-width)
+                           'face 'agent-shell-vertico-sidebar-detail)
+                          t)))
             detail-rows
             (when project-line (list project-line))
             ;; Expanded, the entries take the count's place.
@@ -4861,17 +4895,20 @@ session to continue once the limit resets."
                resets-at (> resets-at (float-time)))
       (agent-shell-vertico-sidebar--schedule-continuation buffer))))
 
-(defun agent-shell-vertico-sidebar--cancel-limit-wake (buffer)
-  "Cancel the wake at BUFFER's limit reset, and forget the limit's snooze.
-The snooze itself, when it still holds, is left as it is."
-  (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
-    (when-let* ((timer (plist-get wake :timer)))
-      (cancel-timer timer))
-    (agent-shell-vertico-sidebar--set buffer 'limit-snooze nil)))
+(defun agent-shell-vertico-sidebar--snooze-deadline (wake)
+  "Return the serializable deadline data from timed snooze WAKE."
+  (when wake
+    (list :snoozed (plist-get wake :snoozed)
+          :until (plist-get wake :until)
+          :manual (plist-get wake :manual))))
 
-(defun agent-shell-vertico-sidebar--limit-snoozed-p (buffer)
-  "Return non-nil while BUFFER is in the snooze its usage limit set."
-  (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
+(defun agent-shell-vertico-sidebar--cancel-snooze-wake (buffer)
+  "Cancel BUFFER's timed wake, leaving its snooze as it is."
+  (agent-shell-vertico-sidebar--set buffer 'timed-snooze nil))
+
+(defun agent-shell-vertico-sidebar--timed-snoozed-p (buffer)
+  "Return non-nil while BUFFER is in its timed snooze."
+  (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'timed-snooze)))
     (equal (agent-shell-vertico-sidebar--get buffer 'snoozed)
            (plist-get wake :snoozed))))
 
@@ -4889,24 +4926,23 @@ A session the reader pinned or snoozed is left as they put it."
                resets-at (> resets-at now)
                (not (agent-shell-vertico-sidebar--get buffer 'pinned))
                (not (agent-shell-vertico-sidebar--get buffer 'snoozed)))
-      (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+      (agent-shell-vertico-sidebar--cancel-snooze-wake buffer)
       (agent-shell-vertico-sidebar--set buffer 'snoozed now)
       (agent-shell-vertico-sidebar--set
-       buffer 'limit-snooze
-       (list :snoozed now :until resets-at
-             :timer (run-at-time (- resets-at now) nil
-                                 #'agent-shell-vertico-sidebar--limit-wake
-                                 buffer)))
+       buffer 'timed-snooze
+       (list :snoozed now :until resets-at))
       (agent-shell-vertico-sidebar--schedule-refresh))))
 
-(defun agent-shell-vertico-sidebar--limit-wake (buffer)
-  "Wake BUFFER from the snooze its usage limit set, which has reset.
-The session is marked unread, back at the end of the queue, and
-reported once, unless the reader is in it.  A snooze that has ended or
-changed since is not the limit's any more, and is left alone."
-  (when (buffer-live-p buffer)
-    (let ((ours (agent-shell-vertico-sidebar--limit-snoozed-p buffer)))
-      (agent-shell-vertico-sidebar--set buffer 'limit-snooze nil)
+(defun agent-shell-vertico-sidebar--snooze-wake (buffer &optional expected)
+  "Wake BUFFER from its timed snooze, marking it unread and reporting once.
+A focused session stays read.  EXPECTED, when non-nil, is the record
+that scheduled this callback; an obsolete callback changes nothing."
+  (when (and (buffer-live-p buffer)
+             (or (null expected)
+                 (eq expected (agent-shell-vertico-sidebar--get
+                               buffer 'timed-snooze))))
+    (let ((ours (agent-shell-vertico-sidebar--timed-snoozed-p buffer)))
+      (agent-shell-vertico-sidebar--set buffer 'timed-snooze nil)
       (when ours
         (agent-shell-vertico-sidebar--set buffer 'snoozed nil)
         (if (agent-shell-vertico-sidebar--session-focused-p buffer)
@@ -5011,8 +5047,8 @@ A property can hold an object `read' cannot read back."
 
 The slots in `agent-shell-vertico-sidebar--saved-slots' are saved as
 they are, but `detail' only when it is a string: the symbol `message'
-names the streamed message, which is not saved.  A limit's snooze is
-saved as `:limit-snooze', its value and reset time, and a scheduled
+names the streamed message, which is not saved.  A timed snooze is
+saved as `:timed-snooze', its value, deadline and origin, and a scheduled
 continuation as `:continue-at', when it fires, since a timer cannot be
 saved.  Everything else is about the live process or this Emacs: the
 agent's message, its tool calls, a burst, a pending request, background
@@ -5024,10 +5060,10 @@ work, a dispatched prompt."
           (setq entry (plist-put entry (intern (format ":%s" slot))
                                  (agent-shell-vertico-sidebar--strip-properties
                                   value))))))
-    (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'limit-snooze)))
-      (setq entry (plist-put entry :limit-snooze
-                             (list :snoozed (plist-get wake :snoozed)
-                                   :until (plist-get wake :until)))))
+    (when-let* ((wake (agent-shell-vertico-sidebar--get buffer 'timed-snooze)))
+      (setq entry (plist-put entry :timed-snooze
+                             (agent-shell-vertico-sidebar--snooze-deadline
+                              wake))))
     (when-let* (((agent-shell-vertico-sidebar--get buffer 'continuation))
                 (resets-at (plist-get (agent-shell-vertico-sidebar--get
                                        buffer 'limit)
@@ -5163,8 +5199,8 @@ The record may be one the reader killed in this Emacs, as
 cleared, and past it it is dropped and the session starts clean.
 
 Restoring is not news: no unread mark is set beyond the saved one, and
-nothing is reported, except a usage limit that reset while the session
-was closed, which wakes it now as its timer would have.  A continuation
+nothing is reported, except a snooze whose deadline passed while the
+session was closed, which wakes it now as its timer would have.  A continuation
 whose time passed then is not sent, since the reader did not see it
 coming; a message says so."
   (when-let* ((key (agent-shell-vertico-sidebar--persist-key-of buffer)))
@@ -5188,17 +5224,25 @@ coming; a message says so."
 (defun agent-shell-vertico-sidebar--restore-timers (buffer entry)
   "Schedule again what ENTRY, BUFFER's saved record, had scheduled."
   (let ((now (float-time)))
-    (when-let* ((wake (plist-get entry :limit-snooze))
-                (until (plist-get wake :until)))
-      (agent-shell-vertico-sidebar--set
-       buffer 'limit-snooze
-       (list :snoozed (plist-get wake :snoozed) :until until
-             :timer (and (> until now)
-                         (run-at-time (- until now) nil
-                                      #'agent-shell-vertico-sidebar--limit-wake
-                                      buffer))))
-      (unless (> until now)
-        (agent-shell-vertico-sidebar--limit-wake buffer)))
+    ;; Older state files called a usage-limit deadline :limit-snooze.
+    (when-let* ((wake (or (plist-get entry :timed-snooze)
+                         (plist-get entry :limit-snooze)))
+                (until (plist-get wake :until))
+                ((equal (plist-get wake :snoozed)
+                        (agent-shell-vertico-sidebar--get buffer 'snoozed))))
+      (if (> until now)
+          (agent-shell-vertico-sidebar--set buffer 'timed-snooze wake)
+        ;; Restore the expired deadline without scheduling a timer.
+        (setf (agent-shell-vertico-sidebar--session-timed-snooze
+               (agent-shell-vertico-sidebar--record buffer)) wake)
+        (agent-shell-vertico-sidebar--snooze-wake buffer)
+        ;; A later `session-restored' re-applies saved slots after replay.
+        ;; Keep it from bringing back the expired snooze or old unread age.
+        (when-let* ((key (agent-shell-vertico-sidebar--get
+                         buffer 'persist-key)))
+          (puthash key (plist-put (agent-shell-vertico-sidebar--entry buffer)
+                                  :saved-at now)
+                   (agent-shell-vertico-sidebar--store)))))
     (when-let* ((continue-at (plist-get entry :continue-at)))
       (if (and (> continue-at now)
                (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
@@ -5318,7 +5362,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
        (agent-shell-vertico-sidebar--set buffer 'busy-since nil)
        (agent-shell-vertico-sidebar--cancel-continuation buffer)
-       (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+       (agent-shell-vertico-sidebar--cancel-snooze-wake buffer)
        (let ((message (map-nested-elt event '(:data :message))))
          (agent-shell-vertico-sidebar--set buffer 'error (or message t))
          (if-let* ((limit (agent-shell-vertico-sidebar--limit-for
@@ -5372,7 +5416,7 @@ dispatched prompt the dead agent never sent is given back."
        (agent-shell-vertico-sidebar--set buffer 'limit nil)
        ;; The prompt is what a continuation would have sent.
        (agent-shell-vertico-sidebar--cancel-continuation buffer)
-       (agent-shell-vertico-sidebar--cancel-limit-wake buffer)
+       (agent-shell-vertico-sidebar--cancel-snooze-wake buffer)
        (agent-shell-vertico-sidebar--set buffer 'waiting-since nil)
        ;; What the last turn said is no answer to this prompt.
        (agent-shell-vertico-sidebar--set buffer 'message nil)
@@ -6717,7 +6761,7 @@ count leaves them out.  Nothing is shown when none waits."
    "  H (gh)      Resume a past session of the project at point\n"
    "  k / r / i   Kill / restart / interrupt (regular state)\n"
    "  u / !       Mark the session unread again / read\n"
-   "  z           Snooze the session until it asks again, or wake it\n"
+   "  z           Snooze or wake; C-u z snoozes for a duration\n"
    "  w (gw)      Continue a limited session once its limit resets,\n"
    "              or cancel that\n"
    "  e (ge)      Settle the session: done with it, kept alive;\n"
@@ -7039,7 +7083,7 @@ one, so the command works from the session the reader walked into."
         (user-error "No agent-shell session here"))))
 
 (defconst agent-shell-vertico-sidebar--undo-slots
-  '(unread snoozed pinned settled unsettled)
+  '(unread snoozed pinned settled unsettled timed-snooze)
   "The session slots the reader's parking commands write.
 Pin, snooze and settle cancel each other and marking unread ends a
 snooze or a settle, so every one of them may write more than its own
@@ -7059,7 +7103,11 @@ sessions, which undo then names by count rather than by title.")
 (defun agent-shell-vertico-sidebar--parking-slots (buffer)
   "Return BUFFER's parking slots as an alist."
   (mapcar (lambda (slot)
-            (cons slot (agent-shell-vertico-sidebar--get buffer slot)))
+            (let ((value (agent-shell-vertico-sidebar--get buffer slot)))
+              (cons slot (if (eq slot 'timed-snooze)
+                             (agent-shell-vertico-sidebar--snooze-deadline
+                              value)
+                           value))))
           agent-shell-vertico-sidebar--undo-slots))
 
 (defun agent-shell-vertico-sidebar--recording-undo-all
@@ -7366,7 +7414,11 @@ restored."
                         (if batch "they" "the session") note)
              (pcase-dolist (`(,buffer ,_title ,before ,_after) unchanged)
                (pcase-dolist (`(,slot . ,value) before)
-                 (agent-shell-vertico-sidebar--set buffer slot value)))
+                 (agent-shell-vertico-sidebar--set buffer slot value))
+               (when-let* ((wake (agent-shell-vertico-sidebar--get
+                                 buffer 'timed-snooze))
+                           ((<= (plist-get wake :until) (float-time))))
+                 (agent-shell-vertico-sidebar--snooze-wake buffer)))
              (agent-shell-vertico-sidebar-refresh)
              (message "Undid %s of %s%s%s" label (funcall what unchanged)
                       (if (> changed 0)
@@ -7505,49 +7557,81 @@ jumping to where it started, and stopping a task."
     (with-current-buffer buffer
       (agent-shell-subagents))))
 
+(defvar agent-shell-vertico-sidebar--snooze-history nil
+  "History of durations entered for snoozing a session.")
+
+(defun agent-shell-vertico-sidebar--read-snooze-duration ()
+  "Read a positive snooze duration, returning seconds."
+  (let* ((input (read-string "Snooze for (e.g. 30 min, 2 hours): "
+                             nil 'agent-shell-vertico-sidebar--snooze-history))
+         (seconds (timer-duration input)))
+    ;; `timer-duration' ignores a minus sign rather than rejecting it.
+    (unless (and seconds (> seconds 0)
+                 (not (string-match-p "-[ \t]*[0-9]" input)))
+      (user-error "Enter a positive duration, such as 30 min or 2 hours"))
+    seconds))
+
+(defun agent-shell-vertico-sidebar--snooze-until (buffer until)
+  "Snooze BUFFER until epoch time UNTIL, or indefinitely when nil."
+  (let ((now (float-time)))
+    (agent-shell-vertico-sidebar--cancel-snooze-wake buffer)
+    (agent-shell-vertico-sidebar--set buffer 'snoozed now)
+    (agent-shell-vertico-sidebar--set buffer 'pinned nil)
+    (agent-shell-vertico-sidebar--set buffer 'settled nil)
+    (when until
+      (agent-shell-vertico-sidebar--set
+       buffer 'timed-snooze
+       (list :snoozed now :until until :manual t)))))
+
 ;;;###autoload
-(defun agent-shell-vertico-sidebar-snooze ()
+(defun agent-shell-vertico-sidebar-snooze (&optional duration)
   "Snooze the session at point, or the current session, or wake it.
 
+With a prefix argument, read a duration such as \"30 min\" or \"2 hours\".
+This sets or replaces the deadline, even when already snoozed.  When
+called from Lisp, DURATION is a positive number of seconds, or nil
+for the ordinary snooze/wake toggle.
+
 A snoozed session stops asking for the reader without being marked
-read.  The state view moves it to the Snoozed section, folded by
-default; the other views sort it below every session that is not
-snoozed, whatever the sort, under a rule drawn where the snoozed
-sessions begin.  `agent-shell-vertico-sidebar-jump' passes it over.
-Its mark turns purple whatever its state and its title dims, still
-bold while it holds output nobody has read; only a burst of output
-draws it as working until the burst goes quiet.  Snoozing unpins the
-session.  Nothing is reported to
-`agent-shell-vertico-sidebar-notify-function' while it is snoozed.
+read.  It moves to the Snoozed section and leaves the attention jump
+and counts.  Its mark turns purple and its title dims, still bold
+while it holds unread output.  Snoozing unpins and un-settles it.
 
-Looking at a snoozed session, marking it read and new output all leave
-it snoozed, because none of them is dealing with it.  Sending it a
-prompt is, and so is a new permission request or an error, since the
-agent cannot go on without the reader; so is running this again, or
-`agent-shell-vertico-sidebar-mark-unread'.  Whatever it held comes
-back with the age it had.
+Looking at it, marking it read and new output leave it snoozed.
+Sending a prompt, a new permission request or an error, marking it
+unread, or running this again without a prefix wakes it.  Waking by
+hand preserves its unread age.  A duration's expiry instead marks it
+unread at the back of the queue and notifies once, unless the reader
+is in the session.  Deadlines survive restarting Emacs.
 
-A working session is refused, because it has not yet said anything to
-put off.
-
-In the sidebar with sessions marked, snooze every one of them that is
-not snoozed, the working ones aside, or wake them all when all are."
-  (interactive)
+A working session is refused.  With sessions marked in the sidebar,
+a duration applies to every eligible session with one shared deadline.
+Without a duration, snooze those not snoozed, or wake all if all are."
+  (interactive (list (and current-prefix-arg
+                          (agent-shell-vertico-sidebar--read-snooze-duration))))
+  (when (and duration (not (and (numberp duration) (> duration 0))))
+    (user-error "Snooze duration must be a positive number of seconds"))
   (if-let* ((marked (agent-shell-vertico-sidebar--batch-targets)))
-      (agent-shell-vertico-sidebar--toggle-batch
-       marked 'snoozed
-       (list "snooze" "Snoozed %s"
+      (if duration
+          (let ((until (+ (float-time) duration)))
+            (agent-shell-vertico-sidebar--park-batch
+             marked "snooze" "Snoozed %s"
              (lambda (buffer)
-               (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
-               (agent-shell-vertico-sidebar--set buffer 'pinned nil)
-               (agent-shell-vertico-sidebar--set buffer 'settled nil))
-             #'agent-shell-vertico-sidebar--refuse-working)
-       (list "wake" "Woke %s"
-             (lambda (buffer)
-               (agent-shell-vertico-sidebar--set buffer 'snoozed nil))))
+               (agent-shell-vertico-sidebar--snooze-until buffer until))
+             #'agent-shell-vertico-sidebar--refuse-working))
+        (agent-shell-vertico-sidebar--toggle-batch
+         marked 'snoozed
+         (list "snooze" "Snoozed %s"
+               (lambda (buffer)
+                 (agent-shell-vertico-sidebar--snooze-until buffer nil))
+               #'agent-shell-vertico-sidebar--refuse-working)
+         (list "wake" "Woke %s"
+               (lambda (buffer)
+                 (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))))
     (let ((buffer (agent-shell-vertico-sidebar--attention-target)))
       (cond
-       ((agent-shell-vertico-sidebar--get buffer 'snoozed)
+       ((and (not duration)
+             (agent-shell-vertico-sidebar--get buffer 'snoozed))
         (agent-shell-vertico-sidebar--recording-undo
          buffer "wake"
          (lambda () (agent-shell-vertico-sidebar--set buffer 'snoozed nil)))
@@ -7559,11 +7643,16 @@ not snoozed, the working ones aside, or wake them all when all are."
         (agent-shell-vertico-sidebar--recording-undo
          buffer "snooze"
          (lambda ()
-           (agent-shell-vertico-sidebar--set buffer 'snoozed (float-time))
-           (agent-shell-vertico-sidebar--set buffer 'pinned nil)
-           (agent-shell-vertico-sidebar--set buffer 'settled nil)))
+           (agent-shell-vertico-sidebar--snooze-until
+            buffer (and duration (+ (float-time) duration)))))
         (agent-shell-vertico-sidebar-refresh)
-        (message "Session %s snoozed" (buffer-name buffer)))))))
+        (message "Session %s snoozed%s" (buffer-name buffer)
+                 (if duration
+                     (concat " until "
+                             (agent-shell-vertico-sidebar--reset-text
+                              (plist-get (agent-shell-vertico-sidebar--get
+                                          buffer 'timed-snooze) :until)))
+                   "")))))))
 
 (defun agent-shell-vertico-sidebar--settle-next (buffer)
   "Return the session to show once BUFFER is settled, or nil.
@@ -8034,6 +8123,8 @@ ASK is the pending request it draws, from
                  'face (agent-shell-vertico-sidebar--mark-face snapshot))
      (and age (concat " · " age))
      "\n"
+     (when-let* ((wake (agent-shell-vertico-sidebar--snooze-text snapshot)))
+       (concat (propertize wake 'face 'agent-shell-vertico-sidebar-detail) "\n"))
      (cond (ask (agent-shell-vertico-sidebar--peek-ask-text ask))
            (needs (concat (propertize
                            needs 'face 'agent-shell-vertico-sidebar-blocked)

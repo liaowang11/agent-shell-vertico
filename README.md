@@ -375,6 +375,17 @@ permission request, an error, `u`, or `z` again wakes it, with whatever it held
 back at the age it had.  A working session is refused.  Like `u` and `!`,
 `agent-shell-vertico-sidebar-snooze` works from the session buffer too.
 
+`C-u z` snoozes for a duration such as `30 min`, `2 hours`, or `1 day`.
+On a session already snoozed, it replaces the deadline; plain `z` still
+wakes it immediately.  The row and peek show the wake time.  At expiry the
+session wakes, joins the back of the unread queue, and notifies once; if you
+are reading it, it stays read and wakes quietly.  With sessions marked, the
+command asks once and gives every eligible session the same deadline,
+skipping working sessions.  Undo restores the previous snooze and deadline.
+Deadlines survive an Emacs restart: a deadline still ahead is scheduled
+again, and one that passed while Emacs was closed wakes the session when it
+is restored.  Waking early or ending the snooze cancels its timer.
+
 `P` pins a session, the opposite of a snooze: it sorts above every other
 session whatever the sort, and the state and project views draw it under a
 Pinned header at the top.  It keeps its state, so a pinned session waiting

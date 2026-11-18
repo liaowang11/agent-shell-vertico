@@ -14659,14 +14659,14 @@ given ALPHA's session id, and nothing restored yet."
             (setq timers nil)
             (agent-shell-vertico-sidebar--handle-event
              beta '((:event . prompt-ready)))
-            (should (agent-shell-vertico-sidebar--limit-snoozed-p beta))
+            (should (agent-shell-vertico-sidebar--timed-snoozed-p beta))
             (should (agent-shell-vertico-sidebar--snoozed-p beta))
             (should (= (length timers) 1))
             (should (eq (nth 1 (car timers))
-                        #'agent-shell-vertico-sidebar--limit-wake))
+                        #'agent-shell-vertico-sidebar--snooze-wake))
             (should (< 3500 (car (car timers)) 3601))
             (should (equal (plist-get (agent-shell-vertico-sidebar--get
-                                       beta 'limit-snooze)
+                                       beta 'timed-snooze)
                                       :until)
                            resets-at))
             (should-not notifications)))))))
@@ -14695,7 +14695,7 @@ The session is unread and reported once, as Limited."
                beta '((:event . prompt-ready))))
             (should-not timers)
             (should-not (agent-shell-vertico-sidebar--snoozed-p beta))
-            (should-not (agent-shell-vertico-sidebar--get beta 'limit-snooze))
+            (should-not (agent-shell-vertico-sidebar--get beta 'timed-snooze))
             (should (agent-shell-vertico-sidebar--unread-p beta))
             (should (= (length notifications) 1))
             (should (equal (plist-get (car notifications) :status)
@@ -14873,13 +14873,13 @@ continuation are scheduled again, and the mark is cleared."
              beta '((:event . prompt-ready)))
             (should (equal (agent-shell-vertico-sidebar--get beta 'result)
                            "Shipped"))
-            (should (agent-shell-vertico-sidebar--limit-snoozed-p beta))
+            (should (agent-shell-vertico-sidebar--timed-snoozed-p beta))
             (should (agent-shell-vertico-sidebar--get beta 'continuation))
             (should (equal (sort (mapcar #'cadr timers)
                                  (lambda (a b)
                                    (string< (symbol-name a) (symbol-name b))))
                            (list #'agent-shell-vertico-sidebar--continue
-                                 #'agent-shell-vertico-sidebar--limit-wake)))
+                                 #'agent-shell-vertico-sidebar--snooze-wake)))
             (should-not notifications)
             (should-not (plist-member
                          (gethash '(claude-code . "s1")
@@ -21254,12 +21254,12 @@ limit · resets Oct 27, 2099, 8pm (UTC)")))))
 (defun agent-shell-vertico-tests--fire-limit-wake (buffer)
   "Run the timer that wakes BUFFER at its limit's reset."
   (let ((timer (plist-get (agent-shell-vertico-sidebar--get
-                           buffer 'limit-snooze)
+                           buffer 'timed-snooze)
                           :timer)))
     (should (timerp timer))
     (apply (timer--function timer) (timer--args timer))))
 
-(ert-deftest agent-shell-vertico-sidebar-limit-snoozes-until-the-reset ()
+(ert-deftest agent-shell-vertico-sidebar-timed-snoozes-until-the-reset ()
   "A limit stop with a known reset is snoozed, announced, and woken then.
 The row keeps the limit's colour and says it wakes at the reset; the
 wake marks it unread again and announces it once more."
@@ -21280,7 +21280,7 @@ wake marks it unread again and announces it once more."
       (agent-shell-vertico-sidebar--set alpha 'unread nil)
       (agent-shell-vertico-tests--fire-limit-wake alpha)
       (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
-      (should-not (agent-shell-vertico-sidebar--get alpha 'limit-snooze))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
       (should (agent-shell-vertico-sidebar--get alpha 'unread))
       (should (= (length notifications) 2))
       (should (equal (plist-get (car notifications) :status) "Limited")))))
@@ -21303,7 +21303,7 @@ A session the reader woke, or snoozed again by hand, is theirs."
         (setq notifications nil)
         (agent-shell-vertico-sidebar--set alpha 'unread nil)
         (let ((timer (plist-get (agent-shell-vertico-sidebar--get
-                                 alpha 'limit-snooze)
+                                 alpha 'timed-snooze)
                                 :timer)))
           (funcall change alpha)
           (let ((snoozed (agent-shell-vertico-sidebar--get alpha 'snoozed)))
@@ -21313,7 +21313,7 @@ A session the reader woke, or snoozed again by hand, is theirs."
             (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
             (should-not notifications)))))))
 
-(ert-deftest agent-shell-vertico-sidebar-limit-snooze-exceptions ()
+(ert-deftest agent-shell-vertico-sidebar-timed-snooze-exceptions ()
   "No snooze with the option off, nor for a session the reader pinned."
   (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
     (let ((agent-shell-vertico-sidebar-snooze-limited nil))
@@ -21321,7 +21321,7 @@ A session the reader woke, or snoozed again by hand, is theirs."
        alpha agent-shell-vertico-tests--bare-error)
       (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
       (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
-      (should-not (agent-shell-vertico-sidebar--get alpha 'limit-snooze))))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))))
   (agent-shell-vertico-tests--with-limited (+ (float-time) 3600)
     (agent-shell-vertico-sidebar--set alpha 'pinned (float-time))
     (agent-shell-vertico-sidebar--handle-event
@@ -21355,13 +21355,13 @@ A session the reader woke, or snoozed again by hand, is theirs."
       (agent-shell-vertico-sidebar--handle-event
        alpha agent-shell-vertico-tests--bare-error)
       (let ((timer (plist-get (agent-shell-vertico-sidebar--get
-                               alpha 'limit-snooze)
+                               alpha 'timed-snooze)
                               :timer)))
         (should (memq timer timer-list))
         (funcall cancel alpha)
         (should-not (memq timer timer-list))
         (should-not (agent-shell-vertico-sidebar--get alpha
-                                                      'limit-snooze))))))
+                                                      'timed-snooze))))))
 
 ;;; Settling a session
 
@@ -22201,6 +22201,226 @@ for another session."
      "requires_action")
     (should (equal (agent-shell-vertico-sidebar--status-name alpha)
                    "Waiting"))))
+
+(defun agent-shell-vertico-tests--snooze-for (buffer duration)
+  "Snooze BUFFER for DURATION through the interactive prefix command."
+  (with-current-buffer buffer
+    (let ((current-prefix-arg '(4)))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) duration)))
+        (call-interactively #'agent-shell-vertico-sidebar-snooze)))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-wakes-once ()
+  "A duration snooze puts output off, then announces it once at expiry."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--capturing-timers
+        (agent-shell-vertico-sidebar--mark-unread-at alpha 10.0)
+        (agent-shell-vertico-tests--snooze-for alpha "30 min")
+        (should (agent-shell-vertico-sidebar--snoozed-p alpha))
+        (should (= (agent-shell-vertico-sidebar--unread-time alpha) 10.0))
+        (should-not (agent-shell-vertico-sidebar--needs-attention-p alpha))
+        (let* ((wake (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+               (until (plist-get wake :until))
+               (timer (seq-find
+                       (lambda (timer)
+                         (eq (nth 1 timer)
+                             'agent-shell-vertico-sidebar--snooze-wake))
+                       timers)))
+          (should (< 1790 (- until (float-time)) 1801))
+          (should-not notifications)
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _) until)))
+            (dotimes (_ 2) (apply (nth 1 timer) (nthcdr 2 timer))))
+          (should-not (agent-shell-vertico-sidebar--snoozed-p alpha))
+          (should (>= (agent-shell-vertico-sidebar--unread-time alpha) until))
+          (should (= (length notifications) 1)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-rejects-invalid ()
+  "An invalid or nonpositive duration never changes parking state."
+  (dolist (duration '("" "junk" "0" "0 min" "-1 min"))
+    (agent-shell-vertico-tests--with-alpha
+      (agent-shell-vertico-sidebar--set alpha 'pinned 10.0)
+      (should-error
+       (agent-shell-vertico-tests--snooze-for alpha duration)
+       :type 'user-error)
+      (should (= (agent-shell-vertico-sidebar--get alpha 'pinned) 10.0))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed)))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-replaces-and-undoes ()
+  "Replacing a deadline invalidates its timer; undo restores the old one."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--capturing-timers
+      (agent-shell-vertico-tests--snooze-for alpha "30 min")
+      (let* ((first (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+             (until (plist-get first :until))
+             (timer (seq-find
+                     (lambda (timer)
+                       (eq (nth 1 timer)
+                           'agent-shell-vertico-sidebar--snooze-wake))
+                     timers)))
+        (agent-shell-vertico-tests--snooze-for alpha "2 hours")
+        (apply (nth 1 timer) (nthcdr 2 timer))
+        (should (> (plist-get (agent-shell-vertico-sidebar--get
+                              alpha 'timed-snooze) :until)
+                   until))
+        (agent-shell-vertico-sidebar-undo)
+        (should (= (plist-get (agent-shell-vertico-sidebar--get
+                              alpha 'timed-snooze) :until)
+                   until))
+        (agent-shell-vertico-tests--in alpha
+                                      #'agent-shell-vertico-sidebar-pin)
+        (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+        (agent-shell-vertico-sidebar-undo)
+        (should (= (plist-get (agent-shell-vertico-sidebar--get
+                              alpha 'timed-snooze) :until)
+                   until))
+        (agent-shell-vertico-tests--snooze alpha)
+        (apply (nth 1 timer) (nthcdr 2 timer))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-batch ()
+  "Marked sessions share a deadline, replacing old snoozes and skipping busy."
+  (agent-shell-vertico-tests--with-three-sessions
+    (agent-shell-vertico-tests--capturing-timers
+      (agent-shell-vertico-tests--with-sidebar
+        (setq agent-shell-vertico-sidebar--marked (list alpha beta gamma))
+        (agent-shell-vertico-sidebar--set alpha 'snoozed 10.0)
+        (setf (alist-get gamma agent-shell-test-statuses) 'busy)
+        (agent-shell-vertico-tests--snooze-for (current-buffer) "2 hours")
+        (let ((until (plist-get (agent-shell-vertico-sidebar--get
+                                alpha 'timed-snooze) :until)))
+          (should (< 7190 (- until (float-time)) 7201))
+          (should (= until (plist-get (agent-shell-vertico-sidebar--get
+                                       beta 'timed-snooze) :until))))
+        (should-not (agent-shell-vertico-sidebar--get gamma 'snoozed))
+        (should-not agent-shell-vertico-sidebar--marked)
+        (agent-shell-vertico-sidebar-undo)
+        (should (= (agent-shell-vertico-sidebar--get alpha 'snoozed) 10.0))
+        (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+        (should-not (agent-shell-vertico-sidebar--get beta 'snoozed))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-ends-on-an-ask ()
+  "A new ask cancels a duration snooze; its obsolete timer changes nothing."
+  (dolist (event '(((:event . input-submitted))
+                   ((:event . permission-request))
+                   ((:event . elicitation-request))
+                   ((:event . error) (:data . ((:message . "Failed"))))))
+    (agent-shell-vertico-tests--with-alpha
+      (agent-shell-vertico-tests--with-notifications
+        (agent-shell-vertico-tests--snooze-for alpha "30 min")
+        (let ((timer (plist-get (agent-shell-vertico-sidebar--get
+                                alpha 'timed-snooze) :timer)))
+          (agent-shell-vertico-sidebar--handle-event alpha event)
+          (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+          (let ((unread (agent-shell-vertico-sidebar--get alpha 'unread))
+                (reports (length notifications)))
+            (apply (timer--function timer) (timer--args timer))
+            (should (equal unread (agent-shell-vertico-sidebar--get
+                                   alpha 'unread)))
+            (should (= reports (length notifications)))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-focused-wake ()
+  "Expiry while the reader is in the session wakes quietly and leaves it read."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--snooze-for alpha "30 min")
+      (cl-letf (((symbol-function 'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (buffer) (eq buffer alpha))))
+        (agent-shell-vertico-tests--fire-limit-wake alpha))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'unread))
+      (should-not notifications))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-restores ()
+  "A saved deadline re-arms, or wakes once if it elapsed while Emacs was shut."
+  (dolist (elapsed '(nil t))
+    (agent-shell-vertico-tests--with-session-buffers
+        ((alpha "Claude Code Agent @ alpha" "/work/alpha/"
+                (agent-shell-vertico-tests--persisted-state "s1"))
+         (beta "Claude Code Agent @ beta" "/work/alpha/"
+               (agent-shell-vertico-tests--persisted-state)))
+      (agent-shell-vertico-tests--with-state-file
+        (agent-shell-vertico-tests--with-notifications
+          (agent-shell-vertico-tests--capturing-timers
+            (let ((agent-shell-test-statuses (list (cons beta 'ready))))
+              (agent-shell-vertico-sidebar--watch-buffer alpha)
+              (agent-shell-vertico-tests--snooze-for alpha "30 min")
+              (let ((until (plist-get (agent-shell-vertico-sidebar--get
+                                      alpha 'timed-snooze) :until)))
+                (agent-shell-vertico-tests--restart alpha)
+                (agent-shell-vertico-sidebar--watch-buffer beta)
+                (agent-shell-vertico-tests--load-session beta "s1")
+                (let ((now (if elapsed (+ until 1) (- until 600))))
+                  (cl-letf (((symbol-function 'float-time)
+                             (lambda (&optional _) now)))
+                    (agent-shell-vertico-sidebar--handle-event
+                     beta '((:event . prompt-ready)))))
+                (agent-shell-vertico-sidebar--handle-event
+                 beta '((:event . session-restored)))
+                (if elapsed
+                    (progn
+                      (should-not (agent-shell-vertico-sidebar--get
+                                   beta 'snoozed))
+                      (should (agent-shell-vertico-sidebar--get beta 'unread))
+                      (should (= (length notifications) 1)))
+                  (should (agent-shell-vertico-sidebar--snoozed-p beta))
+                  (should (= until (plist-get
+                                    (agent-shell-vertico-sidebar--get
+                                     beta 'timed-snooze) :until)))
+                  (should-not notifications))))))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-display ()
+  "The rendered row and peek name the wake time while keeping the result."
+  (agent-shell-vertico-tests--with-two-sessions
+    (let ((agent-shell-vertico-sidebar-folded-sections nil))
+      (agent-shell-vertico-sidebar--set alpha 'result "Review complete")
+      (agent-shell-vertico-tests--snooze-for alpha "1 day")
+      (let* ((until (plist-get (agent-shell-vertico-sidebar--get
+                               alpha 'timed-snooze) :until))
+             (wake (concat "Wakes at "
+                           (agent-shell-vertico-sidebar--reset-text until))))
+        (agent-shell-vertico-tests--with-sidebar
+          (agent-shell-vertico-sidebar--render)
+          (should (string-match-p (regexp-quote wake) (buffer-string)))
+          (should (string-match-p "Review complete" (buffer-string))))
+        (should (string-match-p
+                 (regexp-quote wake)
+                 (agent-shell-vertico-sidebar--peek-text alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-undo-after-deadline ()
+  "Undoing an early wake after its deadline never leaves a stale snooze."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--capturing-timers
+        (agent-shell-vertico-tests--snooze-for alpha "30 min")
+        (let ((until (plist-get (agent-shell-vertico-sidebar--get
+                                alpha 'timed-snooze) :until)))
+          (agent-shell-vertico-tests--snooze alpha)
+          (cl-letf (((symbol-function 'float-time)
+                     (lambda (&optional _) (+ until 1))))
+            (agent-shell-vertico-sidebar-undo))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze))
+          (should (> (agent-shell-vertico-sidebar--unread-time alpha) until))
+          (should (= (length notifications) 1)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-duration-snooze-restores-old-format ()
+  "A usage-limit snooze saved before duration support still wakes."
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-notifications
+      (agent-shell-vertico-tests--capturing-timers
+        (let ((until (+ (float-time) 3600)))
+          (agent-shell-vertico-sidebar--set alpha 'snoozed 10.0)
+          (agent-shell-vertico-sidebar--restore-timers
+           alpha (list :limit-snooze (list :snoozed 10.0 :until until)))
+          (should (= until (plist-get (agent-shell-vertico-sidebar--get
+                                      alpha 'timed-snooze) :until)))
+          (agent-shell-vertico-sidebar--snooze-wake alpha)
+          (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+          (should (agent-shell-vertico-sidebar--get alpha 'unread))
+          (should (= (length notifications) 1)))))))
 
 (provide 'agent-shell-vertico-tests)
 
