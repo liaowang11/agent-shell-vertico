@@ -1925,6 +1925,7 @@ repeating those queries during one redisplay."
     ("seven_day_opus" "weekly Opus limit")
     ("seven_day_sonnet" "weekly Sonnet limit")
     ("overage" "overage limit")
+    ("antigravity_quota" "individual quota")
     (_ (concat (string-replace "_" " " type) " limit"))))
 
 (defun agent-shell-vertico-sidebar--reset-text (resets-at &optional now)
@@ -4414,7 +4415,8 @@ message, which its settle classifies as a turn's end would be.
 
 The burst keeps the time of its first update as its working age, so a
 long burst rises through the working tier instead of restarting at every
-chunk.
+chunk.  The last message update also keeps its own arrival time so a
+quota countdown does not include time spent waiting for the burst to settle.
 
 A burst that makes the session work clears the unread mark it lands on:
 what the session produced before is superseded by what it is producing
@@ -4424,8 +4426,9 @@ it cleared, so its settle can tell one it took away from one nobody had
 set."
   (let* ((previous (agent-shell-vertico-sidebar--get buffer 'out-of-turn))
          (cleared (plist-get previous :cleared))
-         (message (or (plist-get previous :message)
-                      (eq kind 'agent-message-chunk)))
+         (message (if (eq kind 'agent-message-chunk)
+                      time
+                    (plist-get previous :message)))
          burst)
     (agent-shell-vertico-sidebar--cancel-out-of-turn buffer)
     (unless (agent-shell-vertico-sidebar--get buffer 'busy-since)
@@ -4441,10 +4444,33 @@ set."
     (agent-shell-vertico-sidebar--set buffer 'out-of-turn burst)
     (when (and (agent-shell-vertico-sidebar--get buffer 'unread)
                (eq (agent-shell-vertico-sidebar--raw-status buffer) 'busy))
-      (agent-shell-vertico-sidebar--set buffer 'unread nil)
-      (setq cleared t))
+      (setq cleared (agent-shell-vertico-sidebar--get buffer 'unread))
+      (agent-shell-vertico-sidebar--set buffer 'unread nil))
     (when cleared
-      (plist-put burst :cleared t))))
+      (plist-put burst :cleared cleared))))
+
+(defun agent-shell-vertico-sidebar--antigravity-quota (buffer received-at)
+  "Return BUFFER's quota notice as a limit, using its arrival time RECEIVED-AT."
+  (when (eq (map-nested-elt (agent-shell-vertico--state buffer)
+                            '(:agent-config :identifier))
+            'antigravity)
+    (let ((case-fold-search nil)
+          (line (agent-shell-vertico-sidebar--message-last-line buffer)))
+      (when (and line
+                 (string-match
+                  (rx string-start "⚠ Individual quota reached. "
+                      "Please upgrade your subscription to increase your limits. "
+                      "Resets in " (? (group (+ digit)) "h")
+                      (? (group (+ digit)) "m") (? (group (+ digit)) "s")
+                      "." string-end)
+                  line))
+        (let* ((hours (string-to-number (or (match-string 1 line) "0")))
+               (minutes (string-to-number (or (match-string 2 line) "0")))
+               (seconds (string-to-number (or (match-string 3 line) "0")))
+               (duration (+ (* 3600 hours) (* 60 minutes) seconds)))
+          (when (> duration 0)
+            (list :type "antigravity_quota" :text line
+                  :resets-at (+ received-at duration))))))))
 
 (defun agent-shell-vertico-sidebar--out-of-turn-settled (buffer)
   "Mark BUFFER's finished out-of-turn output as unread.
@@ -4483,34 +4509,58 @@ stands on until the reader answers it."
                ;; A real turn started meanwhile and owns the session now.
                (not (memq (agent-shell-vertico-sidebar--live-status buffer)
                           '(busy blocked))))
-      (when (and (plist-get burst :message)
-                 (agent-shell-vertico-sidebar--last-message buffer)
-                 (not (agent-shell-vertico-sidebar--permission-pending-p
-                       buffer))
-                 (not (agent-shell-vertico-sidebar--form-pending-p buffer)))
-        (agent-shell-vertico-sidebar--classify-last-message buffer)
-        (agent-shell-vertico-sidebar--stamp-terminal
-         buffer (or (plist-get burst :time) (float-time))))
-      (let ((result (and (plist-get burst :message)
-                         (agent-shell-vertico-sidebar--get
-                          buffer 'background-at-turn-end)
-                         (not (agent-shell-vertico-sidebar--in-flight-work
-                               buffer)))))
-        (when result
-          (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
-        (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
-          (cond
-           ;; A mark set during the burst keeps its own time.  The
-           ;; record is asked directly rather than through
-           ;; `agent-shell-vertico-sidebar--unread-time', because this
-           ;; writes the record.
-           ((not (agent-shell-vertico-sidebar--get buffer 'unread))
-            (agent-shell-vertico-sidebar--set
-             buffer 'unread (or (plist-get burst :time) (float-time)))
-            (when (or result (not (plist-get burst :cleared)))
-              (agent-shell-vertico-sidebar--notify buffer)))
-           (result
-            (agent-shell-vertico-sidebar--notify buffer))))))
+      (let* ((message-at (plist-get burst :message))
+             (classify (and message-at
+                            (not (agent-shell-vertico-sidebar--permission-pending-p
+                                  buffer))
+                            (not (agent-shell-vertico-sidebar--form-pending-p
+                                  buffer))))
+             (quota (and classify
+                         (agent-shell-vertico-sidebar--antigravity-quota
+                          buffer message-at)))
+             (previous (and quota
+                            (eq (agent-shell-vertico-sidebar--get buffer 'state)
+                                'limited)
+                            (agent-shell-vertico-sidebar--get buffer 'limit))))
+        (if (and (equal (plist-get previous :type) "antigravity_quota")
+                 (> (plist-get previous :resets-at) message-at))
+            ;; The countdown can be repeated.  Keep the original deadline
+            ;; and restore any unread mark the duplicate burst cleared.
+            (when (and (not (agent-shell-vertico-sidebar--session-focused-p
+                             buffer))
+                       (not (agent-shell-vertico-sidebar--get buffer 'unread)))
+              (agent-shell-vertico-sidebar--set
+               buffer 'unread (plist-get burst :cleared)))
+          (when (and classify (agent-shell-vertico-sidebar--last-message buffer))
+            (if quota
+                (progn
+                  (agent-shell-vertico-sidebar--cancel-continuation buffer)
+                  (agent-shell-vertico-sidebar--set-limited buffer quota))
+              (agent-shell-vertico-sidebar--classify-last-message buffer))
+            (agent-shell-vertico-sidebar--stamp-terminal
+             buffer (or (plist-get burst :time) (float-time))))
+          (let ((result (and (plist-get burst :message)
+                             (agent-shell-vertico-sidebar--get
+                              buffer 'background-at-turn-end)
+                             (not (agent-shell-vertico-sidebar--in-flight-work
+                                   buffer)))))
+            (when result
+              (agent-shell-vertico-sidebar--set buffer 'background-at-turn-end nil))
+            (unless (agent-shell-vertico-sidebar--session-focused-p buffer)
+              (cond
+               ;; A mark set during the burst keeps its own time.  The
+               ;; record is asked directly rather than through
+               ;; `agent-shell-vertico-sidebar--unread-time', because this
+               ;; writes the record.
+               ((not (agent-shell-vertico-sidebar--get buffer 'unread))
+                (agent-shell-vertico-sidebar--set
+                 buffer 'unread (or (plist-get burst :time) (float-time)))
+                (when (or quota result (not (plist-get burst :cleared)))
+                  (agent-shell-vertico-sidebar--notify buffer)))
+               (result
+                (agent-shell-vertico-sidebar--notify buffer)))))
+          (when quota
+            (agent-shell-vertico-sidebar--snooze-until-reset buffer)))))
     ;; The burst stopping is a message boundary, the same way any other
     ;; event is one.  Two waves of chunks carry no event between them,
     ;; so without this the second wave's message would start with the
@@ -4892,6 +4942,7 @@ session to continue once the limit resets."
   (agent-shell-vertico-sidebar--set buffer 'limit limit)
   (let ((resets-at (plist-get limit :resets-at)))
     (when (and agent-shell-vertico-sidebar-auto-continue
+               (not (equal (plist-get limit :type) "antigravity_quota"))
                resets-at (> resets-at (float-time)))
       (agent-shell-vertico-sidebar--schedule-continuation buffer))))
 
@@ -7793,12 +7844,11 @@ nothing.  `agent-shell-vertico-sidebar-auto-continue' schedules every
 limit stop this way.
 
 A session that is not limited is refused, and so is one whose reset
-time is unknown: neither agent-shell's record nor the CLI's message
-gave one."
+time is unknown.  An out-of-turn quota notice has no turn to continue."
   (interactive)
   (let* ((buffer (agent-shell-vertico-sidebar--attention-target))
-         (resets-at (plist-get (agent-shell-vertico-sidebar--get buffer 'limit)
-                               :resets-at)))
+         (limit (agent-shell-vertico-sidebar--get buffer 'limit))
+         (resets-at (plist-get limit :resets-at)))
     (cond
      ((agent-shell-vertico-sidebar--cancel-continuation buffer)
       (agent-shell-vertico-sidebar-refresh)
@@ -7806,6 +7856,9 @@ gave one."
                (buffer-name buffer)))
      ((not (eq (agent-shell-vertico-sidebar--raw-status buffer) 'limited))
       (user-error "Session %s is not stopped by a usage limit"
+                  (buffer-name buffer)))
+     ((equal (plist-get limit :type) "antigravity_quota")
+      (user-error "Session %s has no interrupted turn to continue"
                   (buffer-name buffer)))
      ((not resets-at)
       (user-error "When the limit of %s resets is unknown"

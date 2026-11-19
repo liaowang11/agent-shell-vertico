@@ -450,6 +450,12 @@ then` or `· continues then` while either is pending.  Set
 with a known reset.  A prompt, a new error or killing the session cancels
 the continuation.
 
+Antigravity ACP's out-of-turn `Individual quota reached` notice also marks
+its session `Limited` and snoozes it until the reported countdown ends.
+Repeated notices for the same reset do not move the deadline or notify
+again. The sidebar wakes the session without sending a prompt: the notice
+is not a failed turn that can be continued.
+
 The sidebar keeps what it knows of each session in
 `agent-shell-vertico-sidebar-state-file` (under `user-emacs-directory`; nil
 turns this off), so a session you resume after restarting Emacs, from a

@@ -15144,6 +15144,59 @@ It redraws the sidebar, but neither starts nor ends a burst."
       (should (equal (agent-shell-vertico-sidebar--last-message alpha)
                      "AB")))))
 
+(ert-deftest agent-shell-vertico-sidebar-antigravity-quota-snoozes-without-continuing ()
+  (agent-shell-vertico-tests--with-session-buffers
+      ((alpha "Antigravity @ alpha" "/work/alpha/"
+              '((:agent-config . ((:identifier . antigravity)))
+                (:session . ((:id . "a"))))))
+    (agent-shell-vertico-tests--with-settled-timers
+      (let ((agent-shell-test-statuses (list (cons alpha 'ready)))
+            (agent-shell-vertico-sidebar-auto-continue t)
+            (agent-shell-vertico-sidebar-snooze-limited t)
+            (now 100.0)
+            notices)
+        (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now))
+                  ((symbol-function 'agent-shell-vertico-sidebar--notify)
+                   (lambda (&rest _) (push now notices))))
+          (agent-shell-vertico-tests--stream alpha "Previous work finished.\n")
+          (setq now 110.0)
+          (agent-shell-vertico-tests--stream
+           alpha (concat "⚠ Individual quota reached. Please upgrade your "
+                         "subscription to increase your limits. Resets in 2m5s.\n"))
+          (setq now 115.0)
+          (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+          (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'limited))
+          (should (= 235.0 (plist-get (agent-shell-vertico-sidebar--get
+                                       alpha 'timed-snooze) :until)))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))
+          (setq now 120.0)
+          (agent-shell-vertico-tests--stream
+           alpha (concat "⚠ Individual quota reached. Please upgrade your "
+                         "subscription to increase your limits. Resets in 1m56s.\n"))
+          (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+          (should (equal notices '(115.0)))
+          (with-current-buffer alpha
+            (should-error (agent-shell-vertico-sidebar-continue-at-reset)
+                          :type 'user-error))
+          (should (= 235.0 (plist-get (agent-shell-vertico-sidebar--get
+                                       alpha 'timed-snooze) :until)))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'continuation))
+          (setq now 235.0)
+          (agent-shell-vertico-sidebar--snooze-wake alpha)
+          (should (equal notices '(235.0 115.0)))
+          (should-not (agent-shell-vertico-sidebar--get alpha 'snoozed))
+          (should (agent-shell-vertico-sidebar--unread-p alpha)))))))
+
+(ert-deftest agent-shell-vertico-sidebar-antigravity-quota-is-provider-specific ()
+  (agent-shell-vertico-tests--with-alpha
+    (agent-shell-vertico-tests--with-settled-timers
+      (agent-shell-vertico-tests--stream
+       alpha (concat "⚠ Individual quota reached. Please upgrade your "
+                     "subscription to increase your limits. Resets in 5s.\n"))
+      (agent-shell-vertico-sidebar--out-of-turn-settled alpha)
+      (should (eq (agent-shell-vertico-sidebar--raw-status alpha) 'done))
+      (should-not (agent-shell-vertico-sidebar--get alpha 'timed-snooze)))))
+
 (ert-deftest agent-shell-vertico-sidebar-settled-out-of-turn-marks-done ()
   "A quiet burst leaves output nobody has read, so it is marked unread."
   (agent-shell-vertico-tests--with-session-buffers
