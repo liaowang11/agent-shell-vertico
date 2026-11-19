@@ -101,10 +101,25 @@ PREVIOUS is the record's last protocol state, nil if it has none."
   "Each shell buffer's (SLUG . RECORDS).
 RECORDS maps nil (the shell itself) or a child id to its protocol state.")
 
-(defvar-local agent-shell-vertico-program-status--tools nil
-  "Active tool calls per record, as (RECORD . CALLS).
-RECORD is nil for the shell itself or a child id such as
-\"subagent/ID\"; CALLS are (ID . description), newest first.")
+(defconst agent-shell-vertico-program-status--detail-delay 0.5
+  "Seconds to collect working detail changes before reporting the latest.")
+
+(cl-defstruct agent-shell-vertico-program-status--activity
+  calls                                 ; Active tool IDs, newest first.
+  detail                                ; Latest meaningful working message.
+  report                                ; Last working report, for dedup and replay.
+  timer)                                ; Pending detail update, if any.
+
+(defvar-local agent-shell-vertico-program-status--activities nil
+  "Working activity keyed by nil for the shell or by a child record id.")
+
+(defun agent-shell-vertico-program-status--activity-for (child)
+  "Return the working activity for CHILD, creating it if needed."
+  (or (alist-get child agent-shell-vertico-program-status--activities
+                nil nil #'equal)
+      (setf (alist-get child agent-shell-vertico-program-status--activities
+                       nil nil #'equal)
+            (make-agent-shell-vertico-program-status--activity))))
 
 (defun agent-shell-vertico-program-status--tool-owner ()
   "Return the record the tool call being dispatched belongs to.
@@ -113,9 +128,11 @@ native subagent's update; nil means the shell itself."
   (when-let* ((session-id (car-safe (bound-and-true-p agent-shell--subagent-group))))
     (concat "subagent/" session-id)))
 
-(defun agent-shell-vertico-program-status--current-tool (record)
-  "Return the description of RECORD's newest active tool call, or nil."
-  (cdar (alist-get record agent-shell-vertico-program-status--tools nil nil #'equal)))
+(defun agent-shell-vertico-program-status--cancel-detail (activity)
+  "Cancel ACTIVITY's pending report, if any."
+  (when-let* ((timer (agent-shell-vertico-program-status--activity-timer activity)))
+    (cancel-timer timer)
+    (setf (agent-shell-vertico-program-status--activity-timer activity) nil)))
 
 (defvar-local agent-shell-vertico-program-status--subscriptions nil
   "Event subscriptions owned by program status mode.")
@@ -164,8 +181,9 @@ native subagent's update; nil means the shell itself."
         (puthash buffer (list slug) agent-shell-vertico-program-status--shells)
         slug)))
 
-(defun agent-shell-vertico-program-status--report (buffer child state)
-  "Return BUFFER's report of CHILD (nil for the shell itself) in STATE."
+(defun agent-shell-vertico-program-status--report (buffer child state &optional detail)
+  "Return BUFFER's report for CHILD in STATE, with working DETAIL.
+CHILD is nil for the shell itself."
   (let ((slug (agent-shell-vertico-program-status--slug buffer)))
     (let ((id (if child
                   (let ((split (string-search "/" child)))
@@ -182,13 +200,35 @@ native subagent's update; nil means the shell itself."
                                  :title (or child (buffer-name buffer))
                                  :msg (cond
                                        ((equal state "working")
-                                        (or (with-current-buffer buffer
-                                              (agent-shell-vertico-program-status--current-tool child))
-                                            "Working"))
+                                        (or detail "Working"))
                                        ((and (null child) (equal state "done")
                                              (fboundp 'agent-shell-vertico-sidebar--last-message))
                                         (when-let* ((message (agent-shell-vertico-sidebar--last-message buffer)))
                                           (replace-regexp-in-string "[\n\r\t]+" " " message)))))))))
+
+(defun agent-shell-vertico-program-status--send-working (buffer child activity)
+  "Publish CHILD's latest working ACTIVITY in BUFFER if it changed."
+  (let ((report (agent-shell-vertico-program-status--report
+                 buffer child "working"
+                 (agent-shell-vertico-program-status--activity-detail activity))))
+    (unless (equal report (agent-shell-vertico-program-status--activity-report
+                           activity))
+      (setf (agent-shell-vertico-program-status--activity-report activity) report)
+      (agent-shell-vertico-program-status--send report))))
+
+(defun agent-shell-vertico-program-status--flush-detail (buffer child activity)
+  "Publish the coalesced working ACTIVITY for CHILD in BUFFER."
+  (setf (agent-shell-vertico-program-status--activity-timer activity) nil)
+  (when (buffer-live-p buffer)
+    (agent-shell-vertico-program-status--send-working buffer child activity)))
+
+(defun agent-shell-vertico-program-status--schedule-detail (buffer child activity)
+  "Start a detail update window for CHILD's ACTIVITY in BUFFER."
+  (unless (agent-shell-vertico-program-status--activity-timer activity)
+    (setf (agent-shell-vertico-program-status--activity-timer activity)
+          (run-at-time agent-shell-vertico-program-status--detail-delay nil
+                       #'agent-shell-vertico-program-status--flush-detail
+                       buffer child activity))))
 
 (defun agent-shell-vertico-program-status--set (buffer child state)
   "Record CHILD of BUFFER as STATE, or forget it for nil, and report it."
@@ -198,8 +238,23 @@ native subagent's update; nil means the shell itself."
         (setf (alist-get child records nil nil #'equal) state)
       (setq records (assoc-delete-all child records)))
     (puthash buffer (cons slug records) agent-shell-vertico-program-status--shells)
-    (agent-shell-vertico-program-status--send
-     (agent-shell-vertico-program-status--report buffer child (or state "clear")))))
+    (with-current-buffer buffer
+      (if (equal state "working")
+          (agent-shell-vertico-program-status--send-working
+           buffer child (agent-shell-vertico-program-status--activity-for child))
+        (when-let* ((activity (alist-get child
+                                         agent-shell-vertico-program-status--activities
+                                         nil nil #'equal)))
+          (agent-shell-vertico-program-status--cancel-detail activity)
+          (if (equal state "blocked")
+              (setf (agent-shell-vertico-program-status--activity-report activity)
+                    nil)
+            (setq agent-shell-vertico-program-status--activities
+                  (assoc-delete-all
+                   child agent-shell-vertico-program-status--activities))))
+        (agent-shell-vertico-program-status--send
+         (agent-shell-vertico-program-status--report
+          buffer child (or state "clear")))))))
 
 (defun agent-shell-vertico-program-status--clear-errors (running-buffer running-child)
   "Acknowledge errors except the record being replaced by new work."
@@ -213,42 +268,48 @@ native subagent's update; nil means the shell itself."
            agent-shell-vertico-program-status--shells))
 
 (defun agent-shell-vertico-program-status--on-tool-call (event)
-  "Update the current action from tool call EVENT.
-The call counts toward the subagent dispatching it, if any.  Starting a
-call drops the record's pending server-side calls (ids starting with
-\"srvtoolu_\"): the agent runs those itself and ACP never reports them
-finished, so they would otherwise name the action forever."
+  "Collect working detail from tool call EVENT for its owning record.
+Starting a call drops pending server-side calls (ids starting with
+\"srvtoolu_\"), which ACP never reports finished.  A completion never
+replaces the working detail."
   (let* ((data (map-elt event :data))
          (id (map-elt data :tool-call-id))
          (call (map-elt data :tool-call))
          (status (map-elt call :status))
-         (description (or (map-elt call :description) (map-elt call :title)))
-         (owner (agent-shell-vertico-program-status--tool-owner))
-         (calls (alist-get owner agent-shell-vertico-program-status--tools nil nil #'equal))
-         (entry (assoc id calls))
-         (active (or (null status) (member status '("pending" "in_progress")))))
+         (description (or (map-elt call :description) (map-elt call :title))))
     (when id
-      (cond ((member status '("completed" "failed" "cancelled"))
-             (setq calls (assoc-delete-all id calls)))
-            (active
-             (unless entry
-               (setq calls (seq-remove (lambda (call)
-                                         (string-prefix-p "srvtoolu_" (car call)))
-                                       calls)))
-             (when (and (stringp description) (not (string-empty-p (string-trim description))))
-               (if entry
-                   (setcdr entry description)
-                 (push (cons id description) calls)))))
-      (setf (alist-get owner agent-shell-vertico-program-status--tools nil 'remove #'equal)
-            calls)
-      (when (equal (alist-get owner (cdr (gethash (current-buffer)
-                                                  agent-shell-vertico-program-status--shells))
-                              nil nil #'equal)
-                   "working")
-        (when (and (null entry) active)
-          (agent-shell-vertico-program-status--clear-errors (current-buffer) owner))
-        (agent-shell-vertico-program-status--send
-         (agent-shell-vertico-program-status--report (current-buffer) owner "working"))))))
+      (let* ((buffer (current-buffer))
+             (owner (agent-shell-vertico-program-status--tool-owner))
+             (activity (agent-shell-vertico-program-status--activity-for owner))
+             (calls (agent-shell-vertico-program-status--activity-calls activity)))
+        (cond
+         ((member status '("completed" "failed" "cancelled"))
+          (setf (agent-shell-vertico-program-status--activity-calls activity)
+                (delete id calls)))
+         ((or (null status) (member status '("pending" "in_progress")))
+          (let* ((entry (gethash buffer agent-shell-vertico-program-status--shells))
+                 (working (equal (alist-get owner (cdr entry) nil nil #'equal)
+                                 "working")))
+            (unless (member id calls)
+              (setq calls (cons id (seq-remove
+                                    (lambda (call)
+                                      (string-prefix-p "srvtoolu_" call))
+                                    calls)))
+              (setf (agent-shell-vertico-program-status--activity-calls activity)
+                    calls)
+              (when working
+                (agent-shell-vertico-program-status--clear-errors buffer owner)))
+            (when (and (equal id (car calls))
+                       (stringp description)
+                       (not (string-blank-p description))
+                       (not (equal description
+                                   (agent-shell-vertico-program-status--activity-detail
+                                    activity))))
+              (setf (agent-shell-vertico-program-status--activity-detail activity)
+                    description)
+              (when working
+                (agent-shell-vertico-program-status--schedule-detail
+                 buffer owner activity))))))))))
 
 (defun agent-shell-vertico-program-status--on-state-changed (event)
   "Report the run state EVENT, a `state-changed' event, declares."
@@ -261,9 +322,6 @@ finished, so they would otherwise name the action forever."
                  agent-state
                  (map-nested-elt event '(:data :stop-reason))
                  previous)))
-    (when (equal agent-state "idle")
-      (setq agent-shell-vertico-program-status--tools
-            (and child (assoc-delete-all child agent-shell-vertico-program-status--tools))))
     (when (equal state "working")
       (agent-shell-vertico-program-status--clear-errors buffer child))
     (when (and state
@@ -295,10 +353,16 @@ finished, so they would otherwise name the action forever."
     (when (agent-shell-vertico-program-status--rex-terminal-p terminal)
       (maphash (lambda (buffer entry)
                  (when (buffer-live-p buffer)
-                   (pcase-dolist (`(,child . ,state) (reverse (cdr entry)))
-                     (agent-shell-vertico-program-status--send
-                      (agent-shell-vertico-program-status--report buffer child state)
-                      (list terminal)))))
+                   (with-current-buffer buffer
+                     (pcase-dolist (`(,child . ,state) (reverse (cdr entry)))
+                       (agent-shell-vertico-program-status--send
+                        (if (equal state "working")
+                            (agent-shell-vertico-program-status--activity-report
+                             (agent-shell-vertico-program-status--activity-for
+                              child))
+                          (agent-shell-vertico-program-status--report
+                           buffer child state))
+                        (list terminal))))))
                agent-shell-vertico-program-status--shells))))
 
 (defun agent-shell-vertico-program-status--retract (&optional terminal)
@@ -320,8 +384,10 @@ finished, so they would otherwise name the action forever."
   "Unsubscribe this buffer and retract its records."
   (dolist (token agent-shell-vertico-program-status--subscriptions)
     (agent-shell-unsubscribe :subscription token))
+  (dolist (entry agent-shell-vertico-program-status--activities)
+    (agent-shell-vertico-program-status--cancel-detail (cdr entry)))
   (setq agent-shell-vertico-program-status--subscriptions nil
-        agent-shell-vertico-program-status--tools nil)
+        agent-shell-vertico-program-status--activities nil)
   (remove-hook 'window-selection-change-functions #'agent-shell-vertico-program-status--seen-h t)
   (remove-hook 'kill-buffer-hook #'agent-shell-vertico-program-status--unsubscribe t)
   (agent-shell-vertico-program-status--clear-h))

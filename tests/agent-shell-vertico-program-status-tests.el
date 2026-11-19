@@ -31,6 +31,16 @@
 (defvar bill/psp-test--shells nil
   "Shell buffers made by the current test.")
 
+(defvar bill/psp-test--timers nil
+  "Pending status callbacks in order of registration.")
+
+(defun bill/psp-test--flush ()
+  "Run the status callbacks due in this update window."
+  (let ((timers bill/psp-test--timers))
+    (setq bill/psp-test--timers nil)
+    (dolist (callback timers)
+      (funcall callback))))
+
 (defun bill/psp-test--tty-type (terminal)
   (pcase terminal
     ('rex "xterm-256color")
@@ -48,7 +58,8 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
          (bill/psp-test--terminal-params nil)
          (bill/psp-test--subscriptions nil)
          (bill/psp-test--frame-terminal 'rex)
-         (bill/psp-test--shells nil))
+         (bill/psp-test--shells nil)
+         (bill/psp-test--timers nil))
      (clrhash agent-shell-vertico-program-status--shells)
      (cl-letf (((symbol-function 'terminal-list)
                 (lambda () '(initial gui plain rex rex-term)))
@@ -76,6 +87,15 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
                ((symbol-function 'send-string-to-terminal)
                 (lambda (string &optional terminal)
                   (push (cons terminal string) bill/psp-test--sent)))
+               ((symbol-function 'run-at-time)
+                (lambda (_delay _repeat function &rest args)
+                  (let ((callback (lambda () (apply function args))))
+                    (setq bill/psp-test--timers
+                          (append bill/psp-test--timers (list callback)))
+                    callback)))
+               ((symbol-function 'cancel-timer)
+                (lambda (timer)
+                  (setq bill/psp-test--timers (delq timer bill/psp-test--timers))))
                ((symbol-function 'agent-shell--state)
                 (lambda ()
                   (list (cons :session (list (cons :id bill/psp-test--session-id))))))
@@ -220,30 +240,45 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
         (should (equal (bill/psp-test--sent-to 'rex-term) (list expected))))
       (should (= (length bill/psp-test--sent) 2)))))
 
-(ert-deftest bill/psp-working-message-follows-active-tools ()
+(ert-deftest bill/psp-working-detail-coalesces-and-survives-completion ()
   (bill/psp-test--with-terminals
     (let ((shell (bill/psp-test--shell "*claude*" "s")))
       (bill/psp-test--emit shell "running")
-      (let ((callback (nth 2 (seq-find (lambda (entry)
-                                         (and (eq (car entry) shell)
-                                              (eq (cadr entry) 'tool-call-update)))
-                                       bill/psp-test--subscriptions))))
-        (should callback)
-        (cl-labels ((tool (id status title)
-                      (with-current-buffer shell
-                        (funcall callback
-                                 `((:data . ((:tool-call-id . ,id)
-                                             (:tool-call . ((:status . ,status)
-                                                            (:title . ,title))))))))))
+      (bill/psp-test--tool shell "a" "in_progress" "Reading config")
+      (bill/psp-test--tool shell "b" "in_progress" "Running tests")
+      (bill/psp-test--tool shell "a" "in_progress" "Still reading config")
+      (bill/psp-test--tool shell "b" "completed" "Running tests")
+      (bill/psp-test--tool shell "a" "completed" "Reading config")
+      (should (equal (bill/psp-test--messages "s") '("Working")))
+      (bill/psp-test--flush)
+      (should (equal (bill/psp-test--messages "s") '("Working" "Running tests")))
+      (bill/psp-test--tool shell "c" "in_progress" "Running tests")
+      (bill/psp-test--flush)
+      (should (equal (bill/psp-test--messages "s") '("Working" "Running tests"))))))
+
+(ert-deftest bill/psp-state-changes-bypass-pending-working-detail ()
+  (bill/psp-test--with-terminals
+    (dolist (exit '(("requires_action" nil "blocked")
+                    ("idle" "end_turn" "done")
+                    ("idle" "error" "error")))
+      (pcase-let ((`(,state ,reason ,wire-state) exit))
+        (let ((shell (bill/psp-test--shell "*claude*" wire-state)))
+          (bill/psp-test--emit shell "running")
           (setq bill/psp-test--sent nil)
-          (tool "a" "in_progress" "Reading config")
-          (tool "b" "in_progress" "Running tests")
-          ;; An old completion must not replace the current action.
-          (tool "a" "completed" "Reading config")
-          (tool "b" "completed" "Running tests")
-          (should (equal (mapcar (lambda (report) (bill/psp-test--decoded report "msg"))
-                                 (bill/psp-test--sent-to 'rex))
-                         '("Reading config" "Running tests" "Running tests" "Working"))))))))
+          (bill/psp-test--tool shell "a" "in_progress" "Running tests")
+          (bill/psp-test--emit shell state reason)
+          (let ((reports (bill/psp-test--sent-to 'rex)))
+            (should (= (length reports) 1))
+            (should (string-match-p (concat "state=" wire-state ":")
+                                    (car reports)))
+            (bill/psp-test--flush)
+            (should (equal (bill/psp-test--sent-to 'rex) reports)))
+          (setq bill/psp-test--sent nil)
+          (bill/psp-test--emit shell "running")
+          (should (equal (bill/psp-test--messages wire-state)
+                         (list (if (equal wire-state "blocked")
+                                   "Running tests"
+                                 "Working")))))))))
 
 (defun bill/psp-test--tool (shell id status title &optional subagent)
   "Deliver a tool call update to SHELL, dispatched by SUBAGENT's session if given."
@@ -275,7 +310,8 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
       (bill/psp-test--tool shell "t1" "in_progress" "Grep TODO" "abc")
       (bill/psp-test--tool shell "t2" "in_progress" "Read notes.org")
       (bill/psp-test--tool shell "t1" "completed" "Grep TODO" "abc")
-      (should (equal (bill/psp-test--messages "s/subagent/abc") '("Grep TODO" "Working")))
+      (bill/psp-test--flush)
+      (should (equal (bill/psp-test--messages "s/subagent/abc") '("Grep TODO")))
       ;; The root reports its own tool, never the subagent's.
       (should (equal (bill/psp-test--messages "s") '("Read notes.org"))))))
 
@@ -286,9 +322,11 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
       (setq bill/psp-test--sent nil)
       ;; A server-side tool (srvtoolu_) never gets a completed update.
       (bill/psp-test--tool shell "srvtoolu_1" "pending" "advisor")
+      (bill/psp-test--flush)
       (bill/psp-test--tool shell "toolu_2" "in_progress" "Run tests")
       (bill/psp-test--tool shell "toolu_2" "completed" "Run tests")
-      (should (equal (bill/psp-test--messages "s") '("advisor" "Run tests" "Working"))))))
+      (bill/psp-test--flush)
+      (should (equal (bill/psp-test--messages "s") '("advisor" "Run tests"))))))
 
 (ert-deftest bill/psp-new-tool-clears-old-child-error ()
   (bill/psp-test--with-terminals
@@ -301,9 +339,10 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
         (agent-shell-vertico-program-status--on-tool-call
          '((:data . ((:tool-call-id . "next")
                      (:tool-call . ((:status . "in_progress") (:title . "Next action"))))))))
-      (let ((reports (bill/psp-test--sent-to 'rex)))
-        (should (member "\e]7501;state=clear:id=s/task/failed\e\\" reports))
-        (should (equal (bill/psp-test--decoded (car (last reports)) "msg") "Next action"))))))
+      (should (equal (bill/psp-test--sent-to 'rex)
+                     '("\e]7501;state=clear:id=s/task/failed\e\\")))
+      (bill/psp-test--flush)
+      (should (equal (bill/psp-test--messages "s") '("Next action"))))))
 
 (ert-deftest bill/psp-done-uses-tracked-agent-message ()
   (bill/psp-test--with-terminals
@@ -451,6 +490,9 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
     (let ((shell (bill/psp-test--shell "*claude*" "s")))
       (bill/psp-test--emit shell "running")
       (bill/psp-test--emit shell "requires_action" nil "subagent/a")
+      (bill/psp-test--tool shell "first" "in_progress" "Reading config")
+      (bill/psp-test--flush)
+      (bill/psp-test--tool shell "next" "in_progress" "Running tests")
       (setq bill/psp-test--sent nil)
       (setq bill/psp-test--frame-terminal 'rex-term)
       ;; Call the hook function alone: other suites in the same process
@@ -459,7 +501,7 @@ of type xterm-rex, `plain' another tty, `gui' a graphical terminal and
       (should (equal (bill/psp-test--sent-to 'rex-term)
                      (list (concat "\e]7501;state=working:id=s:app=emacs:title="
                                    (bill/psp-test--b64 "*claude*") ":msg="
-                                   (bill/psp-test--b64 "Working") "\e\\")
+                                   (bill/psp-test--b64 "Reading config") "\e\\")
                            (concat "\e]7501;state=blocked:id=s/subagent/a:app=emacs:title="
                                    (bill/psp-test--b64 "subagent/a") "\e\\"))))
       (should (= (length bill/psp-test--sent) 2))
