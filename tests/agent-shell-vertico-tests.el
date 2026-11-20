@@ -19289,7 +19289,83 @@ under its point."
     (agent-shell-vertico-sidebar-jump)
     (should-not agent-shell-test-displayed-buffer)
     (should (equal (agent-shell-vertico-sidebar--no-attention-message)
-                   "No session needs attention, 1 snoozed"))))
+                   "No session needs attention, 1 snoozed (1 unread)"))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-reports-parked-unread-counts ()
+  "The no-attention message reports unread counts for snoozed and settled sessions."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((snoozed-read "Codex Agent @ sr" "/work/sr/"
+                     '((:session . ((:id . "sr") (:title . "Snoozed Read")))))
+       (snoozed-unread "Codex Agent @ su" "/work/su/"
+                       '((:session . ((:id . "su") (:title . "Snoozed Unread")))))
+       (settled-read "Codex Agent @ er" "/work/er/"
+                     '((:session . ((:id . "er") (:title . "Settled Read")))))
+       (settled-unread "Codex Agent @ eu" "/work/eu/"
+                       '((:session . ((:id . "eu") (:title . "Settled Unread")))))
+       (working "Codex Agent @ w" "/work/w/"
+                '((:session . ((:id . "w") (:title . "Working"))))))
+    (let ((agent-shell-test-buffers (list snoozed-read snoozed-unread
+                                          settled-read settled-unread working))
+          (agent-shell-test-statuses (list (cons snoozed-read 'ready)
+                                           (cons snoozed-unread 'ready)
+                                           (cons settled-read 'ready)
+                                           (cons settled-unread 'ready)
+                                           (cons working 'busy))))
+      (agent-shell-vertico-sidebar--set settled-read 'settled 10.0)
+      ;; Read settled sessions are not mentioned.
+      (let ((agent-shell-test-buffers (list settled-read)))
+        (should (equal (agent-shell-vertico-sidebar--no-attention-message)
+                       "No session needs attention")))
+      ;; Unread settled sessions are reported on their own.
+      (agent-shell-vertico-sidebar--set settled-unread 'settled 20.0)
+      (agent-shell-vertico-sidebar--mark-unread-at settled-unread 25.0)
+      (let ((agent-shell-test-buffers (list settled-read settled-unread)))
+        (should (equal (agent-shell-vertico-sidebar--no-attention-message)
+                       "No session needs attention, 1 settled unread")))
+      ;; Snoozed sessions include the unread subset only when non-zero.
+      (agent-shell-vertico-tests--snooze snoozed-read)
+      (agent-shell-vertico-sidebar--mark-unread-at snoozed-unread 30.0)
+      (agent-shell-vertico-tests--snooze snoozed-unread)
+      (should
+       (equal (agent-shell-vertico-sidebar--no-attention-message)
+              (concat "No session needs attention, 1 working,"
+                      " 2 snoozed (1 unread), 1 settled unread"))))))
+
+(ert-deftest agent-shell-vertico-sidebar-jump-here-reports-parked-unread ()
+  "Jumping from the only waiting session appends the parked-session summary."
+  (agent-shell-vertico-tests--with-session-buffers
+      ((waiting "Codex Agent @ waiting" "/work/waiting/"
+                '((:session . ((:id . "w") (:title . "Waiting")))))
+       (snoozed-read "Codex Agent @ sr" "/work/sr/"
+                     '((:session . ((:id . "sr") (:title . "Snoozed Read")))))
+       (snoozed-unread "Codex Agent @ su" "/work/su/"
+                       '((:session . ((:id . "su") (:title . "Snoozed Unread")))))
+       (settled-unread "Codex Agent @ eu" "/work/eu/"
+                       '((:session . ((:id . "eu") (:title . "Settled Unread"))))))
+    (let ((agent-shell-test-buffers
+           (list waiting snoozed-read snoozed-unread settled-unread))
+          (agent-shell-test-statuses (list (cons waiting 'blocked)
+                                           (cons snoozed-read 'ready)
+                                           (cons snoozed-unread 'ready)
+                                           (cons settled-unread 'ready)))
+          (reported nil))
+      (agent-shell-vertico-tests--snooze snoozed-read)
+      (agent-shell-vertico-sidebar--mark-unread-at snoozed-unread 10.0)
+      (agent-shell-vertico-tests--snooze snoozed-unread)
+      (agent-shell-vertico-sidebar--set settled-unread 'settled 20.0)
+      (agent-shell-vertico-sidebar--mark-unread-at settled-unread 25.0)
+      (cl-letf (((symbol-function
+                  'agent-shell-vertico-sidebar--session-focused-p)
+                 (lambda (buffer) (eq buffer waiting)))
+                ((symbol-function 'message)
+                 (lambda (format &rest arguments)
+                   (setq reported (apply #'format-message format arguments)))))
+        (agent-shell-vertico-sidebar-jump))
+      (should-not agent-shell-test-displayed-buffer)
+      (should
+       (equal reported
+              (concat "No other session needs attention (this one is waiting),"
+                      " 2 snoozed (1 unread), 1 settled unread"))))))
 
 (ert-deftest agent-shell-vertico-sidebar-jump-passes-over-a-snooze ()
   "The jump goes past a snoozed session that would otherwise win.

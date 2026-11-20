@@ -7106,21 +7106,48 @@ been waiting longest."
                (seq-filter #'buffer-live-p (agent-shell-buffers))
                'priority)))
 
+(defun agent-shell-vertico-sidebar--parked-summary ()
+  "Return the parked-session suffix for jump messages, or an empty string.
+
+Snoozed sessions are always counted, with their unread count in
+parentheses when any hold output nobody has read.  Settled sessions are
+only mentioned when at least one is unread, since read settled sessions
+are done."
+  (let ((snoozed 0)
+        (snoozed-unread 0)
+        (settled-unread 0))
+    (dolist (buffer (seq-filter #'buffer-live-p (agent-shell-buffers)))
+      (cond
+       ((agent-shell-vertico-sidebar--snoozed-p buffer)
+        (cl-incf snoozed)
+        (when (agent-shell-vertico-sidebar--unread-p buffer)
+          (cl-incf snoozed-unread)))
+       ((and (agent-shell-vertico-sidebar--settled-p buffer)
+             (agent-shell-vertico-sidebar--unread-p buffer))
+        (cl-incf settled-unread))))
+    (concat
+     (when (> snoozed 0)
+       (if (> snoozed-unread 0)
+           (format ", %d snoozed (%d unread)" snoozed snoozed-unread)
+         (format ", %d snoozed" snoozed)))
+     (when (> settled-unread 0)
+       (format ", %d settled unread" settled-unread)))))
+
 (defun agent-shell-vertico-sidebar--no-attention-message ()
   "Return what to report when no session needs attention.
 
 Counting the sessions still working separates a quiet moment in a busy
-run from nothing running at all, and counting the snoozed ones says
-what is still owed once the reader wants it."
+run from nothing running at all.  Parked sessions are appended by
+`agent-shell-vertico-sidebar--parked-summary' so snoozed sessions, and
+any snoozed or settled sessions holding unread output, stay visible."
   (let* ((statistics (agent-shell-vertico-sidebar--session-statistics))
          (working (aref statistics 1))
-         (background (aref statistics 5))
-         (snoozed (aref statistics 4)))
+         (background (aref statistics 5)))
     (concat "No session needs attention"
             (and (> working 0) (format ", %d working" working))
             (and (> background 0)
                  (format ", %d in the background" background))
-            (and (> snoozed 0) (format ", %d snoozed" snoozed)))))
+            (agent-shell-vertico-sidebar--parked-summary))))
 
 (defun agent-shell-vertico-sidebar--attention-target ()
   "Return the session the attention marking commands act on.
@@ -8539,8 +8566,9 @@ AMONG limits it to the sessions a filtered header draws."
 
 (defun agent-shell-vertico-sidebar--attention-here-message (buffer)
   "Return what to report when only BUFFER asks and the reader is in it."
-  (format "No other session needs attention (this one is %s)"
-          (downcase (agent-shell-vertico-sidebar--status-name buffer))))
+  (concat (format "No other session needs attention (this one is %s)"
+                  (downcase (agent-shell-vertico-sidebar--status-name buffer)))
+          (agent-shell-vertico-sidebar--parked-summary)))
 
 (defun agent-shell-vertico-sidebar--jump-display (buffer)
   "Display session BUFFER, the default action of a jump."
