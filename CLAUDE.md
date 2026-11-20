@@ -319,6 +319,16 @@ shell's point (which is how the viewport knows its page), so
 command makes the real jump. The header reads a cached position, so
 showing a page recomputes it first.
 
+**Searching across viewport pages.** With a prefix, Consult's line and
+imenu commands collect from the underlying shell rather than only the
+current viewport page. They reuse Consult's collectors and keep no
+persistent index. Turn spans map a shell position to a page; fragment IDs
+and rendered table cells help translate it into the page as displayed.
+Preview runs in the viewport and restores the original location before the
+final jump, which records the page left. The imenu reader builds fresh
+candidate conses before deduplication, so it does not mutate Consult's
+buffer-local cache. Without a prefix, the original commands run unchanged.
+
 **Opening what a jump lands on.** agent-shell folds with text
 properties, which neither imenu nor Consult opens, so
 `--reveal-folds-at-point` does: it opens the activity group holding the

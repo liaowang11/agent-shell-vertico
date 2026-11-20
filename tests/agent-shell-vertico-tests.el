@@ -12923,6 +12923,12 @@ Toggling there would collapse the fragment the user just jumped into."
     (should (advice-member-p
              #'agent-shell-vertico-consult--open-folds-temporarily
              'consult--invisible-open-temporarily))
+    (should (advice-member-p
+             #'agent-shell-vertico-consult--viewport-consult-line
+             'consult-line))
+    (should (advice-member-p
+             #'agent-shell-vertico-consult--viewport-consult-imenu
+             'consult-imenu))
     (agent-shell-vertico-consult-setup-buffer-search)
     (should (= (seq-count (lambda (fn)
                             (eq fn #'agent-shell-vertico-consult--expand-fold))
@@ -16000,6 +16006,823 @@ and a page number would land on the turn before the one it names."
       (agent-shell-vertico-viewport-goto-page 2)
       (with-current-buffer (agent-shell-viewport--shell-buffer)
         (should (looking-at "> third question"))))))
+
+(ert-deftest agent-shell-vertico-viewport-target-maps-prompt-and-response-across-pages ()
+  "Shell positions in any turn map to the exact page and viewport position."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer\nsecond line")
+        ("second question" . "second answer\nmore text"))
+    (let* ((shell (agent-shell-viewport--shell-buffer))
+           (spans (agent-shell-vertico--viewport-turn-spans shell)))
+      (dolist (case '((1 "question" "question")
+                      (1 "second line" "second line")
+                      (2 "second question" "second question")
+                      (2 "more text" "more text")))
+        (pcase-let* ((`(,expected-page ,needle ,expected-at) case)
+                     (shell-pos (with-current-buffer shell
+                                  (goto-char (point-min))
+                                  (search-forward needle)
+                                  (match-beginning 0)))
+                     (target (agent-shell-vertico--shell-position-to-viewport-target
+                              shell spans shell-pos)))
+          (should (eql (plist-get target :page) expected-page))
+          (agent-shell-viewport--show-page expected-page)
+          (goto-char (agent-shell-vertico--resolve-viewport-target target))
+          (should (looking-at-p (regexp-quote expected-at))))))))
+
+(ert-deftest agent-shell-vertico-viewport-target-survives-live-shell-insertion ()
+  "A captured match still identifies its turn after earlier output arrives."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first" . "first answer") ("second" . "target answer"))
+    (let* ((shell (agent-shell-viewport--shell-buffer))
+           (spans (agent-shell-vertico--viewport-turn-spans shell))
+           (match (with-current-buffer shell
+                    (goto-char (point-min))
+                    (search-forward "target answer")
+                    (copy-marker (match-beginning 0)))))
+      (unwind-protect
+          (progn
+            (with-current-buffer shell
+              (goto-char (point-min))
+              (search-forward "first answer")
+              (insert " extra streamed output"))
+            (let ((target (agent-shell-vertico--shell-position-to-viewport-target
+                           shell spans match)))
+              (should (eql (plist-get target :page) 2))
+              (agent-shell-viewport--show-page 2)
+              (goto-char (agent-shell-vertico--resolve-viewport-target target))
+              (should (looking-at-p "target answer"))))
+        (set-marker match nil)))))
+
+(ert-deftest agent-shell-vertico-viewport-target-maps-past-steered-prompt ()
+  "Positions in or past a steered exchange map accurately into the viewport."
+  (agent-shell-vertico-tests--with-viewport
+      '(("first question" . "first answer")
+        ("steered aside" . "steered answer")
+        ("third question" . "third answer"))
+    (let ((shell (agent-shell-viewport--shell-buffer)))
+      (with-current-buffer shell
+        (agent-shell-vertico-tests--mark-steered "steered aside"))
+      (let ((spans (agent-shell-vertico--viewport-turn-spans shell)))
+        (dolist (case '((1 "aside")
+                        (1 "steered answer")
+                        (2 "third answer")))
+          (pcase-let* ((`(,expected-page ,needle) case)
+                       (shell-pos (with-current-buffer shell
+                                    (goto-char (point-min))
+                                    (search-forward needle)
+                                    (match-beginning 0)))
+                       (target (agent-shell-vertico--shell-position-to-viewport-target
+                                shell spans shell-pos)))
+            (should (eql (plist-get target :page) expected-page))
+            (agent-shell-viewport--show-page expected-page)
+            (goto-char (agent-shell-vertico--resolve-viewport-target target))
+            (should (looking-at-p (regexp-quote needle)))))))))
+
+(ert-deftest agent-shell-vertico-viewport-target-anchors-by-qualified-id ()
+  "Fragment matches anchor by `:qualified-id' even when preceding text shifts."
+  (let ((shell (generate-new-buffer "Codex Agent @ anchor"))
+        (viewport (get-buffer-create "Codex Agent @ anchor [viewport]")))
+    (unwind-protect
+        (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 1))))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (insert (propertize "> prompt one\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-call_a" :label-left "completed" :label-right "Read foo"
+             :body "alpha beta\ngamma"))
+          (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+                 (shell-pos (with-current-buffer shell
+                              (goto-char (point-min))
+                              (search-forward "gamma")
+                              (match-beginning 0)))
+                 (target (agent-shell-vertico--shell-position-to-viewport-target
+                          shell spans shell-pos)))
+            (should (equal (plist-get target :qid) "1-call_a"))
+            (with-current-buffer viewport
+              (agent-shell-viewport-view-mode)
+              (agent-shell-viewport--show-page 1)
+              (let ((inhibit-read-only t))
+                (goto-char (agent-shell-viewport--response-start))
+                (insert "EXTRA LINE FROM TABLE RERENDER\n"))
+              (goto-char (agent-shell-vertico--resolve-viewport-target target))
+              (should (looking-at-p "gamma")))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-viewport-target-maps-through-table-reflow ()
+  "A changed table column width must not shift a later match in the fragment."
+  (agent-shell-vertico-tests--with-viewport '(("question" . ""))
+    (let* ((shell (agent-shell-viewport--shell-buffer))
+           (agent-shell-test-viewport-position '((:current . 1) (:total . 1))))
+      (with-current-buffer shell
+        (goto-char (point-max))
+        (agent-shell-vertico-tests--insert-block
+         :qid "1-call_table" :label-left "completed" :label-right "Table"
+         :body "| a | b |\n| target | value |"))
+      (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+             (pos (with-current-buffer shell
+                    (goto-char (point-min))
+                    (search-forward "target")
+                    (match-beginning 0)))
+             (target (agent-shell-vertico--shell-position-to-viewport-target
+                      shell spans pos)))
+        (agent-shell-viewport--show-page 1)
+        (let ((inhibit-read-only t))
+          (goto-char (point-min))
+          (search-forward "| a")
+          (insert "       "))
+        (goto-char (agent-shell-vertico--resolve-viewport-target target))
+        (should (looking-at-p "target"))))))
+
+(ert-deftest agent-shell-vertico-shell-position-speaker-classifies-lines ()
+  "Shell positions classify as user, agent, thoughts, tool, or nil."
+  (let ((shell (generate-new-buffer "Codex Agent @ speaker")))
+    (unwind-protect
+        (with-current-buffer shell
+          (agent-shell-mode)
+          (insert "Welcome banner\n")
+          (insert (propertize "> first prompt\n"
+                              'font-lock-face 'comint-highlight-prompt))
+          (insert (propertize "<shell-maker-end-of-prompt>"
+                              'shell-maker--marker t))
+          (insert "\n")
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-activity-0" :kind 'group :label-left "Activity")
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-call_a" :group-id "1-activity-0"
+           :label-left "completed" :label-right "Read foo" :body "tool out")
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-activity-0-agent_thought_chunk" :group-id "1-activity-0"
+           :label-left "Thinking" :body "first thought")
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-activity-0-agent_thought_chunk-2" :group-id "1-activity-0"
+           :label-left "Thinking" :body "second thought")
+          (agent-shell-vertico-tests--insert-block
+           :qid "sub-1-agent_message_chunk" :group-id "1-subagent-0"
+           :body "subagent message")
+          (agent-shell-vertico-tests--insert-block
+           :qid "1-agent_message_chunk" :body "final answer")
+          (insert (propertize "> steered prompt\n"
+                              'font-lock-face 'comint-highlight-prompt
+                              'agent-shell-steered-prompt t))
+          (insert (propertize "<shell-maker-end-of-prompt>"
+                              'shell-maker--marker t))
+          (insert "\n")
+          (agent-shell-vertico-tests--insert-block
+           :qid "2-agent_message_chunk" :body "after steer")
+          (let ((spans (agent-shell-vertico--viewport-turn-spans shell)))
+            (dolist (case '(("Welcome" . nil)
+                            ("first prompt" . user)
+                            ("steered prompt" . user)
+                            ("Activity" . tool)
+                            ("tool out" . tool)
+                            ("first thought" . thoughts)
+                            ("second thought" . thoughts)
+                            ("subagent message" . tool)
+                            ("final answer" . agent)
+                            ("after steer" . agent)))
+              (goto-char (point-min))
+              (search-forward (car case))
+              (should (eq (agent-shell-vertico--shell-position-speaker
+                           shell spans (match-beginning 0))
+                          (cdr case))))))
+      (when (buffer-live-p shell) (kill-buffer shell)))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-line-delegates-without-prefix-or-outside-viewport ()
+  "Plain `consult-line', non-viewport buffers, and narrowed viewports delegate."
+  (agent-shell-vertico-tests--with-viewport
+      '(("q1" . "a1"))
+    (let (calls)
+      (cl-letf (((symbol-function 'orig-line)
+                 (lambda (&optional initial start)
+                   (push (list (current-buffer) initial start) calls)
+                   'delegated))
+                ((symbol-function 'agent-shell-vertico-consult--viewport-line-search)
+                 (lambda (&rest _) (error "Should not run session search"))))
+        ;; No prefix in viewport -> delegates.
+        (let ((current-prefix-arg nil))
+          (should (eq (agent-shell-vertico-consult--viewport-consult-line
+                       #'orig-line "init" nil)
+                      'delegated)))
+        ;; Narrowed viewport with C-u -> delegates.
+        (agent-shell-viewport--show-page 1)
+        (save-restriction
+          (narrow-to-region (point-min) (1+ (point-min)))
+          (let ((current-prefix-arg '(4)))
+            (should (eq (agent-shell-vertico-consult--viewport-consult-line
+                         #'orig-line nil t)
+                        'delegated))))
+        ;; Shell buffer with C-u -> delegates.
+        (with-current-buffer (agent-shell-viewport--shell-buffer)
+          (let ((current-prefix-arg '(4)))
+            (should (eq (agent-shell-vertico-consult--viewport-consult-line
+                         #'orig-line nil t)
+                        'delegated)))))
+      (should (= (length calls) 3)))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-line-with-prefix-searches-all-pages ()
+  "Prefix `consult-line' in a viewport searches all turns, jumps, and unfolds."
+  (let ((shell (generate-new-buffer "Codex Agent @ search"))
+        (viewport (get-buffer-create "Codex Agent @ search [viewport]")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) viewport)
+          (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2)))
+              (agent-shell-vertico-consult-preview-key '(:debounce 0.3 any))
+              (agent-shell-test-toggle-fragment-count 0))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (insert "Welcome banner\n")
+            (insert (propertize "> first question\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (let ((blk (agent-shell-vertico-tests--insert-block
+                        :qid "1-call_a" :label-left "completed" :label-right "Read foo"
+                        :body "hidden needle here" :collapsed t)))
+              (agent-shell-vertico-tests--hide-body blk))
+            (agent-shell-vertico-tests--insert-page
+             "second question" "second answer")
+            (insert (propertize "> draft line"
+                                'font-lock-face 'comint-highlight-prompt)))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (setq agent-shell-ui-mode t)
+            (agent-shell-viewport--show-page 2)
+            (goto-char (+ (agent-shell-viewport--prompt-start) 4))
+            (let ((page2-point (point))
+                  captured-cands captured-opts)
+              ;; Also verify Doom wrapper calling shape: `current-prefix-arg' = '(4),
+              ;; `initial' = "needle", `start' = nil.
+              (cl-letf (((symbol-function 'consult--read)
+                         (lambda (cands &rest opts)
+                           (setq captured-cands cands
+                                 captured-opts opts)
+                           (let* ((target-cand
+                                   (seq-find (lambda (c)
+                                               (string-match-p "hidden needle" c))
+                                             cands))
+                                  (sel (funcall (plist-get opts :lookup)
+                                                target-cand cands "needle" nil))
+                                  (state (plist-get opts :state)))
+                             (funcall state 'setup nil)
+                             (funcall state 'exit nil)
+                             (funcall state 'return sel)
+                             sel))))
+                (let ((current-prefix-arg '(4)))
+                  (agent-shell-vertico-consult--viewport-consult-line
+                   (lambda (&rest _) (error "Should not delegate"))
+                   "needle" nil)))
+              ;; Welcome banner and unsubmitted draft prompt are excluded.
+              (should-not (seq-some (lambda (c) (string-match-p "Welcome" c))
+                                    captured-cands))
+              (should-not (seq-some (lambda (c) (string-match-p "draft line" c))
+                                    captured-cands))
+              ;; shell-maker delimiters are structural, not searchable text.
+              (should-not (seq-some (lambda (c)
+                                      (string-match-p "shell-maker-end-of-prompt" c))
+                                    captured-cands))
+              (should (equal (plist-get captured-opts :prompt)
+                             "Go to line (session): "))
+              (should (equal (plist-get captured-opts :initial) "needle"))
+              (should (equal (plist-get captured-opts :preview-key)
+                             '(:debounce 0.3 any)))
+              ;; Affixation prefixes p1 (wrapped face) and p2 (prefix face).
+              (let* ((ann-fn (plist-get captured-opts :annotate))
+                     (p1-cand (seq-find (lambda (c) (string-match-p "hidden needle" c))
+                                        captured-cands))
+                     (p2-cand (seq-find (lambda (c) (string-match-p "second answer" c))
+                                        captured-cands))
+                     (p1-aff (funcall ann-fn p1-cand))
+                     (p2-aff (funcall ann-fn p2-cand)))
+                (should (equal (substring-no-properties (cadr p1-aff)) "p1 "))
+                (should (eq (get-text-property 0 'face (cadr p1-aff))
+                            'consult-line-number-wrapped))
+                (should (equal (substring-no-properties (cadr p2-aff)) "p2 "))
+                (should (eq (get-text-property 0 'face (cadr p2-aff))
+                            'consult-line-number-prefix)))
+              ;; Jumped to page 1, saved page 2 point, landed on "needle", unfolded.
+              (should (equal (alist-get 2 agent-shell-viewport--page-points)
+                             page2-point))
+              (should (eql (alist-get :current agent-shell-test-viewport-position) 1))
+              (should (looking-at-p "needle"))
+              (should-not (invisible-p (point)))
+              (should (= agent-shell-test-toggle-fragment-count 1))))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-line-narrow-by-speaker-and-page ()
+  "Session-wide viewport line search narrows by speaker and current page."
+  (let ((shell (generate-new-buffer "Codex Agent @ narrow"))
+        (viewport (get-buffer-create "Codex Agent @ narrow [viewport]")))
+    (unwind-protect
+        (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2))))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (insert (propertize "> prompt one\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-activity-0" :kind 'group :label-left "Activity")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-call_a" :group-id "1-activity-0"
+             :label-left "completed" :label-right "Read foo" :body "toolBody")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-activity-0-agent_thought_chunk" :group-id "1-activity-0"
+             :label-left "Thinking" :body "thoughtBody")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-agent_message_chunk" :body "agentBody1")
+            (insert (propertize "> steered prompt\n"
+                                'font-lock-face 'comint-highlight-prompt
+                                'agent-shell-steered-prompt t))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (insert (propertize "> prompt two\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "2-agent_message_chunk" :body "agentBody2"))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (agent-shell-viewport--show-page 2)
+            (let (captured-cands captured-narrow)
+              (cl-letf (((symbol-function 'consult--read)
+                         (lambda (cands &rest opts)
+                           (setq captured-cands cands
+                                 captured-narrow (plist-get opts :narrow))
+                           nil)))
+                (let ((current-prefix-arg '(4)))
+                  (agent-shell-vertico-consult--viewport-consult-line
+                   #'ignore nil t)))
+              (let ((pred (plist-get captured-narrow :predicate))
+                    (keys (plist-get captured-narrow :keys)))
+                (should (equal (mapcar #'car keys)
+                               '(?u ?a ?m ?h ?t ?.)))
+                (let ((keep (lambda (key)
+                              (let ((consult--narrow key))
+                                (seq-filter pred captured-cands)))))
+                  (should (= (length (funcall keep nil))
+                             (length captured-cands)))
+                  (should (seq-some (lambda (c) (string-match-p "prompt one" c))
+                                    (funcall keep ?u)))
+                  (should (seq-some (lambda (c) (string-match-p "steered prompt" c))
+                                    (funcall keep ?u)))
+                  (should-not (seq-some (lambda (c) (string-match-p "agentBody1" c))
+                                        (funcall keep ?u)))
+                  (should (seq-every-p (lambda (c) (string-match-p "agentBody" c))
+                                       (funcall keep ?a)))
+                  (should (= (length (funcall keep ?m))
+                             (+ (length (funcall keep ?u))
+                                (length (funcall keep ?a)))))
+                  (should (seq-some (lambda (c) (string-match-p "thoughtBody" c))
+                                    (funcall keep ?h)))
+                  (should-not (seq-some (lambda (c) (string-match-p "toolBody" c))
+                                        (funcall keep ?h)))
+                  (should (seq-some (lambda (c) (string-match-p "toolBody" c))
+                                    (funcall keep ?t)))
+                  (should (seq-some (lambda (c) (string-match-p "prompt two" c))
+                                    (funcall keep ?.)))
+                  (should-not (seq-some (lambda (c) (string-match-p "prompt one" c))
+                                        (funcall keep ?.))))))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-line-preview-flips-and-restores ()
+  "Jump-state preview switches pages once per page and restores on exit."
+  (let ((shell (generate-new-buffer "Codex Agent @ preview"))
+        (viewport (get-buffer-create "Codex Agent @ preview [viewport]")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) viewport)
+          (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2)))
+              (show-count 0))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (agent-shell-vertico-tests--insert-page
+             "first question" "first answer, long enough to read into")
+            (insert (propertize "> second question\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (let ((blk (agent-shell-vertico-tests--insert-block
+                        :qid "2-call_a" :label-left "completed"
+                        :label-right "Read foo"
+                        :body "first hidden\nsecond hidden"
+                        :collapsed t)))
+              (agent-shell-vertico-tests--hide-body blk)))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (setq agent-shell-ui-mode t)
+            (agent-shell-viewport--show-page 1)
+            (goto-char 20)
+            (setq agent-shell-viewport--page-points '((2 . 5)))
+            (let* ((before (buffer-string))
+                   (cursor (copy-tree agent-shell-viewport--page-cursor))
+                   (shell-point (with-current-buffer shell (point)))
+                   (spans (agent-shell-vertico--viewport-turn-spans shell))
+                   (state (agent-shell-vertico-consult--viewport-jump-state
+                           shell spans))
+                   (pos1 (with-current-buffer shell
+                           (goto-char (point-min))
+                           (search-forward "first hidden")
+                           (copy-marker (match-beginning 0))))
+                   (pos2 (with-current-buffer shell
+                           (goto-char (point-min))
+                           (search-forward "second hidden")
+                           (copy-marker (match-beginning 0)))))
+              (let ((orig-show (symbol-function 'agent-shell-vertico--show-viewport-page)))
+                (cl-letf (((symbol-function 'agent-shell-vertico--show-viewport-page)
+                           (lambda (page &optional restore-point)
+                             (cl-incf show-count)
+                             (funcall orig-show page restore-point))))
+                  (funcall state 'setup nil)
+                  (funcall state 'preview pos1)
+                  (should (= show-count 1))
+                  (should (eql (alist-get :current agent-shell-test-viewport-position) 2))
+                  (should (looking-at-p "first hidden"))
+                  (should-not (invisible-p (point)))
+                  ;; Second match on page 2 reuses the rendered page without reload.
+                  (funcall state 'preview pos2)
+                  (should (= show-count 1))
+                  (should (looking-at-p "second hidden"))
+                  (funcall state 'preview nil)
+                  (funcall state 'exit nil)
+                  (funcall state 'return nil)))
+              (should (equal (buffer-string) before))
+              (should (= (point) 20))
+              (should (equal agent-shell-viewport--page-cursor cursor))
+              (should (equal agent-shell-viewport--page-points '((2 . 5))))
+              (should (eql (alist-get :current agent-shell-test-viewport-position) 1))
+              (with-current-buffer shell
+                (should (= (point) shell-point)))))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-cross-page-abort-preserves-manual-fold ()
+  "Aborting a preview on another page preserves the original page's open fold."
+  (let ((shell (generate-new-buffer "Codex Agent @ fold-preview"))
+        (viewport (get-buffer-create "Codex Agent @ fold-preview [viewport]")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) viewport)
+          (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2))))
+            (with-current-buffer shell
+              (agent-shell-mode)
+              (insert (propertize "> first question\n"
+                                  'font-lock-face 'comint-highlight-prompt))
+              (insert (propertize "<shell-maker-end-of-prompt>"
+                                  'shell-maker--marker t))
+              (insert "\n")
+              (let ((block (agent-shell-vertico-tests--insert-block
+                            :qid "1-call_a" :label-left "completed"
+                            :label-right "Read foo" :body "opened body"
+                            :collapsed t)))
+                (agent-shell-vertico-tests--hide-body block))
+              (agent-shell-vertico-tests--insert-page "second question" "other answer"))
+            (with-current-buffer viewport
+              (agent-shell-viewport-view-mode)
+              (setq agent-shell-ui-mode t)
+              (agent-shell-viewport--show-page 1)
+              (goto-char (point-min))
+              (search-forward "Read foo")
+              (agent-shell-ui-toggle-fragment)
+              (let ((body (text-property-any (point-min) (point-max)
+                                             'agent-shell-ui-section 'body)))
+                (should body)
+                (should-not (invisible-p body)))
+              (goto-char (point-min))
+              (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+                     (state (agent-shell-vertico-consult--viewport-jump-state
+                             shell spans))
+                     (match (with-current-buffer shell
+                              (goto-char (point-min))
+                              (search-forward "other answer")
+                              (copy-marker (match-beginning 0)))))
+                (unwind-protect
+                    (progn
+                      (funcall state 'setup nil)
+                      (funcall state 'preview match)
+                      (should (eql (alist-get :current agent-shell-test-viewport-position) 2))
+                      (should (looking-at-p "other answer"))
+                      (funcall state 'preview nil)
+                      (funcall state 'exit nil)
+                      (funcall state 'return nil)
+                      (should (eql (alist-get :current agent-shell-test-viewport-position) 1))
+                      (should (= (point) (point-min)))
+                      (let ((body (text-property-any (point-min) (point-max)
+                                                     'agent-shell-ui-section 'body)))
+                        (should body)
+                        (should-not (invisible-p body))))
+                  (set-marker match nil))))))
+      (dolist (buffer (list shell viewport))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-line-same-page-preview-skips-reload ()
+  "Previewing on the starting page never reloads it or resets manual folds."
+  (let ((shell (generate-new-buffer "Codex Agent @ samepage"))
+        (viewport (get-buffer-create "Codex Agent @ samepage [viewport]")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) viewport)
+          (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 1)))
+              (show-count 0))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (insert (propertize "> first question\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (let ((blk (agent-shell-vertico-tests--insert-block
+                        :qid "1-call_a" :label-left "completed"
+                        :label-right "Read foo"
+                        :body "manually opened body"
+                        :collapsed t)))
+              (agent-shell-vertico-tests--hide-body blk)))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (setq agent-shell-ui-mode t)
+            (agent-shell-viewport--show-page 1)
+            ;; User manually expands the fold on page 1 before searching.
+            (goto-char (point-min))
+            (search-forward "Read foo")
+            (agent-shell-ui-toggle-fragment)
+            (should-not (invisible-p (text-property-any (point-min) (point-max)
+                                                        'agent-shell-ui-section 'body)))
+            (goto-char (point-min))
+            (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+                   (state (agent-shell-vertico-consult--viewport-jump-state
+                           shell spans))
+                   (pos (with-current-buffer shell
+                          (goto-char (point-min))
+                          (search-forward "manually opened")
+                          (copy-marker (match-beginning 0)))))
+              (cl-letf (((symbol-function 'agent-shell-vertico--show-viewport-page)
+                         (lambda (&rest _) (cl-incf show-count))))
+                (funcall state 'setup nil)
+                (funcall state 'preview pos)
+                (should (looking-at-p "manually opened"))
+                (funcall state 'preview nil)
+                (funcall state 'exit nil)
+                (funcall state 'return nil))
+              (should (= show-count 0))
+              (should (= (point) (point-min)))
+              (should-not (invisible-p (text-property-any (point-min) (point-max)
+                                                          'agent-shell-ui-section 'body)))
+              ;; A temporary preview may reveal a closed fold, but cancellation
+              ;; must leave the user's original fold state intact.
+              (search-forward "Read foo")
+              (agent-shell-ui-toggle-fragment)
+              (let ((body (text-property-any (point-min) (point-max)
+                                             'agent-shell-ui-section 'body)))
+                (should (invisible-p body))
+                (let ((preview (agent-shell-vertico-consult--viewport-jump-state
+                                shell spans)))
+                  (funcall preview 'setup nil)
+                  (funcall preview 'preview pos)
+                  (should-not (invisible-p body))
+                  (funcall preview 'preview nil)
+                  (funcall preview 'exit nil)
+                  (funcall preview 'return nil))
+                (should (invisible-p body)))))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-imenu-delegates-without-prefix ()
+  "Plain `consult-imenu' and non-viewport buffers delegate to `orig-fn'."
+  (agent-shell-vertico-tests--with-viewport
+      '(("q1" . "a1"))
+    (let (calls)
+      (cl-letf (((symbol-function 'orig-imenu)
+                 (lambda () (push (current-buffer) calls) 'delegated))
+                ((symbol-function 'agent-shell-vertico-consult--viewport-imenu)
+                 (lambda () (error "Should not run session imenu"))))
+        (let ((current-prefix-arg nil))
+          (should (eq (agent-shell-vertico-consult--viewport-consult-imenu
+                       #'orig-imenu)
+                      'delegated)))
+        (with-current-buffer (agent-shell-viewport--shell-buffer)
+          (let ((current-prefix-arg '(4)))
+            (should (eq (agent-shell-vertico-consult--viewport-consult-imenu
+                         #'orig-imenu)
+                        'delegated)))))
+      (should (= (length calls) 2)))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-imenu-with-prefix-spans-all-pages ()
+  "Prefix `consult-imenu' in a viewport spans all turns and previews/reveals."
+  (require 'consult-imenu)
+  (let ((shell (generate-new-buffer "Codex Agent @ imenu"))
+        (viewport (get-buffer-create "Codex Agent @ imenu [viewport]"))
+        (consult-imenu-config
+         (cons '(agent-shell-mode
+                 :types ((?r "Request" font-lock-keyword-face)
+                         (?a "Activity" font-lock-function-name-face)
+                         (?p "Response" font-lock-string-face)))
+               consult-imenu-config)))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) viewport)
+          (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2))))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (setq-local imenu-generic-expression '((nil "^> \\(.*\\)$" 1)))
+            (agent-shell-vertico--imenu-setup)
+            (insert (propertize "> first question\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-activity-0" :kind 'group :label-left "Tool calls 1/1"
+             :collapsed t)
+            (let ((member (agent-shell-vertico-tests--insert-block
+                           :qid "1-call_a" :group-id "1-activity-0"
+                           :label-left "completed" :label-right "Read foo"
+                           :body "tool output" :collapsed t :invisible t)))
+              (ignore member))
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-agent_message_chunk" :body "first answer")
+            (insert (propertize "> second question\n"
+                                'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>"
+                                'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "2-agent_message_chunk" :body "second answer"))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (setq agent-shell-ui-mode t)
+            (agent-shell-viewport--show-page 2)
+            (goto-char 10)
+            (let (captured-items captured-opts)
+              (cl-letf (((symbol-function 'consult--read)
+                         (lambda (items &rest opts)
+                           (setq captured-items items
+                                 captured-opts opts)
+                           (let* ((read-item
+                                   (seq-find (lambda (it)
+                                               (string-match-p "Read foo" (car it)))
+                                             items))
+                                  (state (plist-get opts :state)))
+                             ;; Exercise live preview and restore before final return.
+                             (funcall state 'setup nil)
+                             (funcall state 'preview (cdr read-item))
+                             (should (eql (alist-get :current
+                                                     agent-shell-test-viewport-position)
+                                          1))
+                             (let ((body-pos (text-property-any
+                                              (point-min) (point-max)
+                                              'agent-shell-ui-section 'body)))
+                               (should body-pos)
+                               (should-not (invisible-p body-pos)))
+                             (funcall state 'preview nil)
+                             (funcall state 'exit nil)
+                             (should (eql (alist-get :current
+                                                     agent-shell-test-viewport-position)
+                                          2))
+                             (should (= (point) 10))
+                             (let ((sel (funcall (plist-get opts :lookup)
+                                                 (car read-item) items "" nil)))
+                               (funcall state 'return sel)
+                               sel)))))
+                (let ((current-prefix-arg '(4)))
+                  (agent-shell-vertico-consult--viewport-consult-imenu #'ignore)))
+              (should (equal (plist-get captured-opts :prompt)
+                             "Go to item (session): "))
+              (should (eq (plist-get captured-opts :category) 'imenu))
+              (let ((keys (mapcar #'car captured-items)))
+                (should (seq-some (lambda (k) (string-match-p "\\`Request p1 first question\\'" k))
+                                  keys))
+                (should (seq-some (lambda (k) (string-match-p "\\`Activity p1 ↳ Read foo\\'" k))
+                                  keys))
+                (should (seq-some (lambda (k) (string-match-p "\\`Response p1 first answer\\'" k))
+                                  keys))
+                (should (seq-some (lambda (k) (string-match-p "\\`Response p2 second answer\\'" k))
+                                  keys)))
+              ;; Marginalia status annotation property survives page prefixing.
+              (let* ((read-key (car (seq-find (lambda (it)
+                                                (string-match-p "Read foo" (car it)))
+                                              captured-items)))
+                     (group-fn (plist-get captured-opts :group))
+                     (narrow (plist-get captured-opts :narrow))
+                     (pred (plist-get narrow :predicate)))
+                (let ((annotation (agent-shell-vertico--imenu-annotation read-key)))
+                  (should (equal (string-trim (substring-no-properties annotation))
+                                 "completed"))
+                  (should (text-property-not-all 0 (length annotation)
+                                                 'face nil annotation)))
+                (should (equal (funcall group-fn read-key nil) "Activity"))
+                (should (equal (funcall group-fn read-key t) "p1 ↳ Read foo"))
+                ;; Narrow predicate accepts alist (STR . MARKER) entries.
+                (let ((consult--narrow ?a))
+                  (should (seq-some (lambda (it) (string-match-p "Read foo" (car it)))
+                                    (seq-filter pred captured-items)))
+                  (should-not (seq-some (lambda (it) (string-match-p "first question" (car it)))
+                                        (seq-filter pred captured-items))))
+                (let ((consult--narrow ?r))
+                  (should (seq-every-p (lambda (it) (string-prefix-p "Request " (car it)))
+                                       (seq-filter pred captured-items)))))
+              ;; Selected jump preserved page 2 point, landed on fragment, kept it open.
+              (should (equal (alist-get 2 agent-shell-viewport--page-points) 10))
+              (should (eql (alist-get :current agent-shell-test-viewport-position) 1))
+              (should (equal (map-elt (get-text-property (point) 'agent-shell-ui-state)
+                                      :qualified-id)
+                             "1-call_a"))
+              (should-not (invisible-p (text-property-any
+                                        (point-min) (point-max)
+                                        'agent-shell-ui-section 'body)))))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-imenu-duplicate-items-remain-distinct ()
+  "Equal labels on one page have distinct completion keys and destinations."
+  (require 'consult-imenu)
+  (agent-shell-vertico-tests--with-viewport '(("question" . "answer"))
+    (let ((shell (agent-shell-viewport--shell-buffer)))
+      (with-current-buffer shell
+        (goto-char (point-max))
+        (agent-shell-vertico-tests--insert-block
+         :qid "1-call_a" :label-left "completed" :label-right "Read foo"
+         :body "first")
+        (agent-shell-vertico-tests--insert-block
+         :qid "1-call_b" :label-left "completed" :label-right "Read foo"
+         :body "second"))
+      (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+             (items (car (agent-shell-vertico-consult--viewport-imenu-items
+                          shell spans)))
+             (reads (seq-filter (lambda (item)
+                                  (string-match-p "Read foo" (car item)))
+                                items)))
+        (should (= (length reads) 2))
+        (should-not (equal (caar reads) (caadr reads)))
+        (should-not (= (marker-position (cdar reads))
+                       (marker-position (cdadr reads))))
+        (dolist (item reads)
+          (should (eq (consult--lookup-cdr (car item) items "" nil)
+                      (cdr item))))))))
+
+(ert-deftest agent-shell-vertico-consult-viewport-imenu-does-not-corrupt-cache ()
+  "Repeating prefix `consult-imenu' leaves `consult-imenu--cache' unmutated."
+  (require 'consult-imenu)
+  (let ((shell (generate-new-buffer "Codex Agent @ cache"))
+        (viewport (get-buffer-create "Codex Agent @ cache [viewport]"))
+        (consult-imenu-config
+         (cons '(agent-shell-mode
+                 :types ((?r "Request" font-lock-keyword-face)
+                         (?a "Activity" font-lock-function-name-face)
+                         (?p "Response" font-lock-string-face)))
+               consult-imenu-config)))
+    (unwind-protect
+        (let ((agent-shell-test-viewport-position '((:current . 1) (:total . 2))))
+          (with-current-buffer shell
+            (agent-shell-mode)
+            (agent-shell-vertico--imenu-setup)
+            (insert (propertize "> q1\n" 'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>" 'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "1-call_a" :label-left "completed" :label-right "Read foo"
+             :body "one")
+            (insert (propertize "> q2\n" 'font-lock-face 'comint-highlight-prompt))
+            (insert (propertize "<shell-maker-end-of-prompt>" 'shell-maker--marker t))
+            (insert "\n")
+            (agent-shell-vertico-tests--insert-block
+             :qid "2-call_a" :label-left "completed" :label-right "Read foo"
+             :body "two")
+            ;; Exercise preservation of an already populated cache, not just nil.
+            (consult-imenu--items))
+          (with-current-buffer viewport
+            (agent-shell-viewport-view-mode)
+            (agent-shell-viewport--show-page 1)
+            (let (runs)
+              (cl-letf (((symbol-function 'consult--read)
+                         (lambda (items &rest _opts)
+                           (push (mapcar #'car items) runs)
+                           nil)))
+                (let ((current-prefix-arg '(4)))
+                  (agent-shell-vertico-consult--viewport-consult-imenu #'ignore)
+                  (agent-shell-vertico-consult--viewport-consult-imenu #'ignore)))
+              (should (= (length runs) 2))
+              (should (equal (nth 0 runs) (nth 1 runs)))
+              (should (equal (nth 0 runs)
+                             '("Activity p1 Read foo" "Activity p2 Read foo")))))
+          (with-current-buffer shell
+            (should (equal (mapcar #'car (cdr consult-imenu--cache))
+                           '("Activity Read foo" "Activity Read foo")))))
+      (dolist (buf (list shell viewport))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
 
 ;;; Attention notifications
 

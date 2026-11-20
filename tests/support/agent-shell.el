@@ -893,16 +893,16 @@ buffer name plus the viewport suffix."
   "Return non-nil when the prompt beginning at POSITION was steered into a turn."
   (get-text-property position 'agent-shell-steered-prompt))
 
-(defun agent-shell--turns ()
-  "Return the shell's history as turns, oldest first.
+(defun agent-shell--turn-spans ()
+  "Return the shell's history as turns, oldest first, without their text.
 
-Mirrors the real walk: an exchange is a real prompt whose chunk carries
-a real end-of-prompt marker, and a steered prompt's exchange joins the
-turn before it rather than starting one.  Each turn is an alist of
-`:prompt', `:response', `:position' and `:exchanges'."
+Mirrors `agent-shell--turn-spans': each turn records `:position',
+`:exchanges', and `:bounds' ((PROMPT-START COMMAND-START MARKER-START
+MARKER-END NEXT-PROMPT) ...), with steered exchanges joined onto the
+turn before them."
   (let ((prompt-regexp (shell-maker-prompt-regexp shell-maker--config))
         (index 0)
-        turns)
+        spans)
     (save-excursion
       (goto-char (point-min))
       (while (and (not (string-match-p prompt-regexp ""))
@@ -919,25 +919,47 @@ turn before it rather than starting one.  Each turn is an alist of
                             "<shell-maker-end-of-prompt>" next-prompt)))
           (when end-marker
             (setq index (1+ index))
-            (let ((command (buffer-substring command-start (car end-marker)))
-                  (response (buffer-substring (cdr end-marker) next-prompt)))
-              (if (and turns (agent-shell--steered-prompt-p prompt-start))
-                  (let ((turn (car turns)))
-                    (setf (alist-get :response turn)
-                          (concat (or (alist-get :response turn) "")
-                                  (buffer-substring prompt-start command-start)
-                                  command
-                                  response))
-                    (setcdr (alist-get :exchanges turn) index))
-                (push (list (cons :prompt (unless (string-empty-p command)
-                                            command))
-                            (cons :response (unless (string-empty-p response)
-                                              response))
-                            (cons :position prompt-start)
-                            (cons :exchanges (cons index index)))
-                      turns))))
+            (let ((bounds (list prompt-start command-start
+                                (car end-marker) (cdr end-marker) next-prompt)))
+              (if (and spans (agent-shell--steered-prompt-p prompt-start))
+                  (let ((span (car spans)))
+                    (setf (alist-get :bounds span)
+                          (append (alist-get :bounds span) (list bounds)))
+                    (setcdr (alist-get :exchanges span) index))
+                (push (list (cons :position prompt-start)
+                            (cons :exchanges (cons index index))
+                            (cons :bounds (list bounds)))
+                      spans))))
           (goto-char (max next-prompt (point))))))
-    (nreverse turns)))
+    (nreverse spans)))
+
+(defun agent-shell--turn-text (span)
+  "Return SPAN with `:prompt' and `:response' text added."
+  (pcase-let* ((`(,first . ,steers) (map-elt span :bounds))
+               (`(,_ ,command-start ,marker-start ,marker-end ,next-prompt)
+                first)
+               (command (buffer-substring command-start marker-start))
+               (response
+                (apply #'concat
+                       (buffer-substring marker-end next-prompt)
+                       (mapcar
+                        (pcase-lambda (`(,prompt-start ,_ ,marker-start
+                                                       ,marker-end ,next-prompt))
+                          (concat (buffer-substring prompt-start marker-start)
+                                  (buffer-substring marker-end next-prompt)))
+                        steers))))
+    (append (list (cons :prompt (unless (string-empty-p command) command))
+                  (cons :response (unless (string-empty-p response) response)))
+            span)))
+
+(defun agent-shell--turns ()
+  "Return the shell's history as turns, oldest first.
+
+Mirrors the real walk: an exchange is a real prompt whose chunk carries
+a real end-of-prompt marker, and a steered prompt's exchange joins the
+turn before it rather than starting one.  Each turn is an alist of
+`:prompt', `:response', `:position', `:exchanges', and `:bounds'."
+  (mapcar #'agent-shell--turn-text (agent-shell--turn-spans)))
 
 (defun agent-shell--turn-at-index (index)
   "Return the turn at one-based INDEX (see `agent-shell--turns'), or nil."
@@ -953,6 +975,35 @@ turn before it rather than starting one.  Each turn is an alist of
 (defvar-local agent-shell-viewport--page-cursor nil
   "Stub: alist with :index and :point of the last history page shown.")
 
+(defvar-local agent-shell-test--viewport-response-start nil
+  "Stub: buffer position where the shown viewport response begins.")
+
+(defun agent-shell-viewport--prompt-start ()
+  "Stub: return the start position of the prompt, or nil if no prompt."
+  (save-excursion
+    (goto-char (point-min))
+    (when-let* ((start (if (get-text-property (point-min) 'agent-shell-viewport-prompt)
+                           (point-min)
+                         (next-single-property-change
+                          (point-min) 'agent-shell-viewport-prompt))))
+      (when (get-text-property start 'agent-shell-viewport-prompt)
+        start))))
+
+(defun agent-shell-viewport--response-start ()
+  "Stub: return the start position of the response, or nil if no response."
+  (or agent-shell-test--viewport-response-start
+      (save-excursion
+        (goto-char (point-min))
+        (when-let* ((start (if (get-text-property (point-min) 'agent-shell-viewport-prompt)
+                               (point-min)
+                             (next-single-property-change
+                              (point-min) 'agent-shell-viewport-prompt)))
+                    (found (get-text-property start 'agent-shell-viewport-prompt))
+                    (end (next-single-property-change
+                          start 'agent-shell-viewport-prompt)))
+          (when (< end (point-max))
+            end)))))
+
 (cl-defun agent-shell-viewport--show-page (index &key at-end restore-point)
   "Stub: show history page INDEX, counted from one, in the current viewport.
 
@@ -966,10 +1017,20 @@ the real one, which is derived from the shell's point."
                                 (error "Page %d not found" index))))
                   (goto-char (map-elt turn :position))
                   turn))))
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (prompt (map-elt turn :prompt))
+          (response (map-elt turn :response)))
       (erase-buffer)
-      (insert "> " (or (map-elt turn :prompt) "") "\n\n"
-              (or (map-elt turn :response) "")))
+      (insert "> ")
+      (if prompt
+          (insert (propertize (concat prompt "\n\n")
+                              'agent-shell-viewport-prompt t))
+        (insert "\n\n"))
+      (let ((response-start (point)))
+        (when response
+          (insert response))
+        (setq-local agent-shell-test--viewport-response-start
+                    (and response (not (string-empty-p response)) response-start))))
     (goto-char
      (let ((remembered (and restore-point
                             (alist-get index agent-shell-viewport--page-points))))

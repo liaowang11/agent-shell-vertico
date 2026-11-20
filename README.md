@@ -1017,8 +1017,16 @@ Consult can only open folds built from overlays.
 Matches inside a collapsed block then show their text, and both
 previewing and selecting one expands the block. Candidates in
 `agent-shell` buffers lose their buffer faces, which is the trade for
-reading them. Blocks opened while previewing stay open, because Consult's
-preview restores only the folds it opened itself.
+reading them. Folds opened for a preview close again when the preview moves
+or ends; selecting a match leaves its block open.
+
+In a viewport, `C-u consult-line` searches the whole session, and
+`C-u consult-imenu` lists its outline across all pages. Both preview in the
+viewport, reveal folded matches, and preserve the reading point of the page
+you leave. If the shell text changes while the search is open, start the
+search again to use its updated results. Without `C-u` the commands work on
+the current page as usual. In the viewport, this use of `C-u consult-line`
+replaces Consult's usual prefix meaning of starting from the top.
 
 ## Narrowing and grouping
 
@@ -1032,6 +1040,11 @@ needs `agent-shell-vertico-consult` loaded, and it does nothing until
 ```elisp
 (setq consult-narrow-key "<")
 ```
+
+Session-wide `consult-line` in a viewport:
+
+- `u` User, `a` Agent, `m` either of them
+- `h` the agent's thoughts, `t` a tool call, `.` the current page
 
 Live sessions, in `agent-shell-vertico-switch` and in every prompt
 `agent-shell` asks about which shell to act on:

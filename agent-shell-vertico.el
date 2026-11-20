@@ -54,7 +54,10 @@
 (declare-function agent-shell-viewport--update-header "agent-shell-viewport" ())
 (declare-function agent-shell-viewport--show-page "agent-shell-viewport"
                   (index &rest keys))
+(declare-function agent-shell-viewport--prompt-start "agent-shell-viewport" ())
+(declare-function agent-shell-viewport--response-start "agent-shell-viewport" ())
 (declare-function agent-shell--turns "agent-shell" ())
+(declare-function agent-shell--turn-spans "agent-shell" ())
 (declare-function agent-shell--turn-at-index "agent-shell" (index))
 (declare-function agent-shell-markdown-link-url-at-point "agent-shell-markdown")
 (declare-function agent-shell-markdown--open-link "agent-shell-markdown")
@@ -1232,6 +1235,381 @@ The reading points need no saving: showing a page never writes them."
                 (plist-get snapshot :cursor))))
       (with-current-buffer shell
         (goto-char (min (plist-get snapshot :shell-point) (point-max)))))))
+
+(defun agent-shell-vertico--viewport-turn-spans (shell-buffer)
+  "Return a vector of marker-backed turn spans for SHELL-BUFFER.
+Signal a useful error when the installed agent-shell lacks the turn API."
+  (unless (and (fboundp 'agent-shell--turn-spans)
+               (fboundp 'agent-shell--turn-at-index)
+               (fboundp 'agent-shell-viewport--prompt-start)
+               (fboundp 'agent-shell-viewport--response-start))
+    (user-error "Cross-page search requires agent-shell's turn and viewport APIs"))
+  (when (buffer-live-p shell-buffer)
+    (with-current-buffer shell-buffer
+      (save-restriction
+        (widen)
+        (vconcat
+         (mapcar (lambda (span)
+                   (list (cons :position (copy-marker (map-elt span :position)))
+                         (cons :bounds
+                               (mapcar (lambda (bounds)
+                                         (mapcar #'copy-marker bounds))
+                                       (map-elt span :bounds)))))
+                 (agent-shell--turn-spans)))))))
+
+(defun agent-shell-vertico--span-end (span)
+  "Return the exclusive upper buffer bound covered by turn SPAN."
+  (nth 4 (car (last (map-elt span :bounds)))))
+
+(defun agent-shell-vertico--turn-index-for-position (spans pos)
+  "Return 0-based index in SPANS containing shell POS, or nil."
+  (when-let* ((pos (if (markerp pos) (marker-position pos) pos)))
+    (let ((lo 0) (hi (1- (length spans))) found)
+      (while (<= lo hi)
+        (let* ((mid (/ (+ lo hi) 2))
+               (span (aref spans mid))
+               (start (map-elt span :position))
+               (end (agent-shell-vertico--span-end span)))
+          (cond
+           ((not (and start end
+                      (or (numberp start) (marker-position start))
+                      (or (numberp end) (marker-position end))))
+            (setq lo (1+ hi)))
+           ((< pos start) (setq hi (1- mid)))
+           ((>= pos end) (setq lo (1+ mid)))
+           (t (setq found mid lo (1+ hi))))))
+      found)))
+
+(defun agent-shell-vertico--turn-ranges (span section)
+  "Return shell ranges for SECTION of SPAN in viewport order."
+  (let* ((bounds (map-elt span :bounds))
+         (first (car bounds)))
+    (if (eq section 'prompt)
+        (list (cons (nth 1 first) (nth 2 first)))
+      (cons (cons (nth 3 first) (nth 4 first))
+            (apply #'append
+                   (mapcar (lambda (bound)
+                             (list (cons (nth 0 bound) (nth 2 bound))
+                                   (cons (nth 3 bound) (nth 4 bound))))
+                           (cdr bounds)))))))
+
+(defun agent-shell-vertico--ranges-string (ranges)
+  "Return the propertized concatenation of RANGES in the current buffer."
+  (mapconcat (lambda (range) (buffer-substring (car range) (cdr range)))
+             ranges ""))
+
+(defun agent-shell-vertico--range-offset (ranges pos)
+  "Return POS's offset in concatenated RANGES, or nil if not represented."
+  (let ((offset 0) found)
+    (while (and ranges (not found))
+      (let* ((range (pop ranges)) (beg (car range)) (end (cdr range)))
+        (if (and (<= beg pos) (< pos end))
+            (setq found (+ offset (- pos beg)))
+          (setq offset (+ offset (- end beg))))))
+    found))
+
+(defun agent-shell-vertico--offset-in-ranges (ranges offset)
+  "Return the shell position at OFFSET in concatenated RANGES, or nil."
+  (let (found)
+    (while (and ranges (not found))
+      (let* ((range (pop ranges)) (beg (car range)) (end (cdr range))
+             (length (- end beg)))
+        (if (< offset length)
+            (setq found (+ beg offset))
+          (setq offset (- offset length)))))
+    found))
+
+(defun agent-shell-vertico--table-content-char-p (char)
+  "Return non-nil when table CHAR is independent of layout padding."
+  (not (memq char '(?\s ?\t ?\n ?\r))))
+
+(defun agent-shell-vertico--table-border-after (text start end)
+  "Return the next vertical table border in TEXT between START and END."
+  (let (found)
+    (while (and (< start end) (not found))
+      (when (and (memq (aref text start) '(?| ?│))
+                 (eq (get-text-property start 'face text)
+                     'agent-shell-markdown-table-border))
+        (setq found start))
+      (setq start (1+ start)))
+    found))
+
+(defun agent-shell-vertico--table-cells (text beg end)
+  "Collect logical table cells in TEXT between BEG and END.
+Each cell is a list of (CHAR . POSITION), excluding layout characters.
+The renderer marks the first physical line of each row with cell-start
+properties; subsequent physical lines belong to those same cells."
+  (let ((line beg) rows row invalid)
+    (while (< line end)
+      (let* ((line-end (or (string-match "\n" text line) end))
+             (line-end (min end line-end))
+             (cursor line) segments)
+        (while (< cursor line-end)
+          (let* ((border (agent-shell-vertico--table-border-after
+                          text cursor line-end))
+                 (left (and border (1+ border)))
+                 (right (and left (agent-shell-vertico--table-border-after
+                                   text left line-end))))
+            (if right
+                (progn (push (cons left right) segments)
+                       (setq cursor right))
+              (setq cursor line-end))))
+        (setq segments (nreverse segments))
+        (when segments
+          (let ((new-row
+                 (seq-some (lambda (segment)
+                             (text-property-any
+                              (car segment) (cdr segment)
+                              'agent-shell-markdown-table-cell-start t text))
+                           segments)))
+            (when new-row
+              (setq row (make-vector (length segments) nil))
+              (push row rows))
+            (when row
+              (if (/= (length row) (length segments))
+                  (setq invalid t)
+                (cl-loop for segment in segments
+                         for column from 0 do
+                         (cl-loop for pos from (car segment) below (cdr segment)
+                                  for char = (aref text pos)
+                                  when (and (agent-shell-vertico--table-content-char-p char)
+                                            (not (eq (get-text-property pos 'face text)
+                                                     'agent-shell-markdown-table-border)))
+                                  do (push (cons char pos) (aref row column))))))))
+        (setq line (min end (1+ line-end)))))
+    (unless invalid
+      (mapcar (lambda (cells)
+                (mapcar #'nreverse (append cells nil)))
+              (nreverse rows)))))
+
+(defun agent-shell-vertico--table-offset (from beg end to to-beg to-end offset)
+  "Map OFFSET in FROM's table BEG..END to TO's TO-BEG..TO-END.
+Return nil for layout-only characters or mismatched table contents."
+  (if (equal (substring-no-properties from beg end)
+             (substring-no-properties to to-beg to-end))
+      (+ to-beg (- offset beg))
+    (let ((source (agent-shell-vertico--table-cells from beg end))
+          (dest (agent-shell-vertico--table-cells to to-beg to-end))
+          found mismatch)
+      (if (or (null source) (/= (length source) (length dest)))
+          nil
+        (cl-loop for source-row in source for dest-row in dest do
+                 (if (/= (length source-row) (length dest-row))
+                     (setq mismatch t)
+                   (cl-loop for source-cell in source-row
+                            for dest-cell in dest-row do
+                            (if (not (equal (mapcar #'car source-cell)
+                                            (mapcar #'car dest-cell)))
+                                (setq mismatch t)
+                              (cl-loop for source-char in source-cell
+                                       for dest-char in dest-cell
+                                       when (= (cdr source-char) offset)
+                                       do (setq found (cdr dest-char)))))))
+        (and (not mismatch) found)))))
+
+(defun agent-shell-vertico--map-rendered-offset (from to offset)
+  "Map OFFSET from rendered string FROM to TO, or nil if not exact.
+Tables with the same source can differ in layout.  Their non-layout
+characters are matched in order; padding and borders have no destination."
+  (let ((i 0) (j 0) (flen (length from)) (tlen (length to))
+        found mismatch)
+    (while (and (< i flen) (< j tlen) (not mismatch))
+      (let ((fs (get-text-property i 'agent-shell-markdown-table-source from))
+            (ts (get-text-property j 'agent-shell-markdown-table-source to)))
+        (cond
+         ((or fs ts)
+          (if (not (and fs ts (equal fs ts)))
+              (setq mismatch t)
+            (let ((fe (or (next-single-property-change
+                           i 'agent-shell-markdown-table-source from) flen))
+                  (te (or (next-single-property-change
+                           j 'agent-shell-markdown-table-source to) tlen)))
+              (when (and (<= i offset) (< offset fe))
+                (setq found (agent-shell-vertico--table-offset
+                             from i fe to j te offset)))
+              (setq i fe j te))))
+         ((/= (aref from i) (aref to j)) (setq mismatch t))
+         (t (when (= i offset) (setq found j))
+            (setq i (1+ i) j (1+ j))))))
+    (and (not mismatch) (= i flen) (= j tlen) found)))
+
+(defun agent-shell-vertico--viewport-section-string (section)
+  "Return the current viewport's propertized SECTION, or nil."
+  (save-restriction
+    (widen)
+    (let* ((prompt (agent-shell-viewport--prompt-start))
+           (response (agent-shell-viewport--response-start))
+           (beg (if (eq section 'prompt) prompt response))
+           (end (if (eq section 'prompt) (or response (point-max)) (point-max))))
+      (when beg (cons beg (buffer-substring beg end))))))
+
+(defun agent-shell-vertico--qid-range (text qid)
+  "Return the unique contiguous range of QID in TEXT, or nil."
+  (let ((pos 0) (end (length text)) start stop repeated)
+    (while (< pos end)
+      (let* ((state (get-text-property pos 'agent-shell-ui-state text))
+             (matches (equal qid (map-elt state :qualified-id)))
+             (next (or (next-single-property-change
+                        pos 'agent-shell-ui-state text) end)))
+        (cond (matches
+               (when stop
+                 ;; Inserted layout padding can split a fragment's state
+                 ;; property without introducing a second fragment.
+                 (if (string-match-p "\\`[ \t\n\r]*\\'"
+                                     (substring-no-properties text stop pos))
+                     (setq stop nil)
+                   (setq repeated t)))
+               (unless start (setq start pos)))
+              (start (unless stop (setq stop pos))))
+        (setq pos next)))
+    (when (and start (not repeated)) (cons start (or stop end)))))
+
+(defun agent-shell-vertico--map-fragment-offset (from to offset qid)
+  "Map OFFSET between matching QID fragments in FROM and TO."
+  (let ((a (agent-shell-vertico--qid-range from qid))
+        (b (agent-shell-vertico--qid-range to qid)))
+    (when (and a b (<= (car a) offset) (< offset (cdr a)))
+      (let* ((source (substring from (car a) (cdr a)))
+             (dest (substring to (car b) (cdr b)))
+             (relative (- offset (car a)))
+             (mapped (agent-shell-vertico--map-rendered-offset
+                      source dest relative)))
+        ;; If an unrelated line changed within a fragment, an unchanged,
+        ;; unique complete line still identifies the match unambiguously.
+        (unless mapped
+          (let* ((beg (or (and (> relative 0)
+                               (cl-position ?\n source :end relative :from-end t)
+                               (1+ (cl-position ?\n source :end relative :from-end t)))
+                          0))
+                 (end (or (cl-position ?\n source :start relative) (length source)))
+                 (line (substring-no-properties source beg end))
+                 (first (and (not (string-empty-p line))
+                             (string-match (concat "^" (regexp-quote line) "$") dest)))
+                 (again (and first (string-match
+                                    (concat "^" (regexp-quote line) "$")
+                                    dest (1+ first))))
+                 (source-first (string-match
+                                (concat "^" (regexp-quote line) "$") source))
+                 (source-again (and source-first
+                                    (string-match
+                                     (concat "^" (regexp-quote line) "$")
+                                     source (1+ source-first)))))
+            (when (and first (not again) (eql source-first beg)
+                       (not source-again) (< relative end))
+              (setq mapped (+ first (- relative beg))))))
+        (and mapped (+ (car b) mapped))))))
+
+(defun agent-shell-vertico--shell-position-to-viewport-target
+    (shell-buffer spans pos)
+  "Map shell POS in SHELL-BUFFER using SPANS to a viewport target plist.
+Return nil for shell-only prompt labels and delimiters."
+  (when-let* (((buffer-live-p shell-buffer))
+              (pos (if (markerp pos) (marker-position pos) pos))
+              (idx (agent-shell-vertico--turn-index-for-position spans pos)))
+    (let* ((span (aref spans idx))
+           (section (cond
+                     ((agent-shell-vertico--range-offset
+                       (agent-shell-vertico--turn-ranges span 'prompt) pos) 'prompt)
+                     ((agent-shell-vertico--range-offset
+                       (agent-shell-vertico--turn-ranges span 'response) pos) 'response))))
+      (when section
+        (with-current-buffer shell-buffer
+          (save-restriction
+            (widen)
+            (list :page (1+ idx) :shell shell-buffer
+                  :position (copy-marker pos) :section section
+                  :qid (map-elt (get-text-property pos 'agent-shell-ui-state)
+                                :qualified-id))))))))
+
+(defun agent-shell-vertico--resolve-viewport-target (target)
+  "Resolve TARGET in the currently shown viewport, or nil if unmappable."
+  (let ((shell (plist-get target :shell))
+        (position (plist-get target :position))
+        (section (plist-get target :section))
+        (page (plist-get target :page)))
+    (when (and (buffer-live-p shell) (markerp position)
+               (eq (marker-buffer position) shell))
+      (let* ((spans (agent-shell-vertico--viewport-turn-spans shell))
+             (idx (agent-shell-vertico--turn-index-for-position spans position))
+             (viewport (agent-shell-vertico--viewport-section-string section)))
+        (when (and idx (= (1+ idx) page) viewport)
+          (with-current-buffer shell
+            (save-restriction
+              (widen)
+              (let* ((ranges (agent-shell-vertico--turn-ranges (aref spans idx) section))
+                     (offset (agent-shell-vertico--range-offset ranges position))
+                     (text (and offset (agent-shell-vertico--ranges-string ranges)))
+                     (view-text (cdr viewport))
+                     ;; Some viewport versions append prompt-only newlines.
+                     ;; Strip only a newline suffix after the exact prompt.
+                     (view-text (if (and text (eq section 'prompt)
+                                         (string-prefix-p text view-text)
+                                         (string-match-p
+                                          "\\`\n*\\'"
+                                          (substring view-text (length text))))
+                                    (substring view-text 0 (length text))
+                                  view-text))
+                     (qid (plist-get target :qid))
+                     (mapped (and text
+                                  (or (agent-shell-vertico--map-rendered-offset
+                                       text view-text offset)
+                                      (and qid
+                                           (agent-shell-vertico--map-fragment-offset
+                                            text view-text offset qid))))))
+                (and mapped (+ (car viewport) mapped))))))))))
+
+(defun agent-shell-vertico--viewport-point-in-shell (shell-buffer spans)
+  "Map point in the current viewport to SHELL-BUFFER using SPANS.
+Return nil where the viewport has no exact shell counterpart."
+  (when-let* ((page (or (map-elt (agent-shell-viewport--position :force-refresh nil) :current)
+                        (and (boundp 'agent-shell-viewport--page-cursor)
+                             (map-elt agent-shell-viewport--page-cursor :index))))
+              ((<= 1 page (length spans))))
+    (let* ((response (agent-shell-viewport--response-start))
+           (section (if (and response (>= (point) response)) 'response 'prompt))
+           (viewport (agent-shell-vertico--viewport-section-string section))
+           (offset (and viewport (- (point) (car viewport)))))
+      (when (and offset (<= 0 offset) (< offset (length (cdr viewport)))
+                 (buffer-live-p shell-buffer))
+        (with-current-buffer shell-buffer
+          (save-restriction
+            (widen)
+            (let* ((ranges (agent-shell-vertico--turn-ranges (aref spans (1- page)) section))
+                   (text (agent-shell-vertico--ranges-string ranges))
+                   (mapped (agent-shell-vertico--map-rendered-offset
+                            (cdr viewport) text offset)))
+              (and mapped (agent-shell-vertico--offset-in-ranges ranges mapped)))))))))
+
+(defun agent-shell-vertico--shell-position-speaker (shell-buffer spans pos)
+  "Return speaker symbol for shell POS in SHELL-BUFFER using SPANS.
+Returns `user', `agent', `thoughts', `tool', or nil outside SPANS."
+  (when-let* ((idx (agent-shell-vertico--turn-index-for-position spans pos)))
+    (let* ((pos (if (markerp pos) (marker-position pos) pos))
+           (bounds (map-elt (aref spans idx) :bounds))
+           (first (car bounds))
+           (steers (cdr bounds)))
+      (if (or (< pos (nth 3 first))
+              (cl-some (pcase-lambda (`(,ps ,_cs ,_ms ,me ,_ns))
+                         (and (>= pos ps) (< pos me)))
+                       steers))
+          'user
+        (let* ((state (with-current-buffer shell-buffer
+                        (save-restriction
+                          (widen)
+                          (get-text-property pos 'agent-shell-ui-state))))
+               (qid (map-elt state :qualified-id))
+               (group-id (map-elt state :group-id)))
+          (cond
+           ((and qid
+                 (string-match-p "-agent_thought_chunk\\(?:-[0-9]+\\)?\\'"
+                                 qid))
+            'thoughts)
+           ((and qid
+                 (not group-id)
+                 (agent-shell-vertico--imenu-message-p qid))
+            'agent)
+           (qid 'tool)
+           (t 'agent)))))))
 
 ;;;###autoload
 (defun agent-shell-vertico-viewport-goto-page (page)

@@ -28,20 +28,46 @@
 (require 'map)
 (require 'subr-x)
 
+(declare-function agent-shell-viewport--position "agent-shell-viewport"
+                  (&key force-refresh))
+(declare-function agent-shell-viewport--shell-buffer "agent-shell-viewport"
+                  (&optional viewport-buffer))
 (declare-function consult--buffer-preview "consult" ())
 (declare-function consult--file-action "consult" (file))
 (declare-function consult--jump-preview "consult" ())
+(declare-function consult--jump "consult" (pos))
+(declare-function consult--get-location "consult" (cand))
+(declare-function consult--line-candidates "consult" (top curr-line))
+(declare-function consult--line-match "consult"
+                  (selected candidates input &rest _))
+(declare-function consult--lookup-cdr "consult" (selected candidates &rest _))
 (declare-function consult--lookup-member "consult" (&rest args))
 (declare-function consult--marker-from-line-column
                   "consult" (buffer line column))
 (declare-function consult--process-collection "consult" (builder &rest props))
 (declare-function consult--read "consult" (table &rest options))
 (declare-function consult--temporary-files "consult" ())
+(declare-function consult-imenu--deduplicate "consult-imenu" (items))
+(declare-function consult-imenu--group "consult-imenu" ())
+(declare-function consult-imenu--items "consult-imenu" ())
+(declare-function consult-imenu--narrow "consult-imenu" ())
+(declare-function thing-at-point "thingatpt" (thing &optional no-properties))
 
 ;; No value: Consult's own definitions must install the real defaults.
+(defvar agent-shell-viewport--page-cursor)
+(defvar consult-after-jump-hook)
 (defvar consult-fontify-preserve)
+(defvar consult-imenu--cache)
+(defvar consult-imenu--history)
+(defvar consult-imenu-config)
+(defvar consult-line-numbers-widen)
+(defvar consult-line-start-from-top)
 (defvar consult--buffer-display)
+(defvar consult--line-history)
 (defvar consult--narrow)
+(defvar imenu-create-index-function)
+(defvar imenu-max-item-length)
+(defvar isearch-string)
 
 ;; No value: markdown-ts-mode's own `defcustom' must install the real
 ;; default when it loads after this file.
@@ -664,13 +690,490 @@ as `consult-line''s, only what hides point."
 Candidates keep their text instead of arriving blank.  Previewing a
 `consult-line' match or a `consult-imenu' item opens the block it lives
 in and folds it again when the preview moves on or ends; selecting one
-leaves it open."
+leaves it open.  In a viewport buffer, `C-u' widens `consult-line' and
+`consult-imenu' across all turns of the underlying session."
   (add-hook 'minibuffer-setup-hook
             #'agent-shell-vertico-consult--plain-candidates)
   (add-hook 'consult-after-jump-hook
             #'agent-shell-vertico-consult--expand-fold)
   (advice-add 'consult--invisible-open-temporarily :filter-return
-              #'agent-shell-vertico-consult--open-folds-temporarily))
+              #'agent-shell-vertico-consult--open-folds-temporarily)
+  (advice-add 'consult-line :around
+              #'agent-shell-vertico-consult--viewport-consult-line)
+  (advice-add 'consult-imenu :around
+              #'agent-shell-vertico-consult--viewport-consult-imenu))
+
+;;; Cross-page viewport search and imenu
+;;
+;; Inside a viewport buffer, `C-u' widens `consult-line' and
+;; `consult-imenu' from the current page to the full conversation stored
+;; in `agent-shell--shell-buffer'.  Rather than maintaining a parallel
+;; index, collection delegates directly to Consult's own shell-buffer
+;; walkers and translates chosen positions back into viewport pages.
+
+(defconst agent-shell-vertico-consult--viewport-line-narrow-keys
+  '((?u . "User")
+    (?a . "Agent")
+    (?m . "Messages")
+    (?h . "Thoughts")
+    (?t . "Tool")
+    (?. . "Current page"))
+  "Narrowing keys for session-wide `consult-line' in a viewport.")
+
+(defconst agent-shell-vertico-consult--viewport-imenu-config
+  '(agent-shell-mode
+    :types ((?r "Request" font-lock-keyword-face)
+            (?a "Activity" font-lock-function-name-face)
+            (?p "Response" font-lock-string-face)))
+  "Fallback `consult-imenu-config' entry for `agent-shell-mode'.")
+
+(defun agent-shell-vertico-consult--viewport-fold-snapshot ()
+  "Record the current viewport's fragment and group fold states by ID."
+  (when (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
+    (let ((pos (point-min)) (seen (make-hash-table :test #'equal)) states)
+      (while (< pos (point-max))
+        (let* ((state (get-text-property pos 'agent-shell-ui-state))
+               (id (map-elt state :qualified-id)))
+          (when (and id (not (gethash id seen)))
+            (puthash id t seen)
+            (push (list id (map-elt state :kind)
+                        (and (map-elt state :collapsed) t)) states)))
+        (setq pos (or (next-single-property-change
+                       pos 'agent-shell-ui-state nil (point-max))
+                      (point-max))))
+      states)))
+
+(defun agent-shell-vertico-consult--viewport-restore-folds (states)
+  "Restore viewport fragment and group fold STATES by qualified ID."
+  (when (agent-shell-vertico-consult--folding-buffer-p (current-buffer))
+    (save-excursion
+      ;; Restore leaves first; group folding does not change their own state.
+      (dolist (entry states)
+        (pcase-let ((`(,id ,kind ,collapsed) entry))
+          (unless (eq kind 'group)
+            (goto-char (point-min))
+            (when-let* ((match (text-property-search-forward
+                                'agent-shell-ui-state id
+                                (lambda (value state)
+                                  (equal value (map-elt state :qualified-id)))))
+                        (pos (prop-match-beginning match)))
+              (goto-char pos)
+              (unless (eq collapsed
+                          (and (map-elt (get-text-property pos 'agent-shell-ui-state)
+                                        :collapsed) t))
+                (agent-shell-ui-toggle-fragment))))))
+      (dolist (entry states)
+        (pcase-let ((`(,id ,kind ,collapsed) entry))
+          (when (and (eq kind 'group)
+                     (not (eq collapsed
+                              (and (agent-shell-vertico--group-collapsed-p id) t))))
+            (agent-shell-vertico--set-group-collapsed id collapsed))))
+      ;; Shell and viewport may share the mutable state object while their
+      ;; invisibility properties differ.  Reapply an open leaf's own fold
+      ;; when rerendering copied a stale hidden body alongside an open state.
+      (dolist (entry states)
+        (pcase-let ((`(,id ,kind ,collapsed) entry))
+          (when (and (not (eq kind 'group)) (not collapsed))
+            (goto-char (point-min))
+            (when-let* ((match (text-property-search-forward
+                                'agent-shell-ui-state id
+                                (lambda (value state)
+                                  (equal value (map-elt state :qualified-id)))))
+                        (pos (prop-match-beginning match))
+                        (state (get-text-property pos 'agent-shell-ui-state))
+                        ((not (and (map-elt state :group-id)
+                                   (agent-shell-vertico--group-collapsed-p
+                                    (map-elt state :group-id)))))
+                        (end (next-single-property-change
+                              pos 'agent-shell-ui-state nil (point-max)))
+                        (body (text-property-any pos end 'agent-shell-ui-section 'body))
+                        ((get-text-property body 'invisible)))
+              (goto-char pos)
+              (agent-shell-ui-toggle-fragment)
+              (agent-shell-ui-toggle-fragment))))))))
+
+(defun agent-shell-vertico-consult--viewport-jump-state
+    (shell _spans &optional imenu-p)
+  "Return a Consult state function jumping from SHELL into viewport.
+When IMENU-P is non-nil, open each jumped block's full fragment and parent
+group instead of only what hides point."
+  (let* ((snapshot (agent-shell-vertico--viewport-snapshot))
+         (viewport (plist-get snapshot :viewport))
+         (orig-page (plist-get snapshot :page))
+         (fold-states (agent-shell-vertico-consult--viewport-fold-snapshot))
+         (shown-page orig-page)
+         (page-changed nil)
+         (previewed nil)
+         (shell-tick (with-current-buffer shell (buffer-chars-modified-tick)))
+         (preview (consult--jump-preview))
+         (restore-folds nil))
+    (cl-labels
+        ((clear-preview ()
+           (funcall preview 'preview nil)
+           (mapc #'funcall restore-folds)
+           (setq restore-folds nil))
+         (restore-windows-only ()
+           (when (buffer-live-p viewport)
+             (with-current-buffer viewport
+               (goto-char (min (plist-get snapshot :point) (point-max)))
+               (pcase-dolist (`(,window ,start ,point)
+                              (plist-get snapshot :windows))
+                 (when (and (window-live-p window)
+                            (eq (window-buffer window) viewport))
+                   (set-window-start window (min start (point-max)) t)
+                   (set-window-point window (min point (point-max))))))))
+         (restore-if-needed ()
+           (cond
+            (page-changed
+             (agent-shell-vertico--restore-viewport snapshot)
+             (when (buffer-live-p viewport)
+               (with-current-buffer viewport
+                 (agent-shell-vertico-consult--viewport-restore-folds fold-states)))
+             (setq shown-page orig-page
+                   page-changed nil
+                   previewed nil))
+            (previewed
+             (restore-windows-only)
+             (setq previewed nil))))
+         (show-and-move (target reveal-temporarily matches)
+           (when (buffer-live-p viewport)
+             (with-current-buffer viewport
+               (let ((page (plist-get target :page)))
+                 (unless (eql page shown-page)
+                   (agent-shell-vertico--show-viewport-page page)
+                   (setq shown-page page
+                         page-changed t))
+                 (let ((vp-pos (agent-shell-vertico--resolve-viewport-target
+                                target)))
+                   (when (and (not vp-pos) (not reveal-temporarily))
+                     (agent-shell-vertico--restore-viewport snapshot)
+                     (user-error "The selected location cannot be shown in the viewport"))
+                   (when vp-pos
+                     (if reveal-temporarily
+                         (let ((current-minibuffer-command
+                                (if imenu-p 'consult-imenu 'consult-line))
+                               (marker (copy-marker vp-pos)))
+                           (when (agent-shell-vertico-consult--folding-buffer-p viewport)
+                             (save-excursion
+                               (goto-char vp-pos)
+                               (setq restore-folds
+                                     (agent-shell-vertico--reveal-folds-at-point
+                                      (not imenu-p)))))
+                           (funcall preview 'preview
+                                    (if matches (cons marker matches) marker)))
+                       (when (agent-shell-vertico-consult--folding-buffer-p viewport)
+                         (save-excursion
+                           (goto-char vp-pos)
+                           (agent-shell-vertico--reveal-folds-at-point
+                            (not imenu-p))))
+                       (if (fboundp 'consult--jump)
+                           (consult--jump vp-pos)
+                         (push-mark (point) t)
+                         (goto-char vp-pos)
+                         (when (fboundp 'consult--invisible-open-permanently)
+                           (consult--invisible-open-permanently))
+                         (run-hooks 'consult-after-jump-hook))
+                       (when imenu-p
+                         (run-hooks 'imenu-after-jump-hook))))))))))
+      (lambda (action cand)
+        (pcase action
+          ('preview
+           (clear-preview)
+           (if (or (not cand) (not (buffer-live-p shell))
+                   (/= shell-tick
+                       (with-current-buffer shell (buffer-chars-modified-tick))))
+               (restore-if-needed)
+             (let* ((pos (if (consp cand) (car cand) cand))
+                    (matches (and (not imenu-p) (consp cand) (cdr cand)))
+                    (target (and pos
+                                 (agent-shell-vertico--shell-position-to-viewport-target
+                                  shell (agent-shell-vertico--viewport-turn-spans shell)
+                                  pos))))
+               (when target
+                 (setq previewed t)
+                 (show-and-move target t matches)))))
+          ('exit
+           (clear-preview)
+           (restore-if-needed))
+          ('return
+           (clear-preview)
+           (when cand
+             (unless (and (buffer-live-p shell)
+                          (= shell-tick
+                             (with-current-buffer shell
+                               (buffer-chars-modified-tick))))
+               (user-error "The session changed; search again"))
+             (let* ((pos (if (consp cand) (car cand) cand))
+                    (target (and pos
+                                 (agent-shell-vertico--shell-position-to-viewport-target
+                                  shell (agent-shell-vertico--viewport-turn-spans shell)
+                                  pos))))
+               (unless (and target (buffer-live-p viewport))
+                 (user-error "The selected location is no longer available"))
+               (when (and target (buffer-live-p viewport))
+                 (with-current-buffer viewport
+                   (let ((page (plist-get target :page)))
+                     (when (and orig-page (not (eql page orig-page)))
+                       (if (eql shown-page orig-page)
+                           (agent-shell-vertico--remember-viewport-point)
+                         (when (boundp 'agent-shell-viewport--page-points)
+                           (setf (alist-get orig-page
+                                            agent-shell-viewport--page-points)
+                                 (plist-get snapshot :point)))))
+                     (show-and-move target nil nil))))))))))))
+
+(defun agent-shell-vertico-consult--viewport-line-narrow-p
+    (key cand context)
+  "Return non-nil when viewport line CAND matches narrowing KEY in CONTEXT."
+  (or (not key)
+      (pcase-let* ((`(,shell ,spans ,current-page) context)
+                   (shell-pos (car (get-text-property 0 'consult-location cand))))
+        (when shell-pos
+          (if (eql key ?.)
+              (when-let* ((idx (agent-shell-vertico--turn-index-for-position
+                                spans shell-pos)))
+                (eql (1+ idx) current-page))
+            (let ((speaker (agent-shell-vertico--shell-position-speaker
+                            shell spans shell-pos)))
+              (pcase key
+                (?u (eq speaker 'user))
+                (?a (eq speaker 'agent))
+                (?m (memq speaker '(user agent)))
+                (?h (eq speaker 'thoughts))
+                (?t (eq speaker 'tool)))))))))
+
+(defun agent-shell-vertico-consult--viewport-line-annotate (shell spans wrap-line)
+  "Label candidates with page numbers in SHELL, initially sized for SPANS.
+Lines strictly below WRAP-LINE carry `consult-line-number-wrapped'."
+  (let* ((width (length (number-to-string (max 1 (length spans)))))
+         (fmt (format "p%%%dd " width)))
+    (lambda (cand)
+      (pcase-let* ((`(,pos . ,line) (get-text-property 0 'consult-location cand))
+                   (shell-pos (if (consp pos) (cdr pos) pos))
+                   (idx (and shell-pos (buffer-live-p shell)
+                             (agent-shell-vertico--turn-index-for-position
+                              spans shell-pos))))
+        (list cand
+              (if idx
+                  (propertize (format fmt (1+ idx))
+                              'face (if (< line wrap-line)
+                                        'consult-line-number-wrapped
+                                      'consult-line-number-prefix))
+                "")
+              "")))))
+
+(defun agent-shell-vertico-consult--viewport-line-candidate (shell spans cand)
+  "Trim shell-only prefixes from CAND using SHELL and SPANS.
+Return nil if the line has no position represented by the viewport."
+  (let* ((location (consult--get-location cand))
+         (start (marker-position (car location)))
+         (length (or (text-property-not-all 0 (length cand)
+                                             'consult-strip nil cand)
+                     (length cand)))
+         (offset 0)
+         end)
+    (while (and (< offset length)
+                (or (get-text-property (+ start offset) 'shell-maker--marker)
+                    (not (agent-shell-vertico--shell-position-to-viewport-target
+                          shell spans (+ start offset)))))
+      (setq offset (1+ offset)))
+    (setq end (or (text-property-not-all (+ start offset) (+ start length)
+                                         'shell-maker--marker nil)
+                  (+ start length)))
+    (when (< (+ start offset) end)
+      (let ((result (concat (substring cand offset (- end start))
+                            (substring cand length))))
+        (put-text-property 0 (length result) 'consult-location
+                           (cons (copy-marker (+ start offset)) (cdr location))
+                           result)
+        result))))
+
+(defun agent-shell-vertico-consult--viewport-line-search (&optional initial)
+  "Search all turns of the current viewport's session with `consult--read'.
+INITIAL is forwarded as initial minibuffer input."
+  (let* ((shell (or (agent-shell-viewport--shell-buffer)
+                    (user-error "No backing shell buffer")))
+         (spans (agent-shell-vertico--viewport-turn-spans shell)))
+    (when (or (not spans) (zerop (length spans)))
+      (user-error "No lines"))
+    (let* ((current-page
+            (or (map-elt (agent-shell-viewport--position :force-refresh nil) :current)
+                (and (boundp 'agent-shell-viewport--page-cursor)
+                     (map-elt agent-shell-viewport--page-cursor :index))))
+           (curr-pos (or (agent-shell-vertico--viewport-point-in-shell
+                          shell spans)
+                         (map-elt (aref spans
+                                        (if (and current-page
+                                                 (<= 1 current-page (length spans)))
+                                            (1- current-page)
+                                          0))
+                                  :position)))
+           (top (not (null consult-line-start-from-top)))
+           (candidates
+            (with-current-buffer shell
+              (save-restriction
+                (widen)
+                (let ((first-pos (map-elt (aref spans 0) :position))
+                      (last-end (agent-shell-vertico--span-end
+                                 (aref spans (1- (length spans))))))
+                  (narrow-to-region first-pos last-end)
+                  (let ((curr-line (line-number-at-pos
+                                    curr-pos consult-line-numbers-widen))
+                        (consult-fontify-preserve nil))
+                    (delq nil
+                          (mapcar
+                           (lambda (cand)
+                             (agent-shell-vertico-consult--viewport-line-candidate
+                              shell spans cand))
+                           (consult--line-candidates top curr-line))))))))
+           (wrap-line
+            (if top
+                -1
+              (or (cdr (get-text-property 0 'consult-location
+                                          (car candidates)))
+                  -1))))
+      (unless candidates
+        (user-error "No lines"))
+      (consult--read
+       candidates
+       :prompt "Go to line (session): "
+       :annotate (agent-shell-vertico-consult--viewport-line-annotate
+                  shell spans wrap-line)
+       :category 'consult-location
+       :sort nil
+       :require-match t
+       :initial initial
+       :default (car candidates)
+       :add-history (delq nil (list (thing-at-point 'symbol)
+                                    (and (boundp 'isearch-string)
+                                         isearch-string)))
+       :history '(:input consult--line-history)
+       :lookup #'consult--line-match
+       :narrow (agent-shell-vertico-consult--narrow
+                agent-shell-vertico-consult--viewport-line-narrow-keys
+                #'agent-shell-vertico-consult--viewport-line-narrow-p
+                (list shell spans current-page))
+       :preview-key agent-shell-vertico-consult-preview-key
+       :state (agent-shell-vertico-consult--viewport-jump-state
+               shell spans nil)))))
+
+(defun agent-shell-vertico-consult--viewport-consult-line (orig-fn &rest args)
+  "Use session-wide viewport search with prefix arg on `consult-line'.
+Calls ORIG-FN with ARGS otherwise."
+  (if (and (or current-prefix-arg (cadr args))
+           (derived-mode-p 'agent-shell-viewport-view-mode)
+           (not (buffer-narrowed-p))
+           (fboundp 'agent-shell-viewport--shell-buffer)
+           (fboundp 'agent-shell--turn-spans)
+           (agent-shell-viewport--shell-buffer))
+      (agent-shell-vertico-consult--viewport-line-search (car args))
+    (apply orig-fn args)))
+
+(defun agent-shell-vertico-consult--viewport-imenu-items (shell spans)
+  "Return `(ITEMS NARROW GROUP)' for SHELL's imenu prefixed by page from SPANS.
+Does not mutate `consult-imenu--cache'."
+  (with-current-buffer shell
+    (let* ((consult-imenu-config
+            (if (seq-find (lambda (x) (derived-mode-p (car x)))
+                          consult-imenu-config)
+                consult-imenu-config
+              (cons agent-shell-vertico-consult--viewport-imenu-config
+                    consult-imenu-config)))
+           (raw-items
+            (let ((imenu-create-index-function
+                   #'agent-shell-vertico--imenu-index)
+                  (imenu-max-item-length nil)
+                  (consult-imenu--cache nil))
+              (consult-imenu--items)))
+           (narrow (consult-imenu--narrow))
+           (group (consult-imenu--group))
+           labeled-items)
+      (dolist (item raw-items)
+        (let* ((name (car item))
+               (pos (cdr item))
+               (marker-pos (if (consp pos) (car pos) pos))
+               (idx (and marker-pos
+                         (agent-shell-vertico--turn-index-for-position
+                          spans marker-pos))))
+          ;; Request entries point at the shell prompt label, which is not
+          ;; copied into the viewport.  Navigate to its command text instead.
+          (when (and idx (eq (get-text-property 0 'consult--type name) ?r))
+            (when-let* ((bound (seq-find
+                                (lambda (bound)
+                                  (and (<= (nth 0 bound) marker-pos)
+                                       (< marker-pos (nth 1 bound))))
+                                (map-elt (aref spans idx) :bounds))))
+              (setq marker-pos (copy-marker (nth 1 bound))
+                    pos marker-pos)))
+          (when (and idx (agent-shell-vertico--shell-position-to-viewport-target
+                          shell spans marker-pos))
+            (let* ((badge (propertize (format "p%d " (1+ idx))
+                                      'face 'consult-line-number-prefix))
+                   (type-end (and (get-text-property 0 'consult--type name)
+                                  (next-single-property-change
+                                   0 'consult--type name)))
+                   (split (and type-end
+                               (< type-end (length name))
+                               (eq (aref name type-end) ?\s)
+                               (1+ type-end)))
+                   (labeled (if split
+                                (concat (substring name 0 split)
+                                        badge
+                                        (substring name split))
+                              (concat badge (copy-sequence name)))))
+              (push (cons labeled pos) labeled-items)))))
+      (setq labeled-items (nreverse labeled-items))
+      (consult-imenu--deduplicate labeled-items)
+      (list labeled-items narrow group))))
+
+(defun agent-shell-vertico-consult--viewport-imenu ()
+  "Jump to any item across all turns of the current viewport's session."
+  (require 'consult-imenu)
+  (let* ((shell (or (agent-shell-viewport--shell-buffer)
+                    (user-error "No backing shell buffer")))
+         (spans (agent-shell-vertico--viewport-turn-spans shell)))
+    (when (or (not spans) (zerop (length spans)))
+      (user-error "Imenu is empty"))
+    (pcase-let ((`(,items ,narrow ,group)
+                 (agent-shell-vertico-consult--viewport-imenu-items
+                  shell spans)))
+      (unless items
+        (user-error "Imenu is empty"))
+      (consult--read
+       items
+       :prompt "Go to item (session): "
+       :category 'imenu
+       :require-match t
+       :sort nil
+       :lookup #'consult--lookup-cdr
+       :history 'consult-imenu--history
+       :add-history (thing-at-point 'symbol)
+       :group group
+       :narrow (when narrow
+                 (list :predicate
+                       (lambda (cand)
+                         (or (not consult--narrow)
+                             (eq (get-text-property
+                                  0 'consult--type
+                                  (if (consp cand) (car cand) cand))
+                                 consult--narrow)))
+                       :keys narrow))
+       :preview-key agent-shell-vertico-consult-preview-key
+       :state (agent-shell-vertico-consult--viewport-jump-state
+               shell spans t)))))
+
+(defun agent-shell-vertico-consult--viewport-consult-imenu
+    (orig-fn &rest args)
+  "Use session-wide viewport imenu with prefix arg on `consult-imenu'.
+Calls ORIG-FN with ARGS otherwise."
+  (if (and (derived-mode-p 'agent-shell-viewport-view-mode)
+           current-prefix-arg
+           (not (buffer-narrowed-p))
+           (fboundp 'agent-shell-viewport--shell-buffer)
+           (fboundp 'agent-shell--turn-spans)
+           (agent-shell-viewport--shell-buffer))
+      (agent-shell-vertico-consult--viewport-imenu)
+    (apply orig-fn args)))
 
 (provide 'agent-shell-vertico-consult)
 
