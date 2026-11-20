@@ -8311,8 +8311,8 @@ and the peek also opens from a session buffer."
 
 Outside the sidebar the current session is shown.  The window takes the
 sidebar's side, under it, and is selected, so `r' replies to the
-session without leaving the list and `RET' opens it.  Showing the
-message is reading it, so the session's unread mark goes."
+session without leaving the list and `RET' opens it.  Peeking does not
+mark the session as read."
   (interactive)
   (let* ((session (agent-shell-vertico-sidebar--attention-target))
          (buffer (get-buffer-create agent-shell-vertico-sidebar--peek-buffer)))
@@ -8321,7 +8321,6 @@ message is reading it, so the session's unread mark goes."
       (setq agent-shell-vertico-sidebar--peek-session session)
       (agent-shell-vertico-sidebar--peek-render)
       (goto-char (point-min)))
-    (agent-shell-vertico-sidebar--mark-seen session)
     (when-let* ((window (display-buffer-in-side-window
                          buffer
                          `((side . ,agent-shell-vertico-sidebar-side)

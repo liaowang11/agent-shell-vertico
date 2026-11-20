@@ -240,9 +240,9 @@ echo area, and hovering the title shows them in its tooltip.
 `p` peeks at the session at point: a window opens below the sidebar with what
 the session asks and the last message it wrote, and `r` there sends it a reply
 without leaving the list.  `RET` opens the session and `q` closes the peek.
-Peeking reads the session, so its unread mark goes.  When the session waits on
-a permission, `y` allows, `n` rejects (which also stops the session) and `!`
-always allows; when it asks a one-question form, a digit picks that option, and
+Peeking leaves the unread mark alone.  When the session waits on a permission,
+`y` allows, `n` rejects (which also stops the session) and `!` always allows;
+when it asks a one-question form, a digit picks that option, and
 `d` declines any form.  `i` stops the session, as does replying `/stop`, and
 `g` redraws the peek.  Under Evil the keys are the same, with `I` also
 stopping the session and `gr` redrawing, since Evil's `g` is a prefix.

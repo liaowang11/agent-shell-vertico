@@ -5460,7 +5460,7 @@ showing a session, so folding it leaves nothing but headers."
               #'agent-shell-vertico-sidebar-pin)))
 
 (ert-deftest agent-shell-vertico-sidebar-peek-shows-the-question-and-message ()
-  "Peeking shows what a session asks and what it last said, and reads it."
+  "Peeking shows the question and message without marking them read."
   (agent-shell-vertico-tests--with-alpha
     (let ((agent-shell-test-buffers (list alpha)))
       (agent-shell-vertico-tests--stream
@@ -5483,7 +5483,7 @@ showing a session, so folding it leaves nothing but headers."
                   (should (string-match-p "I changed the count\\." text))
                   (should (string-match-p "r reply" text))))
             (kill-buffer peek))))
-      (should-not (agent-shell-vertico-sidebar--unread-p alpha)))))
+      (should (agent-shell-vertico-sidebar--unread-p alpha)))))
 
 (ert-deftest agent-shell-vertico-sidebar-peek-replies-to-the-session ()
   "r in the peek sends one prompt to the session without leaving the peek."
